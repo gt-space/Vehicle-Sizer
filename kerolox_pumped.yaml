@@ -1,0 +1,52 @@
+vehicle:
+  OMLD:                           # m
+  prop_mass:                      # kg
+
+engine: 
+  perfectly_expanded_thrust:      # N
+  chamber_pressure:               # Pa
+  exit_pressure:                  # Pa
+  cstar_efficiency: 0.90
+  cf_efficiency: 0.95
+
+fin_can:
+  fin_area:                       # m^2
+  fin_thickness:                  # m
+  fin_count: 4
+  boattail_wall_thickness:        # m 
+  material: "carbon_fiber_standard"
+
+fuel_tank:
+  passthrough_diameter:           # m
+  ullage_factor: 1.1
+  ellipse_ratio: 1.75
+  material: "aluminum_6061_t6"
+
+ox_tank:
+  passthrough_diameter:           # m
+  ullage_factor: 1.1
+  ellipse_ratio: 1.75
+  material: "aluminum_6061_t6"
+
+press_tank:
+  pressurant: "Nitrogen"          # Nitrogen || Helium
+  start_pressure:                 # Pa
+  start_temp: 300                 # K
+  collapse_factor: 1.8
+  pneumatics_pressure:            # Pa
+  airframe_wall_thickness:        # m
+  airframe_material: "carbon_fiber_standard"
+  mount_thickness:                # m
+  mount_material: "aluminum_7075_t6"
+
+avi_bay:
+  avi_mass:                       # kg
+  clamshell_material: "fiberglass_standard"
+  bulkhead_material: "carbon_fiber_standard"
+  ring_material: "aluminum_6061_t6"
+
+nosecone:
+  profile:                        # von_karman || 
+  fineness_ratio: 5
+  reco_mass:                      # kg
+  material: "carbon_fiber_standard"
