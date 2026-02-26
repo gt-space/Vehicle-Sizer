@@ -28,6 +28,7 @@ class PropTank(Section, ABC):
         FOS = 1.4
 
         t = FOS * (self.pressure * self.diameter) / (2 * sigma)
+        t_min = 1/16 * 0.0254
         t = max(t, t_min)
 
         return t

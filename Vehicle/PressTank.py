@@ -10,7 +10,8 @@ class PressTank(Section):
 
     def get_mass(self):
 
-        self.mass = self._get_mount_mass() + self._get_airframe_mass()
+        mass = self._get_mount_mass() + self._get_airframe_mass() + copv_mass
+        self.mass = np.full(self.n, mass / self.n)
 
     def _get_mount_mass(self):
 
@@ -64,4 +65,9 @@ class PressTank(Section):
         E = mat.get("elastic_modulus", T)
         EI = E * I
 
-        return EI
+        self.EI = np.full(self.n, EI)
+    
+    def get_lat_area(self):
+
+        D = self.cfg["vehicle"]["OMLD"]
+        self.lat_area = np.full(self.n, D * self.dx)

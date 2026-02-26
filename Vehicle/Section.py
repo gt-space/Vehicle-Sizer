@@ -7,14 +7,16 @@ class Section(ABC):
         self.cfg = cfg
         
         self.length = None
+        self.dx = cfg["vehicle"]["dx"]
+        self.n = self.length / self.dx
 
         self.station = None
 
         self.mass = None
         self.EI = None
+        self.lat_area = None
         
         self.radius = None
-        self.lat_area = None
         self.front_area = None
 
     @abstractmethod
@@ -23,4 +25,8 @@ class Section(ABC):
 
     @abstractmethod
     def get_EI(self):
+        pass
+
+    @abstractmethod
+    def get_lat_area(self):
         pass

@@ -5,9 +5,10 @@ import Vehicle.Section as Section
 
 class InterTank(Section):
 
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, L: float):
 
         super().__init__(cfg)
+        self.length = L
 
     def get_mass(self):
 
@@ -15,7 +16,8 @@ class InterTank(Section):
         avi_mass = self.cfg["inter_tank"]["avi_mass"]
         stringer_mass, self.stringer_thickness = self._get_stringer_mass(P, M)
         
-        self.mass = self._get_clamshell_mass() + stringer_mass + feed_system_mass + avi_mass
+        mass = self._get_clamshell_mass() + stringer_mass + feed_system_mass + avi_mass
+        self.mass = np.full(self.n, mass / self.n)
 
     def _get_clamshell_mass(self):
 
@@ -75,7 +77,8 @@ class InterTank(Section):
 
     def get_EI(self):
 
-        self.EI = self._get_clamshell_EI() + self._get_stringer_EI(self.stringer_thickness)
+        EI = self._get_clamshell_EI() + self._get_stringer_EI(self.stringer_thickness)
+        self.EI = np.full(self.n, EI)
 
     def _get_clamshell_EI(self):
 
@@ -107,3 +110,8 @@ class InterTank(Section):
         EI = E * I
 
         return EI
+    
+    def get_lat_area(self):
+
+        D = self.cfg["vehicle"]["OMLD"]
+        self.lat_area = np.full(self.n, D * self.dx)

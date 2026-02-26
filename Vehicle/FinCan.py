@@ -10,7 +10,7 @@ class FinCan(Section):
     def get_mass(self):
 
         engine_mass = self.cfg["fin_can"]["engine_mass"]
-        self.mass = self._get_fin_mass() + self._get_boattail_mass() + engine_mass
+        mass = self._get_fin_mass() + self._get_boattail_mass() + engine_mass
 
     def _get_fin_mass(self):
 
@@ -31,3 +31,5 @@ class FinCan(Section):
         r_s_i = r_s_o - self.cfg["fin_can"]["boattail_wall_thickness"]
 
     def get_EI(self):
+
+    def get_lat_area(self):

@@ -10,3 +10,5 @@ class Nosecone(Section):
     def get_mass(self):
 
     def get_EI(self):
+
+    def get_lat_area(self):

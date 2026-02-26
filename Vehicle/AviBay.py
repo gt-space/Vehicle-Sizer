@@ -11,7 +11,7 @@ class AviBay(Section):
 
     def get_mass(self):
         
-        self.mass = self._get_bulkhead_mass() + self.cfg["avi_bay"]["avi_mass"]
+        mass = self._get_bulkhead_mass() + self.cfg["avi_bay"]["avi_mass"]
 
     def _get_bulkhead_mass(self):
         
@@ -49,3 +49,5 @@ class AviBay(Section):
         return t
 
     def get_EI(self):
+
+    def get_lat_area(self):
