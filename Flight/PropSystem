@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict, Tuple
 
-from ..types import KinematicsState, AtmosState, ThermalOut, AeroOut, FluidOut
+from .types import KinematicsState, AtmosState, ThermalOut, AeroOut, FluidOut
 from .network import FluidNetwork
 
 class PropSystem:
