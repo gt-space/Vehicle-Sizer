@@ -1,16 +1,18 @@
 import numpy as np
 import matproplib as mp
-from Vehicle.Section import Section
+from .Section import Section
 
 class PressTank(Section):
 
     def __init__(self, cfg: dict):
         
         super().__init__(cfg)
+        self.length = 1.4
         self.n = int(np.ceil(self.length / self.dx))
 
     def get_mass(self):
 
+        copv_mass = 18.2
         mass = self._get_mount_mass() + self._get_airframe_mass() + copv_mass
         self.mass = np.full(self.n, mass / self.n)
 
@@ -22,6 +24,7 @@ class PressTank(Section):
         FOS = 1.4
 
         a = 9.81 * 10.0
+        copv_mass = 18.2
         P = copv_mass * a
 
         h = self.cfg["press_tank"]["mount_thickness"]

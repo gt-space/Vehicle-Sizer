@@ -60,6 +60,7 @@ class InterTank(Section):
     def _get_stringer_thickness(self, P, M, sigma, E):
 
         r = self.cfg["vehicle"]["OMLD"] * 0.5
+        FOS = 1.5
 
         def equations(x):
 
@@ -73,19 +74,18 @@ class InterTank(Section):
 
             return [eq1, eq2]
         
-        a_guess = 0.005
+        a_guess = 0.0001
         I_guess = (2 * a_guess**2) * ((a_guess**2) / 3 + r**2 - r * a_guess)
 
         sol = root(equations, [a_guess, I_guess])
-        #a = sol.x[0]
+        a = sol.x[0] * FOS
 
-        n = 1
-        FOS = 1.5
-        Le = self.length * n
+        #n = 1
+        #Le = self.length * n
 
-        a_buckling = ((12 * Le**2 * P) / (np.pi**2 * E))**0.25 * FOS
-        a_yielding = np.sqrt(P / sigma) * FOS
-        a = max(a_buckling, a_yielding)
+        #a_buckling = ((12 * Le**2 * P) / (np.pi**2 * E))**0.25 * FOS
+        #a_yielding = np.sqrt(P / sigma) * FOS
+        #a = max(a_buckling, a_yielding)
 
         return a
 
