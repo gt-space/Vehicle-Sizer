@@ -8,7 +8,7 @@ class Section(ABC):
         
         self.length = None
         self.dx = cfg["vehicle"]["dx"]
-        self.n = self.length / self.dx
+        self.n = None
 
         self.station = None
 

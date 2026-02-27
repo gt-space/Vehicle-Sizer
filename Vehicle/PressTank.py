@@ -1,12 +1,13 @@
 import numpy as np
 import matproplib as mp
-import Vehicle.Section as Section
+from Vehicle.Section import Section
 
 class PressTank(Section):
 
     def __init__(self, cfg: dict):
         
         super().__init__(cfg)
+        self.n = int(np.ceil(self.length / self.dx))
 
     def get_mass(self):
 

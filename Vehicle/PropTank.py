@@ -1,6 +1,6 @@
 import numpy as np
 import matproplib as mp
-import Vehicle.Section as Section
+from Vehicle.Section import Section
 from abc import ABC, abstractmethod
 
 class PropTank(Section, ABC):
@@ -8,6 +8,7 @@ class PropTank(Section, ABC):
     def __init__(self, cfg: dict):
         
         super().__init__(cfg)
+        self.n = int(np.ceil(self.length / self.dx))
 
     def get_mass(self):
 
@@ -50,3 +51,4 @@ class PropTank(Section, ABC):
         E = mat.get("elastic_modulus")
 
         EI = E * I
+        self.EI = np.full(self.n, EI)

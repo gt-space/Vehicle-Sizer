@@ -1,20 +1,23 @@
 import numpy as np
 from scipy.optimize import root
 import matproplib as mp
-import Vehicle.Section as Section
+from .Section import Section
 
 class InterTank(Section):
 
-    def __init__(self, cfg: dict, L: float):
+    def __init__(self, cfg: dict, L: float, P: float, M: float):
 
         super().__init__(cfg)
         self.length = L
+        self.n = int(np.ceil(self.length / self.dx))
+        self.P = P
+        self.M = M
 
     def get_mass(self):
 
         feed_system_mass = self.cfg["inter_tank"]["feed_system_mass"]
         avi_mass = self.cfg["inter_tank"]["avi_mass"]
-        stringer_mass, self.stringer_thickness = self._get_stringer_mass(P, M)
+        stringer_mass, self.stringer_thickness = self._get_stringer_mass()
         
         mass = self._get_clamshell_mass() + stringer_mass + feed_system_mass + avi_mass
         self.mass = np.full(self.n, mass / self.n)
@@ -36,12 +39,12 @@ class InterTank(Section):
 
         return m
 
-    def _get_stringer_mass(self, P, M):
+    def _get_stringer_mass(self):
         
         T = 400.0
-        sigma = mp.db.get_material(self.cfg["inter_tank"]["stringer_material"]).get("yield_strength")
+        sigma = mp.db.get_material(self.cfg["inter_tank"]["stringer_material"]).get("yield_strength", T)
 
-        a = self._get_stringer_thickness(P, M, sigma)
+        a = self._get_stringer_thickness(self.P, self.M, sigma)
 
         n = 4
         A = a**2
@@ -54,6 +57,8 @@ class InterTank(Section):
         return m, a
     
     def _get_stringer_thickness(self, P, M, sigma):
+
+        r = self.cfg["vehicle"]["OMLD"] * 0.5
 
         def equations(x):
 
