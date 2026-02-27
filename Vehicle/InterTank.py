@@ -72,7 +72,7 @@ class InterTank(Section):
 
             return [eq1, eq2]
         
-        a_guess = 0.0254
+        a_guess = 0.005
         I_guess = (2 * a_guess**2) * ((a_guess**2) / 3 + r**2 - r * a_guess)
 
         sol = root(equations, [a_guess, I_guess])
