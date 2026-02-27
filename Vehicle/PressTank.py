@@ -66,7 +66,7 @@ class PressTank(Section):
         I = np.pi * 0.25 * (r_o**4 - r_i**4)
         mat = mp.db.get_material(self.cfg["press_tank"]["airframe_material"])
         T = 400.0
-        E = mat.get("elastic_modulus", T)
+        E = mat.get("elastic_modulus_0deg", T)
         EI = E * I
 
         self.EI = np.full(self.n, EI)
