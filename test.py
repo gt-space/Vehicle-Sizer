@@ -38,6 +38,8 @@ print("EI1:", s1.EI[0])
 print("Mass2:", np.sum(s2.mass))
 print("EI2:", s2.EI[0])
 
+print("AirframeMass:", s2._get_airframe_mass())
+
 print("Mass3:", np.sum(s3.mass))
 print("EI3:", s3.EI[0])
 

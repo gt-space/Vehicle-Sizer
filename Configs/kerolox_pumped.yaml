@@ -42,7 +42,7 @@ press_tank:
   start_temp: 300                 # K
   collapse_factor: 1.8
   pneumatics_pressure: 4.2e6      # Pa
-  airframe_wall_thickness: 0032   # m
+  airframe_wall_thickness: 0.0032   # m
   airframe_material: "carbon_fiber_standard"
   mount_thickness: 0.0032         # m
   mount_material: "aluminum_7075_t6"
