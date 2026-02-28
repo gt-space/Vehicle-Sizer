@@ -37,7 +37,7 @@ class AviBay(Section):
 
     def _get_bulkhead_thickness(self, P, r, nu, sigma):
 
-        FOS = 1.4
+        FOS = 1.5
 
         def f(t):
             return (P / t**2) * (1 + nu) * (0.485 * np.log(r / t) + 0.52) - sigma

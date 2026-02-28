@@ -25,7 +25,8 @@ class PropTank(Section, ABC):
     def _get_wall_thickness(self):
 
         mat = mp.db.get_material(self.cfg["prop_tank"]["material"])
-        sigma = mat.get("yield_strength", T = 400.0)
+        T = 400.0
+        sigma = mat.get("yield_strength", T)
         FOS = 1.4
 
         t = FOS * (self.pressure * self.diameter) / (2 * sigma)
@@ -48,7 +49,7 @@ class PropTank(Section, ABC):
         I = np.pi * 0.25 * (r_o**4 - r_i**4)
         mat = mp.db.get_material(self.cfg["prop_tank"]["material"])
         T = 400.0
-        E = mat.get("elastic_modulus")
+        E = mat.get("elastic_modulus", T)
 
         EI = E * I
         self.EI = np.full(self.n, EI)

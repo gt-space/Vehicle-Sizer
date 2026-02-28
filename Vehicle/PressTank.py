@@ -7,7 +7,7 @@ class PressTank(Section):
     def __init__(self, cfg: dict):
         
         super().__init__(cfg)
-        self.length = 1.4
+        self.length = 0.8
         self.n = int(np.ceil(self.length / self.dx))
 
     def get_mass(self):
