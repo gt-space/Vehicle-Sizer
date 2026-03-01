@@ -12,7 +12,8 @@ class FinCan(Section):
     def get_mass(self):
 
         engine_mass = self.cfg["fin_can"]["engine_mass"]
-        mass = self._get_fin_mass() + self._get_boattail_mass() + engine_mass
+        motor_mass = self.cfg[]
+        mass = self._get_fin_mass() + self._get_boattail_mass() + engine_mass + motor_mass
 
     def _get_fin_mass(self):
 

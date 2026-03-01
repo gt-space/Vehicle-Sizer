@@ -51,7 +51,7 @@ avi_bay:
   avi_mass: 1.5                   # kg
   clamshell_material: "fiberglass_standard"
   bulkhead_material: "carbon_fiber_standard"
-  ring_material: "aluminum_6061_t6"
+  ring_material: "aluminum_7075_t6"
 
 nosecone:
   profile: "von_karman"           # von_karman || 

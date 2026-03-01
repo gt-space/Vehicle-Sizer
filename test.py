@@ -1,6 +1,7 @@
 import numpy as np
 from Vehicle.InterTank import InterTank
 from Vehicle.PressTank import PressTank
+from Vehicle.COPV import COPV
 from Configs.loader import load_config
 
 cfg = load_config("Configs/kerolox_pumped.yaml")
@@ -14,7 +15,14 @@ s1.get_mass()
 s1.get_EI()
 s1.get_lat_area()
 
-s2 = PressTank(cfg)
+copv = COPV(
+    volume=0.012,
+    mass=18.2,
+    length=0.8,
+    diameter=0.25
+)
+
+s2 = PressTank(cfg, copv)
 s2.get_mass()
 s2.get_EI()
 s2.get_lat_area()
