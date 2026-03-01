@@ -1,46 +1,65 @@
 import numpy as np
+
+from Vehicle.Vehicle import Vehicle
 from Vehicle.InterTank import InterTank
 from Vehicle.PressTank import PressTank
 from Vehicle.COPV import COPV
 from Configs.loader import load_config
 
-cfg = load_config("Configs/kerolox_pumped.yaml")
 
-L1 = 0.12
-P1 = 6000.0
-M1 = 10000.0
+def main():
 
-s1 = InterTank(cfg, L1, P1, M1)
-s1.build()
+    # -------------------------------------------------
+    # Load configuration
+    # -------------------------------------------------
+    cfg = load_config("Configs/kerolox_pumped.yaml")
 
-copv = COPV(
-    volume=0.012,
-    mass=18.2,
-    length=1.4,
-    diameter=0.25
-)
+    # -------------------------------------------------
+    # Create Sections
+    # -------------------------------------------------
 
-s2 = PressTank(cfg, copv)
-s2.build()
+    # Intertank 1
+    L1 = 0.12
+    P1 = 6000.0
+    M1 = 10000.0
+    s1 = InterTank(cfg, L1, P1, M1)
 
-L3 = 0.36
-P3 = 15000.0
-M3 = 5000.0
+    # Press Tank + COPV
+    copv = COPV(
+        volume=0.012,
+        mass=18.2,
+        length=1.4,
+        diameter=0.25
+    )
 
-s3 = InterTank(cfg, L3, P3, M3)
-s3.build()
+    s2 = PressTank(cfg, copv)
 
-sections = [s1, s2, s3]
-mass_list = [sec.mass for sec in sections]
-mass = np.concatenate(mass_list)
+    # Intertank 2
+    L3 = 0.36
+    P3 = 15000.0
+    M3 = 5000.0
+    s3 = InterTank(cfg, L3, P3, M3)
 
-print("Mass1:", np.sum(s1.mass))
-print("EI1:", s1.EI[0])
+    sections = [s1, s2, s3]
 
-print("Mass2:", np.sum(s2.mass))
-print("EI2:", s2.EI[0])
+    # -------------------------------------------------
+    # Build Vehicle
+    # -------------------------------------------------
+    vehicle = Vehicle(cfg, sections)
+    vehicle.build()
 
-print("Mass3:", np.sum(s3.mass))
-print("EI3:", s3.EI[0])
+    # -------------------------------------------------
+    # Print Results
+    # -------------------------------------------------
+    print("\n--- SECTION DATA ---")
+    for i, sec in enumerate(vehicle.sections):
+        print(f"\nSection {i+1}")
+        print("  Length:", sec.length)
+        print("  Mass:", np.sum(sec.mass))
+        print("  EI:", sec.EI[0])
 
-print("MassTot:", np.sum(mass))
+    print("\n--- VEHICLE DATA ---")
+    print("Total Length:", vehicle.length)
+
+if __name__ == "__main__":
+    main()

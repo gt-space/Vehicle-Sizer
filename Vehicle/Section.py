@@ -6,12 +6,14 @@ class Section(ABC):
 
         self.cfg = cfg
         
-        self.length = None
         self.dx = cfg["vehicle"]["dx"]
+        self.length = None
         self.n = None
 
-        self.station = None
-
+        self.x = None
+        self.x_start = None
+        self.x_end = None
+        
         self.mass = None
         self.EI = None
         self.lat_area = None
