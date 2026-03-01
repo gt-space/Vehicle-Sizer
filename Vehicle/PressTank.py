@@ -49,10 +49,10 @@ class PressTank(Section):
         A_i = np.pi * r_i**2
 
         A = A_o - A_i
-
+        V = A * self.length
         mat = mp.db.get_material(self.cfg["press_tank"]["airframe_material"])
         rho = mat.get("density")
-        m = A * self.length * rho
+        m = V * rho
 
         return m
     

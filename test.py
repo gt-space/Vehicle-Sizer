@@ -11,30 +11,24 @@ P1 = 6000.0
 M1 = 10000.0
 
 s1 = InterTank(cfg, L1, P1, M1)
-s1.get_mass()
-s1.get_EI()
-s1.get_lat_area()
+s1.build()
 
 copv = COPV(
     volume=0.012,
     mass=18.2,
-    length=0.8,
+    length=1.4,
     diameter=0.25
 )
 
 s2 = PressTank(cfg, copv)
-s2.get_mass()
-s2.get_EI()
-s2.get_lat_area()
+s2.build()
 
 L3 = 0.36
 P3 = 15000.0
 M3 = 5000.0
 
 s3 = InterTank(cfg, L3, P3, M3)
-s3.get_mass()
-s3.get_EI()
-s3.get_lat_area()
+s3.build()
 
 sections = [s1, s2, s3]
 mass_list = [sec.mass for sec in sections]
