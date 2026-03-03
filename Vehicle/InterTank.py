@@ -5,13 +5,13 @@ from .Section import Section
 
 class InterTank(Section):
 
-    def __init__(self, cfg: dict, L: float, P: float, M: float):
+    def __init__(self, cfg: dict, length: float, ax_load: float, bending_moment: float):
 
         super().__init__(cfg)
-        self.length = L
+        self.length = length
         self.n = int(np.ceil(self.length / self.dx))
-        self.P = P
-        self.M = M
+        self.ax_load = ax_load
+        self.bending_moment = bending_moment
 
     def get_mass(self):
 
@@ -46,7 +46,7 @@ class InterTank(Section):
         sigma = mat.get("yield_strength", T)
         E = mat.get("elastic_modulus", T)
 
-        a = self._get_stringer_thickness(self.P, self.M, sigma, E)
+        a = self._get_stringer_thickness(self.ax_load, self.bending_moment, sigma, E)
 
         n = 4
         A = a**2
@@ -103,7 +103,7 @@ class InterTank(Section):
 
         I = np.pi * 0.25 * (r_o**4 - r_i**4)
         mat = mp.db.get_material(self.cfg["inter_tank"]["clamshell_material"])
-        T = 400.0
+        T = 300.0
         E = mat.get("elastic_modulus_0deg", T)
         EI = E * I
 
@@ -119,13 +119,14 @@ class InterTank(Section):
         n = 4
         I = n * (a**4 / 12 + a**2 * r**2)
         mat = mp.db.get_material(self.cfg["inter_tank"]["stringer_material"])
-        T = 400.0
+        T = 300.0
         E = mat.get("elastic_modulus", T)
         EI = E * I
 
         return EI
     
-    def get_lat_area(self):
+    def get_area(self):
 
         D = self.cfg["vehicle"]["OMLD"]
         self.lat_area = np.full(self.n, D * self.dx)
+        self.surf_area = self.lat_area * np.pi

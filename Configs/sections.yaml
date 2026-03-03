@@ -1,0 +1,19 @@
+sections:
+
+  -type: nosecone
+
+  -type: avi_bay
+
+  -type: press_tank
+
+  -type: inter_tank
+
+  -type: prop_tank
+
+  -type: inter_tank
+
+  -type: prop_tank
+
+  -type: inter_tank
+  
+  -type: fin_can

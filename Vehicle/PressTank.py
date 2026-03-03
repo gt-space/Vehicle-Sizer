@@ -65,13 +65,14 @@ class PressTank(Section):
 
         I = np.pi * 0.25 * (r_o**4 - r_i**4)
         mat = mp.db.get_material(self.cfg["press_tank"]["airframe_material"])
-        T = 400.0
+        T = 300.0
         E = mat.get("elastic_modulus_0deg", T)
         EI = E * I
 
         self.EI = np.full(self.n, EI)
     
-    def get_lat_area(self):
+    def get_area(self):
 
         D = self.cfg["vehicle"]["OMLD"]
         self.lat_area = np.full(self.n, D * self.dx)
+        self.surf_area = self.lat_area * np.pi

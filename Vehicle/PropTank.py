@@ -1,63 +1,161 @@
 import numpy as np
 import matproplib as mp
+from CoolProp.CoolProp import PropsSI
 from Vehicle.Section import Section
-from abc import ABC, abstractmethod
 
 class PropTank(Section):
 
-    def __init__(self, cfg: dict, tank_type: str):
+    def __init__(self, cfg: dict, medium: str, prop_mass: float, material: str, passthrough_diameter: float, ellipse_ratio: float, ullage_factor: float):
         
         super().__init__(cfg)
-        self.tank_cfg = cfg[tank_type]
+        self.passthrough_diameter = passthrough_diameter
+        self.ellipse_ratio = ellipse_ratio
+        self.ullage_factor = ullage_factor
+        self.OMLD = self.cfg["vehicle"]["OMLD"]
+        self.prop_mass = prop_mass
+        self.material = material
+        self.medium = medium
 
     def get_mass(self):
 
+        dry_mass = self._get_dry_mass()
+        self.n = int(np.ceil(self.length / self.dx))
+        self.dry_mass = np.full(self.n, dry_mass / self.n)
+        self.mass = self.dry_mass
+
     def _get_dry_mass(self):
+
+        D = self.OMLD
+        D_pass = self.passthrough_diameter
+        self._get_length()
+        t = self.wall_thickness
+        t_pass = 0.00254
+        e = self.ellipse_ratio
+
+        mat = mp.db.get_material(self.material)
+        rho = mat.get("density")
+
+        k = (
+            2 * e
+            + (1 / np.sqrt(e**2 - 1))
+            * np.log(
+                (e + np.sqrt(e**2 - 1)) /
+                (e - np.sqrt(e**2 - 1))
+            )
+        )
+
+        V_end = (
+            (1/4) * np.pi * (D - 2*t) * t * k
+        ) / (2 * e)
+
+        V_cyl = (
+            (1/4) * np.pi * self.cyl_length
+            * (D**2 - (D - 2*t)**2)
+        )
+
+        V_pass = (
+            (1/4) * np.pi * self.cyl_length
+            * (D_pass**2 - (D_pass - 2*t_pass)**2)
+        )
+
+        V = V_end + V_cyl + V_pass
+        m = rho * V
+
+        return m
 
     def _get_pressure(self):
 
+        return 1e6
+
     def _get_volume(self):
 
-        
+        if self.medium == "oxygen":
+
+            rho = 1100
+
+        elif self.medium == "n-Dodecane":
+
+            rho = 804
+
+        T = 300
+        p = self._get_pressure()
+        #rho = PropsSI("D", "T", T, "P", p, self.medium)
+        V_prop = self.prop_mass / rho
+
+        self.volume = V_prop * self.ullage_factor
+        self.ullage_volume = self.volume - V_prop
 
     def _get_wall_thickness(self):
 
-        mat = mp.db.get_material(self.tank_cfg["material"])
+        mat = mp.db.get_material(self.material)
         T = 400.0
         sigma = mat.get("yield_strength", T)
         FOS = 1.4
 
-        t = FOS * (self.pressure * self.diameter) / (2 * sigma)
+        self.pressure = self._get_pressure()
+        t = FOS * (self.pressure * self.OMLD) / (2 * sigma)
         t_min = 1/16 * 0.0254
         t = max(t, t_min)
 
-        self.wall_thickness = t
+        return t
     
     def _get_length(self):
 
-        D = self.cfg["vehicle"]["OMLD"]
-        D_pass = self.tank_cfg["passthrough_diameter"]
-        V_end = (np.pi / (12 * self.tank_cfg["ellipse_ratio"])) * (D - (2 * self.wall_thickness))^3
+        D = self.OMLD
+        D_pass = self.passthrough_diameter
+        self._get_volume()
+        self.wall_thickness = self._get_wall_thickness()
 
-        L_cyl = 
-        L = L_cyl + (D / self.tank_cfg["ellipse_ratio"])
+        V_end = (np.pi / (12 * self.ellipse_ratio)) * (D - (2 * self.wall_thickness))**3
+
+        numerator = (
+            self.volume
+            - 2 * V_end
+            + (4 * np.pi / self.ellipse_ratio) * D_pass**2 * D
+        )
+
+        denominator = (
+            (np.pi / 4)
+            * ((D - 2*self.wall_thickness)**2 - D_pass**2)
+        )
+
+        self.cyl_length = numerator / denominator
+        self.length = self.cyl_length + (D / self.ellipse_ratio)
 
     def get_EI(self):
 
-        r_o = self.cfg["vehicle"]["OMLD"] * 0.5
+        r_o = self.OMLD * 0.5
 
         t = self._get_wall_thickness()
         r_i = r_o - t
 
         I = np.pi * 0.25 * (r_o**4 - r_i**4)
-        mat = mp.db.get_material(self.tank_cfg["material"])
-        T = 400.0
+        mat = mp.db.get_material(self.material)
+        T = 300.0
         E = mat.get("elastic_modulus", T)
 
         EI = E * I
         self.EI = np.full(self.n, EI)
 
-    def get_lat_area(self):
+    def get_area(self):
 
-        D = self.cfg["vehicle"]["OMLD"]
+        D = self.OMLD
         self.lat_area = np.full(self.n, D * self.dx)
+        self.surf_area = self.lat_area * np.pi
+
+    def drain_prop(self):
+
+        self.prop_mass = max(self.prop_mass - dm, 0.0)
+
+        fill_ratio = self.prop_mass / self.prop_mass_initial
+        self.prop_end_station = self.end_station
+        self.prop_start_station = self.start_station - self.prop_height
+
+        T = 300
+        p = 1e6
+        rho = PropsSI("D", "T", T, "P", p, self.medium)
+        dV = dm / rho
+        self.ullage_volume += dV
+
+        rho_press = 1600
+        self.press_mass = self.ullage_volume * rho_press

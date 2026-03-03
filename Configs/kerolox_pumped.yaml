@@ -9,6 +9,8 @@ engine:
   exit_pressure: 5e3              # Pa
   cstar_efficiency: 0.90
   cf_efficiency: 0.95
+  mass: 35
+  length: 0.51
 
 fin_can:
   fin_area: 0.06                  # m^2
@@ -55,6 +57,6 @@ avi_bay:
 
 nosecone:
   profile: "von_karman"           # von_karman || 
-  fineness_ratio: 5
+  fineness_ratio: 12
   reco_mass: 5                    # kg
   material: "carbon_fiber_standard"

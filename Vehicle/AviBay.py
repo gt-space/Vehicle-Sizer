@@ -8,6 +8,7 @@ class AviBay(Section):
     def __init__(self, cfg: dict):
         
         super().__init__(cfg)
+        self.length = self.cfg["avi_bay"]["length"]
         self.n = int(np.ceil(self.length / self.dx))
 
     def get_mass(self):
@@ -51,4 +52,4 @@ class AviBay(Section):
 
     def get_EI(self):
 
-    def get_lat_area(self):
+    def get_area(self):
