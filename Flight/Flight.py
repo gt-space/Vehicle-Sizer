@@ -3,6 +3,7 @@ import math
 from typing import Any, Dict, Optional
 
 from ..types import KinematicsState, PlantOut
+from .config import RootConfig 
 from ..types import AtmosState, AeroOut, ThermalOut, FluidOut, PlantOut
 
 class FlightSim:

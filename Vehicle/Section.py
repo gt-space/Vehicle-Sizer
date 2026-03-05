@@ -6,16 +6,29 @@ class Section(ABC):
 
         self.cfg = cfg
         
+        self.dx = cfg["vehicle"]["dx"]
         self.length = None
+        self.n = None
 
         self.station = None
+        self.start_station = None
+        self.end_station = None
+
+        self.ax_load = None
+        self.bending_moment = None
 
         self.mass = None
         self.EI = None
-        
-        self.radius = None
+
         self.lat_area = None
-        self.front_area = None
+        self.surf_area = None
+        self.radius = None
+
+    def build(self):
+        
+        self.get_mass()
+        self.get_EI()
+        self.get_area()
 
     @abstractmethod
     def get_mass(self):
@@ -23,4 +36,8 @@ class Section(ABC):
 
     @abstractmethod
     def get_EI(self):
+        pass
+
+    @abstractmethod
+    def get_area(self):
         pass

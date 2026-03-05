@@ -8,10 +8,12 @@ class AviBay(Section):
     def __init__(self, cfg: dict):
         
         super().__init__(cfg)
+        self.length = self.cfg["avi_bay"]["length"]
+        self.n = int(np.ceil(self.length / self.dx))
 
     def get_mass(self):
         
-        self.mass = self._get_bulkhead_mass() + self.cfg["avi_bay"]["avi_mass"]
+        mass = self._get_bulkhead_mass() + self.cfg["avi_bay"]["avi_mass"]
 
     def _get_bulkhead_mass(self):
         
@@ -36,7 +38,7 @@ class AviBay(Section):
 
     def _get_bulkhead_thickness(self, P, r, nu, sigma):
 
-        FOS = 1.4
+        FOS = 1.5
 
         def f(t):
             return (P / t**2) * (1 + nu) * (0.485 * np.log(r / t) + 0.52) - sigma
@@ -49,3 +51,5 @@ class AviBay(Section):
         return t
 
     def get_EI(self):
+
+    def get_area(self):
