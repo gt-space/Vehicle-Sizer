@@ -2,8 +2,8 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Optional
 
-from .types import KinematicsState, PlantOut
-from .types import AtmosState, AeroOut, ThermalOut, FluidOut, PlantOut
+from ..types import KinematicsState, PlantOut
+from ..types import AtmosState, AeroOut, ThermalOut, FluidOut, PlantOut
 
 class FlightSim:
 
