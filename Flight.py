@@ -3,11 +3,12 @@ import math
 from typing import Any, Dict, Optional
 
 from .types import KinematicsState, PlantOut
+from .Configs import loader 
 from .types import AtmosState, AeroOut, ThermalOut, FluidOut, PlantOut
 
 class FlightSim:
 
-    def __init__(self, cfg, env, aero, thermal, fluids, vehicle):
+    def __init__(self, cfg: loader, env, aero, thermal, fluids, vehicle):
         self.cfg = cfg
         self.env = env
         self.aero = aero
@@ -22,15 +23,15 @@ class FlightSim:
 
     def step_plant_coupled(self, kin: KinematicsState, atm: AtmosState, aero_out: AeroOut) -> PlantOut:
         dt = kin.dt
-        couple = self.cfg.sim.coupling
+        coup = self.cfg.sim.coupling
 
-        Tguess = self.thermal.get_wall_temp()
+        Tguess = self.thermal.get_state()
         Pguess = self.fluids.get_pressures()
 
         thermal_out: Optional[ThermalOut] = None
         fluid_out: Optional[FluidOut] = None
 
-        for _it in range(couple.max_iters):
+        for _it in range(coup.max_iters):
             fluids_bc = self.fluids.get_internal_thermal_bc()
 
             thermal_out = self.thermal.step_implicit(
@@ -56,7 +57,7 @@ class FlightSim:
             Pguess = Pnew
             Tguess = Tnew
 
-            if dP < couple.tol_P and dT < couple.tol_T:
+            if dP < coup.tol_P and dT < coup.tol_T:
                 break
 
         assert thermal_out is not None and fluid_out is not None
@@ -86,7 +87,6 @@ class FlightSim:
         )
 
     def run(self, h0: float = 0.0, v0: float = 0.01) -> None:
-        
         dt = self.cfg.sim.dt
 
         self.vehicle.mass()

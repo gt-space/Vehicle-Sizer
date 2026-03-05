@@ -1,0 +1,77 @@
+from __future__ import annotations
+from typing import Any, Dict, Tuple
+
+from types import KinematicsState, AtmosState, ThermalOut, AeroOut, FluidOut
+import FluidNetwork
+
+class PropSystem:
+
+    def __init__(self, cfg: Dict[str, Any]):
+        self.cfg = cfg
+        self.model = cfg.get("model", "prop_system")
+
+        # Build network from YAML
+        net_cfg = cfg.get("network", {})
+        self.network = FluidNetwork(
+            nodes=net_cfg.get("nodes", []),
+            branches=net_cfg.get("branches", []),
+            params=cfg.get("params", {}),
+        )
+
+        # Runtime cached outputs (useful for coupling guesses)
+        self._Pox = 0.0
+        self._Pfuel = 0.0
+        self._Pcopv = 0.0
+        self._Pc = 0.0
+
+    def get_pressures(self) -> Tuple[float, float, float]:
+        return (self._Pox, self._Pfuel, self._Pcopv)
+
+    def get_internal_thermal_bc(self) -> Dict[str, Any]:
+        """Return whatever the thermal model needs (bulk temps, internal h, wet area, etc.)."""
+        # TODO: you implement
+        return {}
+
+    def step(
+        self,
+        dt: float,
+        kin: KinematicsState,
+        atm: AtmosState,
+        thermal_out: ThermalOut,
+        aero_out: AeroOut,
+    ) -> FluidOut:
+        """Advance fluids by dt. Use thermal_out.Qdot_to_fluids in your energy balances."""
+        inputs = {
+            "dt": dt,
+            "kin": kin,
+            "atm": atm,
+            "Qdot_to_fluids": thermal_out.Qdot_to_fluids,
+        }
+
+        net_out = self.network.step_implicit(dt, inputs)
+
+        # TODO: thrust, Pc, mdots, dm per tank from net_out
+        thrust = 0.0
+        dm_fuel = 0.0
+        dm_ox = 0.0
+        dm_press = 0.0
+
+        Pc = 0.0
+        Pox = 0.0
+        Pfuel = 0.0
+        Pcopv = 0.0
+
+        # cache for coupling guesses
+        self._Pc, self._Pox, self._Pfuel, self._Pcopv = Pc, Pox, Pfuel, Pcopv
+
+        return FluidOut(
+            thrust=thrust,
+            dm_fuel=dm_fuel,
+            dm_ox=dm_ox,
+            dm_press=dm_press,
+            Pc=Pc,
+            Pox=Pox,
+            Pfuel=Pfuel,
+            Pcopv=Pcopv,
+            Pvec=(Pox, Pfuel, Pcopv),
+        )
