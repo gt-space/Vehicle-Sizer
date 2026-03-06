@@ -1,62 +1,52 @@
 vehicle:
-  OMLD: 0.33655                   # m
-  prop_mass: 300                  # kg
-  dx: 0.01
+  OMLD:                           # m
+  prop_mass:                      # kg
 
 engine: 
-  perfectly_expanded_thrust: 10000 # N
-  chamber_pressure: 2.4e6         # Pa
-  exit_pressure: 5e3              # Pa
+  perfectly_expanded_thrust:      # N
+  chamber_pressure:               # Pa
+  exit_pressure:                  # Pa
   cstar_efficiency: 0.90
   cf_efficiency: 0.95
-  mass: 35
-  length: 0.51
 
 fin_can:
-  fin_area: 0.06                  # m^2
-  fin_thickness: 0.00635          # m
+  fin_area:                       # m^2
+  fin_thickness:                  # m
   fin_count: 4
-  boattail_wall_thickness: 0.003175 # m 
+  boattail_wall_thickness:        # m 
   material: "carbon_fiber_standard"
 
 fuel_tank:
-  passthrough_diameter: 0.05      # m
+  passthrough_diameter:           # m
   ullage_factor: 1.1
   ellipse_ratio: 1.75
   material: "aluminum_6061_t6"
 
-inter_tank:
-  feed_system_mass: 5
-  avi_mass: 1
-  stringer_material: "aluminum_7075_t6"
-  clamshell_wall_thickness: 0.003175
-  clamshell_material: "carbon_fiber_standard"
-
 ox_tank:
-  passthrough_diameter: 0.05      # m
+  passthrough_diameter:           # m
   ullage_factor: 1.1
   ellipse_ratio: 1.75
   material: "aluminum_6061_t6"
 
 press_tank:
   pressurant: "Nitrogen"          # Nitrogen || Helium
-  start_pressure: 3.45e7          # Pa
+  start_pressure:                 # Pa
   start_temp: 300                 # K
   collapse_factor: 1.8
-  pneumatics_pressure: 4.2e6      # Pa
-  airframe_wall_thickness: 0.0032   # m
+  pneumatics_pressure:            # Pa
+  airframe_wall_thickness:        # m
   airframe_material: "carbon_fiber_standard"
-  mount_thickness: 0.0032         # m
+  mount_thickness:                # m
   mount_material: "aluminum_7075_t6"
 
 avi_bay:
-  avi_mass: 1.5                   # kg
+  avi_mass:                       # kg
   clamshell_material: "fiberglass_standard"
   bulkhead_material: "carbon_fiber_standard"
-  ring_material: "aluminum_7075_t6"
+  ring_material: "aluminum_6061_t6"
 
 nosecone:
-  profile: "von_karman"           # von_karman || 
-  fineness_ratio: 12
-  reco_mass: 5                    # kg
+  profile:                        # von_karman || 
+  fineness_ratio: 5
+  reco_mass:                      # kg
   material: "carbon_fiber_standard"
