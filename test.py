@@ -86,11 +86,11 @@ def main():
     ax1.set_ylabel("Mass per slice (kg)")
 
     ax2 = ax1.twinx()
-    ax2.plot(vehicle.station, vehicle.EI, linestyle=":", label="EI", color="blue")
-    ax2.set_ylabel("EI (N·m²)")
+    ax2.plot(vehicle.station, vehicle.lat_area, linestyle=":", label="Lateral Area", color="blue")
+    ax2.set_ylabel("Lateral area (m²)")
 
     fig.legend(loc="upper right")
-    plt.title("Mass, EI, and CG Distribution")
+    plt.title("Mass, Lateral Area, and CG Distribution")
     plt.grid(True)
     plt.show()
 

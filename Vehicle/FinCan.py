@@ -100,5 +100,44 @@ class FinCan(Section):
 
     def get_area(self):
 
-        self.lat_area = np.full(self.n, 1)
-        self.surf_area = self.lat_area
+        r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
+        t = self.cfg["fin_can"]["boattail_wall_thickness"]
+
+        Ae = 0.025
+        r_f_i = np.sqrt(Ae / np.pi)
+        r_f_o = r_f_i + t
+
+        x_local = np.arange(self.n) * self.dx
+
+        r_o = r_s_o + (x_local / self.length) * (r_f_o - r_s_o)
+
+        dr_dx = (r_f_o - r_s_o) / self.length
+        ds = np.sqrt(self.dx**2 + (dr_dx * self.dx)**2)
+
+        lat_body = 2.0 * r_o * self.dx
+
+        surf_body = 2.0 * np.pi * r_o * ds
+
+        A_fin = self.cfg["fin_can"]["fin_area"]
+        n_fin = self.cfg["fin_can"]["fin_count"]
+
+        total_fin_area = A_fin
+
+        dx = self.dx
+        L = self.length
+
+        n3 = int(self.n / 3)
+
+        h_max = 2 * total_fin_area / L
+
+        fin_heights = np.concatenate([
+            np.linspace(0, h_max, n3),
+            np.full(self.n - 2*n3, h_max),
+            np.linspace(h_max, 0, n3)
+        ])
+
+        lat_fins = 2.0 * fin_heights * dx
+        surf_fins = 2.0 * lat_fins
+
+        self.lat_area = lat_body + lat_fins
+        self.surf_area = surf_body + surf_fins

@@ -25,7 +25,6 @@ class Nosecone(Section):
 
         R = self.OMLD * 0.5
         x = (np.arange(self.n) + 0.5) * self.dx
-        #x = np.full(self.n, 1)
         self.radius = self._get_vk_profile(x, self.length, R)
         self.surf_area = 2 * np.pi * self.radius * self.dx
 
@@ -73,7 +72,7 @@ class Nosecone(Section):
 
         return r
     
-    @staticmethod
-    def _get_power_series(x, L, R, n)
+    #@staticmethod
+    #def _get_power_series(x, L, R, n):
         
         
