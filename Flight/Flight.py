@@ -2,9 +2,9 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Optional
 
-from ..types import KinematicsState, PlantOut
-from .config import RootConfig 
-from ..types import AtmosState, AeroOut, ThermalOut, FluidOut, PlantOut
+from types import KinematicsState, PlantOut
+from types import AtmosState, AeroOut, ThermalOut, FluidOut, PlantOut
+import PropSystem
 
 class FlightSim:
 
@@ -34,7 +34,7 @@ class FlightSim:
         for _it in range(couple.max_iters):
             fluids_bc = self.fluids.get_internal_thermal_bc()
 
-            thermal_out = self.thermal.step_implicit(
+            thermal_out = PropSystem.step(
                 dt=dt,
                 heat_bc=aero_out.heat_bc,
                 fluids_bc=fluids_bc,

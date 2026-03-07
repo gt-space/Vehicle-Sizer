@@ -2,6 +2,7 @@ import numpy as np
 import matproplib as mp
 from CoolProp.CoolProp import PropsSI
 from Vehicle.Section import Section
+from Flight import PropSystem
 
 class PropTank(Section):
 
@@ -15,6 +16,9 @@ class PropTank(Section):
         self.prop_mass = prop_mass
         self.material = material
         self.medium = medium
+        self.P_ull0 = cfg["P_ull0"]
+        self.T_ull0 = cfg["T_ull0"]
+        self.gas = cfg.get("pressurant", "Helium") 
 
     def get_mass(self):
 
@@ -64,26 +68,23 @@ class PropTank(Section):
         return m
 
     def _get_pressure(self):
-
+        
         return 1e6
 
-    def _get_volume(self):
+    def get_tank_volume(self) -> float:
+        # Sized using initial ullage pressure and temperature 
+        return self.liquid_capacity() * self.ullage_factor
 
-        if self.medium == "oxygen":
+    def liquid_density(self, T_liq: float, P_liq: float) -> float:
+        return PropsSI("D", "T", T_liq, "P", P_liq, self.medium)
 
-            rho = 1100
+    def liquid_capacity(self) -> float:
+        # Required liquid volume of tank, not to be confused with dynamic volume tracking
+        rho = self.liquid_density(self.T_ull0, self.P_ull0)
+        return self.prop_mass / rho
 
-        elif self.medium == "n-Dodecane":
-
-            rho = 804
-
-        T = 300
-        p = self._get_pressure()
-        #rho = PropsSI("D", "T", T, "P", p, self.medium)
-        V_prop = self.prop_mass / rho
-
-        self.volume = V_prop * self.ullage_factor
-        self.ullage_volume = self.volume - V_prop
+    def ullage_volume(self, T_liq: float, P_liq: float) -> float:
+        return self.get_tank_volume() - self.liquid_capacity(T_liq, P_liq)
 
     def _get_wall_thickness(self):
 
@@ -97,7 +98,7 @@ class PropTank(Section):
         t_min = 1/16 * 0.0254
         t = max(t, t_min)
 
-        return t
+        return 
     
     def _get_length(self):
 
@@ -143,7 +144,7 @@ class PropTank(Section):
         self.lat_area = np.full(self.n, D * self.dx)
         self.surf_area = self.lat_area * np.pi
 
-    def drain_prop(self):
+    def drain_prop(self, dm):
 
         self.prop_mass = max(self.prop_mass - dm, 0.0)
 
