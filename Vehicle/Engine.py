@@ -6,6 +6,5 @@ class Engine:
 
         self.cfg = cfg
         self.mass = None
-        self.EI = None
 
     def _get_

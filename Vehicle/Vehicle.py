@@ -4,20 +4,20 @@ class Vehicle:
 
     def __init__(self, cfg: dict, sections: list):
 
-        self.cfg = cfg
-        self.sections = sections
+        self.cfg: dict = cfg
+        self.sections: list = sections
 
-        self.station = None
-        self.mass = None
-        self.EI = None
-        self.lat_area = None
-        self.surf_area = None
+        self.station: np.ndarray = None
+        self.mass: np.ndarray = None
+        self.EI: np.ndarray = None
+        self.lat_area: np.ndarray = None
+        self.surf_area: np.ndarray = None
 
-        self.length = None
-        self.total_mass = None
-        self.cg = None
-        self.Ixx = None
-        self.Iyy = None
+        self.length: float = None
+        self.total_mass: float = None
+        self.cg: float = None
+        self.Ixx: float = None
+        self.Iyy: float = None
 
     def build(self):
 
@@ -48,6 +48,7 @@ class Vehicle:
         self.mass = np.concatenate([sec.mass for sec in self.sections])
         self.EI = np.concatenate([sec.EI for sec in self.sections])
         self.lat_area = np.concatenate([sec.lat_area for sec in self.sections])
+        self.surf_area = np.concatenate([sec.surf_area for sec in self.sections])
 
     def _get_mass_properties(self):
         

@@ -47,15 +47,15 @@ def main():
 
     s4 = FinCan(cfg)
 
-    s5 = PropTank(cfg, medium="oxygen", prop_mass=200, material="aluminum_6061_t6", passthrough_diameter=0.052, ellipse_ratio=1.5, ullage_factor=1.1)
-    s6 = PropTank(cfg, medium="n-Dodecane", prop_mass=100, material="aluminum_6061_t6", passthrough_diameter=0.05, ellipse_ratio=1.5, ullage_factor=1.1)
+    #s5 = PropTank(cfg, medium="oxygen", prop_mass=200, material="aluminum_6061_t6", passthrough_diameter=0.052, ellipse_ratio=1.5, ullage_factor=1.1)
+    #s6 = PropTank(cfg, medium="n-Dodecane", prop_mass=100, material="aluminum_6061_t6", passthrough_diameter=0.05, ellipse_ratio=1.5, ullage_factor=1.1)
 
     L7 = 0.36
     P7 = 15000.0
     M7 = 7000.0
     s7 = InterTank(cfg, L7, P7, M7)
 
-    sections = [s8, s2, s1, s5, s3, s6, s7, s4]
+    sections = [s8, s2, s1, s3, s7, s4]
 
     # -------------------------------------------------
     # Build Vehicle

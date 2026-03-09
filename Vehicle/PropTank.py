@@ -98,13 +98,13 @@ class PropTank(Section):
         t_min = 1/16 * 0.0254
         t = max(t, t_min)
 
-        return 
+        return t
     
     def _get_length(self):
 
         D = self.OMLD
         D_pass = self.passthrough_diameter
-        self._get_volume()
+        self.get_tank_volume()
         self.wall_thickness = self._get_wall_thickness()
 
         V_end = (np.pi / (12 * self.ellipse_ratio)) * (D - (2 * self.wall_thickness))**3

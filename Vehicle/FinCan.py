@@ -141,3 +141,6 @@ class FinCan(Section):
 
         self.lat_area = lat_body + lat_fins
         self.surf_area = surf_body + surf_fins
+
+        self.lat_area_fins = lat_fins
+        self.lat_area_body = lat_body

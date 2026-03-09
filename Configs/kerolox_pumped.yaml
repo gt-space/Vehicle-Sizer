@@ -1,6 +1,7 @@
 vehicle:
-  OMLD:                           # m
+  OMLD: 0.35                           # m
   prop_mass:                      # kg
+  dx: 0.01
 
 engine: 
   perfectly_expanded_thrust:      # N
@@ -8,6 +9,7 @@ engine:
   exit_pressure:                  # Pa
   cstar_efficiency: 0.90
   cf_efficiency: 0.95
+  length: 
 
 fin_can:
   fin_area:                       # m^2

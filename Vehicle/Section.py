@@ -1,28 +1,28 @@
 from abc import ABC, abstractmethod
+import numpy as np
 
 class Section(ABC):
 
     def __init__(self, cfg: dict):
 
-        self.cfg = cfg
+        self.cfg: dict = cfg
         
-        self.dx = cfg["vehicle"]["dx"]
-        self.length = None
-        self.n = None
+        self.dx: float = cfg["vehicle"]["dx"]
+        self.length: float = None
+        self.n: int = None
 
-        self.station = None
-        self.start_station = None
-        self.end_station = None
+        self.station: np.ndarray = None
+        self.start_station: float = None
+        self.end_station: float = None
 
-        self.ax_load = None
-        self.bending_moment = None
+        self.ax_load: float = None
+        self.bending_moment: float = None
 
-        self.mass = None
-        self.EI = None
+        self.mass: np.ndarray = None
+        self.EI: np.ndarray = None
 
-        self.lat_area = None
-        self.surf_area = None
-        self.radius = None
+        self.lat_area: np.ndarray = None
+        self.surf_area: np.ndarray = None
 
     def build(self):
         
