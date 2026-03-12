@@ -15,7 +15,7 @@ class AviBay(Section):
         
         mass = self._get_bulkhead_mass() + self.cfg["avi_bay"]["avi_mass"]
 
-    def _get_bulkhead_mass(self):
+    def _get_bulkhead_mass(self) -> float:
         
         a = 9.81 * 10.0
         P = self.cfg["avi_bay"]["avi_mass"] * a
@@ -36,7 +36,7 @@ class AviBay(Section):
 
         return m
 
-    def _get_bulkhead_thickness(self, P, r, nu, sigma):
+    def _get_bulkhead_thickness(self, P, r, nu, sigma) -> float:
 
         FOS = 1.5
 
@@ -53,3 +53,5 @@ class AviBay(Section):
     def get_EI(self):
 
     def get_area(self):
+
+    def get_CNa (self):

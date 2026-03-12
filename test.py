@@ -5,7 +5,7 @@ from Vehicle.Vehicle import Vehicle
 from Vehicle.InterTank import InterTank
 from Vehicle.PressTank import PressTank
 from Vehicle.FinCan import FinCan
-from Vehicle.PropTank import PropTank
+#clfrom Vehicle.PropTank import PropTank
 from Vehicle.Nosecone import Nosecone
 from Vehicle.COPV import COPV
 from Configs.loader import load_config
@@ -62,6 +62,7 @@ def main():
     # -------------------------------------------------
     vehicle = Vehicle(cfg, sections)
     vehicle.build()
+    vehicle.get_CNa(M=3, alpha=0.1)
 
     # -------------------------------------------------
     # Print Results
@@ -86,11 +87,11 @@ def main():
     ax1.set_ylabel("Mass per slice (kg)")
 
     ax2 = ax1.twinx()
-    ax2.plot(vehicle.station, vehicle.lat_area, linestyle=":", label="Lateral Area", color="blue")
-    ax2.set_ylabel("Lateral area (m²)")
+    ax2.plot(vehicle.station, vehicle.CNa, linestyle=":", label="CNa", color="blue")
+    ax2.set_ylabel("CNa")
 
     fig.legend(loc="upper right")
-    plt.title("Mass, Lateral Area, and CG Distribution")
+    plt.title("Mass, CNa, and CG Distribution")
     plt.grid(True)
     plt.show()
 

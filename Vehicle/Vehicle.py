@@ -12,6 +12,7 @@ class Vehicle:
         self.EI: np.ndarray = None
         self.lat_area: np.ndarray = None
         self.surf_area: np.ndarray = None
+        self.CNa: np.ndarray = None
 
         self.length: float = None
         self.total_mass: float = None
@@ -23,7 +24,7 @@ class Vehicle:
 
         self._stack_sections()
         self._assemble_vectors()
-        self._get_mass_properties()
+        self.get_mass_properties()
 
     def _stack_sections(self):
 
@@ -35,7 +36,6 @@ class Vehicle:
 
             sec.start_station = x_current
             sec.end_station = x_current + sec.length
-
             sec.station = sec.start_station + np.arange(sec.n) * sec.dx
 
             x_current = sec.end_station
@@ -50,9 +50,16 @@ class Vehicle:
         self.lat_area = np.concatenate([sec.lat_area for sec in self.sections])
         self.surf_area = np.concatenate([sec.surf_area for sec in self.sections])
 
-    def _get_mass_properties(self):
+    def get_mass_properties(self):
         
         self.total_mass = np.sum(self.mass)
         self.cg = np.sum(self.mass * self.station) / self.total_mass
+
+    def get_CNa(self, M: float, alpha: float):
+
+        for sec in self.sections:
+            sec.get_CNa(M, alpha)
+
+        self.CNa = np.concatenate([sec.CNa for sec in self.sections])
 
     # def update(self):

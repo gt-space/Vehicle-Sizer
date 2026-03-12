@@ -17,7 +17,7 @@ class PressTank(Section):
         mass = self._get_mount_mass() + self._get_airframe_mass() + self.copv.mass
         self.mass = np.full(self.n, mass / self.n)
 
-    def _get_mount_mass(self):
+    def _get_mount_mass(self) -> float:
 
         mat = mp.db.get_material(self.cfg["press_tank"]["mount_material"])
         T = 400.0
@@ -39,7 +39,7 @@ class PressTank(Section):
 
         return m
 
-    def _get_airframe_mass(self):
+    def _get_airframe_mass(self) -> float:
 
         t = self.cfg["press_tank"]["airframe_wall_thickness"]
         r_o = self.cfg["vehicle"]["OMLD"] * 0.5
@@ -76,3 +76,12 @@ class PressTank(Section):
         D = self.cfg["vehicle"]["OMLD"]
         self.lat_area = np.full(self.n, D * self.dx)
         self.surf_area = self.lat_area * np.pi
+
+    def get_CNa(self, M: float, alpha: float):
+
+        K = 1.1
+        P = self.get_comp_factor(M)
+        A_plan = self.length * self.cfg["vehicle"]["OMLD"]
+        CNa = K * P * (A_plan / self.ref_area) * (np.sin(alpha)**2 / alpha)
+
+        self.CNa = self.distribute(CNa, self.lat_area)

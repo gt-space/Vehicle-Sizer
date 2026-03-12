@@ -21,7 +21,7 @@ class Nosecone(Section):
 
         self.mass = shell_mass + self.reco_mass
 
-    def _get_shell_mass(self):
+    def _get_shell_mass(self) -> float:
 
         R = self.OMLD * 0.5
         x = (np.arange(self.n) + 0.5) * self.dx
@@ -62,8 +62,12 @@ class Nosecone(Section):
 
         self.lat_area = 2 * r * self.dx
 
+    def get_CNa(self, M, alpha):
+        CNa = 2 * self.get_comp_factor(M)
+        self.CNa = self.distribute(CNa, self.lat_area)
+
     @staticmethod
-    def _get_vk_profile(x, L, R):
+    def _get_vk_profile(x, L, R) -> np.ndarray:
 
         theta = np.arccos(1 - 2 * x / L)
         r = (R / np.sqrt(np.pi)) * np.sqrt(
@@ -73,6 +77,4 @@ class Nosecone(Section):
         return r
     
     #@staticmethod
-    #def _get_power_series(x, L, R, n):
-        
-        
+    #def _get_power_series(x, L, R, n) -> np.ndarray:

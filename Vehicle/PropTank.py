@@ -27,7 +27,7 @@ class PropTank(Section):
         self.dry_mass = np.full(self.n, dry_mass / self.n)
         self.mass = self.dry_mass
 
-    def _get_dry_mass(self):
+    def _get_dry_mass(self) -> float:
 
         D = self.OMLD
         D_pass = self.passthrough_diameter
@@ -143,6 +143,15 @@ class PropTank(Section):
         D = self.OMLD
         self.lat_area = np.full(self.n, D * self.dx)
         self.surf_area = self.lat_area * np.pi
+
+    def get_CNa(self, M: float, alpha: float):
+
+        K = 1.1
+        P = self.get_comp_factor(M)
+        A_plan = self.length * self.cfg["vehicle"]["OMLD"]
+        CNa = K * P * (A_plan / self.ref_area) * (np.sin(alpha)**2 / alpha)
+
+        self.CNa = self.distribute(CNa, self.lat_area)
 
     def drain_prop(self, dm):
 

@@ -24,6 +24,9 @@ class Section(ABC):
         self.lat_area: np.ndarray = None
         self.surf_area: np.ndarray = None
 
+        self.ref_area: float = 1.0
+        self.CNa: np.ndarray = None
+
     def build(self):
         
         self.get_mass()
@@ -41,3 +44,23 @@ class Section(ABC):
     @abstractmethod
     def get_area(self):
         pass
+
+    @abstractmethod
+    def get_CNa(self, M: float, alpha: float):
+        pass
+
+    @staticmethod
+    def distribute(C: float, vec: np.ndarray) -> np.ndarray:
+        return C * (vec / np.sum(vec))
+
+    @staticmethod
+    def get_comp_factor(M: float) -> float:
+
+        if M <= 0.8:
+            return 1 / np.sqrt(1 - M**2)
+
+        elif M < np.sqrt(34 / 5):
+            return 1 / np.sqrt(1 - 0.8**2)
+
+        else:
+            return 1 / np.sqrt(M**2 - 1)
