@@ -6,6 +6,8 @@ class Vehicle:
 
         self.cfg: dict = cfg
         self.sections: list = sections
+        self.dx: float = cfg["vehicle"]["dx"]
+        self.n: int = None
 
         self.station: np.ndarray = None
         self.mass: np.ndarray = None
@@ -17,6 +19,7 @@ class Vehicle:
         self.length: float = None
         self.total_mass: float = None
         self.cg: float = None
+        self.cp: float = None
         self.Ixx: float = None
         self.Iyy: float = None
 
@@ -41,6 +44,7 @@ class Vehicle:
             x_current = sec.end_station
 
         self.length = x_current
+        self.n = int(np.ceil(self.length / self.dx))
 
     def _assemble_vectors(self):
 
@@ -61,5 +65,6 @@ class Vehicle:
             sec.get_CNa(M, alpha)
 
         self.CNa = np.concatenate([sec.CNa for sec in self.sections])
+        self.cp = np.sum(self.CNa * self.station) / np.sum(self.CNa)
 
     # def update(self):

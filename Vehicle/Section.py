@@ -21,6 +21,9 @@ class Section(ABC):
         self.mass: np.ndarray = None
         self.EI: np.ndarray = None
 
+        self.Ixx: float = None
+        self.Iyy: float = None
+
         self.lat_area: np.ndarray = None
         self.surf_area: np.ndarray = None
 

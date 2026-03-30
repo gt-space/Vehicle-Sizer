@@ -148,12 +148,19 @@ class FinCan(Section):
     def get_CNa(self, M: float, alpha: float):
 
         P = self.get_comp_factor(M)
-        CNa1 = 1
-        Kfb = 1
 
-        N = 4
+        Cr = self.length
+        Ct = Cr / 3
+        s = (3 * self.cfg["fin_can"]["fin_area"]) / (2 * Cr)
+        N = self.cfg["fin_can"]["fin_count"]
+        R_ref = self.cfg["vehicle"]["OMLD"] * 0.5
+        Kfb = 1 + (R_ref / (s + R_ref))
+
+        CNa1 = (4 * N * (s / (R_ref * 2))**2) / (1 + np.sqrt(1 + (s / (Cr + Ct))**2))
+
         fin_CNa = P * (N * 0.5) * Kfb * CNa1
-        tail_CNa = 1
+        A_exit = 0.75
+        tail_CNa = P * (2 / self.ref_area) * (A_exit - self.ref_area) * (np.sin(alpha) / alpha)
 
         fin_vec = self.distribute(fin_CNa, self.lat_area_fins)
         tail_vec = self.distribute(tail_CNa, self.lat_area_body)

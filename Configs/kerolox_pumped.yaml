@@ -13,7 +13,7 @@ engine:
   mass: 30
 
 fin_can:
-  fin_area: 0.08                      # m^2
+  fin_area: 0.065                      # m^2
   fin_thickness: 0.006604                 # m
   fin_count: 4
   boattail_wall_thickness: 0.00318        # m 
@@ -37,7 +37,6 @@ inter_tank:
   stringer_material: "aluminum_7075_t6"
   feed_system_mass: 5
   avi_mass: 2
-
 
 press_tank:
   pressurant: "Nitrogen"          # Nitrogen || Helium
