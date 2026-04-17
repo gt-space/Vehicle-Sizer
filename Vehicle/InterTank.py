@@ -57,7 +57,7 @@ class InterTank(Section):
 
         return m, a
     
-    def _get_stringer_thickness(self, P, M, sigma, E) -> float:
+    def _get_stringer_thickness(self, P: float, M: float, sigma: float, E: float) -> float:
 
         r = self.cfg["vehicle"]["OMLD"] * 0.5
         FOS = 1.5
@@ -109,7 +109,7 @@ class InterTank(Section):
 
         return EI
 
-    def _get_stringer_EI(self, a) -> float:
+    def _get_stringer_EI(self, a: float) -> float:
 
         r_o = self.cfg["vehicle"]["OMLD"] * 0.5
         t = self.cfg["inter_tank"]["clamshell_wall_thickness"]

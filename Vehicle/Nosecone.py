@@ -57,12 +57,12 @@ class Nosecone(Section):
     def get_area(self):
         self.lat_area = 2 * self.radius * self.dx
 
-    def get_CNa(self, M, alpha):
+    def get_CNa(self, M: float, alpha: float):
         CNa = 2 * self.get_comp_factor(M)
         self.CNa = self.distribute(CNa, self.lat_area)
 
     @staticmethod
-    def _get_vk_profile(x, L, R) -> np.ndarray:
+    def _get_vk_profile(x: np.ndarray, L: float, R: float) -> np.ndarray:
 
         theta = np.arccos(1 - 2 * x / L)
         r = (R / np.sqrt(np.pi)) * np.sqrt(
@@ -72,7 +72,7 @@ class Nosecone(Section):
         return r
     
     @staticmethod
-    def _get_power_series(x, L, R, n) -> np.ndarray:
+    def _get_power_series(x: np.ndarray, L: float, R: float, n: float) -> np.ndarray:
 
         xi = np.clip(x / L, 0.0, 1.0)
         r = R * xi**n

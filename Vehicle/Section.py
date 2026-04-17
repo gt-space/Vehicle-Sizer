@@ -27,7 +27,7 @@ class Section(ABC):
         self.lat_area: np.ndarray = None
         self.surf_area: np.ndarray = None
 
-        self.ref_area: float = 1.0
+        self.ref_area: float = 1
         self.CNa: np.ndarray = None
 
     def build(self):

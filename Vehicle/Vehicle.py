@@ -5,6 +5,7 @@ class Vehicle:
     def __init__(self, cfg: dict, sections: list):
 
         self.cfg: dict = cfg
+        #self.engine = engine
         self.sections: list = sections
         self.dx: float = cfg["vehicle"]["dx"]
         self.n: int = None

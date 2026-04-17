@@ -153,7 +153,7 @@ class PropTank(Section):
 
         self.CNa = self.distribute(CNa, self.lat_area)
 
-    def drain_prop(self, dm):
+    def drain_prop(self, dm: float):
 
         self.prop_mass = max(self.prop_mass - dm, 0.0)
 
