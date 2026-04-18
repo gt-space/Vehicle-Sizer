@@ -20,7 +20,7 @@ class FinCan(Section):
         boattail_mass = self._get_boattail_mass_distribution()
         self.mass = const_mass + boattail_mass
     
-    def _get_fin_mass(self):
+    def _get_fin_mass(self) -> float:
 
         A = self.cfg["fin_can"]["fin_area"]
         t = self.cfg["fin_can"]["fin_thickness"]
@@ -33,7 +33,7 @@ class FinCan(Section):
 
         return m
 
-    def _get_boattail_mass(self):
+    def _get_boattail_mass(self) -> float:
 
         r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
         t = self.cfg["fin_can"]["boattail_wall_thickness"]
@@ -53,7 +53,7 @@ class FinCan(Section):
 
         return m
     
-    def _get_boattail_mass_distribution(self):
+    def _get_boattail_mass_distribution(self) -> np.ndarray:
 
         r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
         t = self.cfg["fin_can"]["boattail_wall_thickness"]
@@ -141,3 +141,28 @@ class FinCan(Section):
 
         self.lat_area = lat_body + lat_fins
         self.surf_area = surf_body + surf_fins
+
+        self.lat_area_fins = lat_fins
+        self.lat_area_body = lat_body
+
+    def get_CNa(self, M: float, alpha: float):
+
+        P = self.get_comp_factor(M)
+
+        Cr = self.length
+        Ct = Cr / 3
+        s = (3 * self.cfg["fin_can"]["fin_area"]) / (2 * Cr)
+        N = self.cfg["fin_can"]["fin_count"]
+        R_ref = self.cfg["vehicle"]["OMLD"] * 0.5
+        Kfb = 1 + (R_ref / (s + R_ref))
+
+        CNa1 = (4 * N * (s / (R_ref * 2))**2) / (1 + np.sqrt(1 + (s / (Cr + Ct))**2))
+
+        fin_CNa = P * (N * 0.5) * Kfb * CNa1
+        A_exit = 0.75
+        tail_CNa = P * (2 / self.ref_area) * (A_exit - self.ref_area) * (np.sin(alpha) / alpha)
+
+        fin_vec = self.distribute(fin_CNa, self.lat_area_fins)
+        tail_vec = self.distribute(tail_CNa, self.lat_area_body)
+
+        self.CNa = fin_vec + tail_vec

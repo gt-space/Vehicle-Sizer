@@ -28,7 +28,7 @@ class PropTank(Section):
         self.dry_mass = np.full(self.n, dry_mass / self.n)
         self.mass = self.dry_mass
 
-    def _get_dry_mass(self):
+    def _get_dry_mass(self) -> float:
 
         D = self.OMLD
         D_pass = self.passthrough_diameter
@@ -99,13 +99,13 @@ class PropTank(Section):
         t_min = 1/16 * 0.0254
         t = max(t, t_min)
 
-        return 
+        return t
     
     def _get_length(self):
 
         D = self.OMLD
         D_pass = self.passthrough_diameter
-        self._get_volume()
+        self.get_tank_volume()
         self.wall_thickness = self._get_wall_thickness()
 
         V_end = (np.pi / (12 * self.ellipse_ratio)) * (D - (2 * self.wall_thickness))**3
@@ -145,7 +145,16 @@ class PropTank(Section):
         self.lat_area = np.full(self.n, D * self.dx)
         self.surf_area = self.lat_area * np.pi
 
-    def drain_prop(self, dm):
+    def get_CNa(self, M: float, alpha: float):
+
+        K = 1.1
+        P = self.get_comp_factor(M)
+        A_plan = self.length * self.cfg["vehicle"]["OMLD"]
+        CNa = K * P * (A_plan / self.ref_area) * (np.sin(alpha)**2 / alpha)
+
+        self.CNa = self.distribute(CNa, self.lat_area)
+
+    def drain_prop(self, dm: float):
 
         self.prop_mass = max(self.prop_mass - dm, 0.0)
 

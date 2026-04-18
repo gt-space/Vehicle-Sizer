@@ -1,5 +1,5 @@
-import numpy as np
 from __future__ import annotations
+import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 from .types import KinematicsState, AtmosState, ThermalOut, AeroOut, FluidOut

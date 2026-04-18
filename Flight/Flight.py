@@ -17,8 +17,8 @@ class FlightSim:
         self.vehicle = vehicle
 
     def on_rail(self, h: float) -> bool:
-        L = self.cfg.launch.launch_rail_length
-        h0 = self.cfg.launch.launch_altitude
+        L = self.cfg.launch.rail_length
+        h0 = self.cfg.launch.altitude
         return h < (h0 + L)
 
     def step_plant_coupled(self, kin: KinematicsState, atm: AtmosState, aero_out: AeroOut) -> PlantOut:

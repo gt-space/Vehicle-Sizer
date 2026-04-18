@@ -4,26 +4,31 @@ class Vehicle:
 
     def __init__(self, cfg: dict, sections: list):
 
-        self.cfg = cfg
-        self.sections = sections
+        self.cfg: dict = cfg
+        #self.engine = engine
+        self.sections: list = sections
+        self.dx: float = cfg["vehicle"]["dx"]
+        self.n: int = None
 
-        self.station = None
-        self.mass = None
-        self.EI = None
-        self.lat_area = None
-        self.surf_area = None
+        self.station: np.ndarray = None
+        self.mass: np.ndarray = None
+        self.EI: np.ndarray = None
+        self.lat_area: np.ndarray = None
+        self.surf_area: np.ndarray = None
+        self.CNa: np.ndarray = None
 
-        self.length = None
-        self.total_mass = None
-        self.cg = None
-        self.Ixx = None
-        self.Iyy = None
+        self.length: float = None
+        self.total_mass: float = None
+        self.cg: float = None
+        self.cp: float = None
+        self.Ixx: float = None
+        self.Iyy: float = None
 
     def build(self):
 
         self._stack_sections()
         self._assemble_vectors()
-        self._get_mass_properties()
+        self.get_mass_properties()
 
     def _stack_sections(self):
 
@@ -35,12 +40,12 @@ class Vehicle:
 
             sec.start_station = x_current
             sec.end_station = x_current + sec.length
-
             sec.station = sec.start_station + np.arange(sec.n) * sec.dx
 
             x_current = sec.end_station
 
         self.length = x_current
+        self.n = int(np.ceil(self.length / self.dx))
 
     def _assemble_vectors(self):
 
@@ -48,10 +53,19 @@ class Vehicle:
         self.mass = np.concatenate([sec.mass for sec in self.sections])
         self.EI = np.concatenate([sec.EI for sec in self.sections])
         self.lat_area = np.concatenate([sec.lat_area for sec in self.sections])
+        self.surf_area = np.concatenate([sec.surf_area for sec in self.sections])
 
-    def _get_mass_properties(self):
+    def get_mass_properties(self):
         
         self.total_mass = np.sum(self.mass)
         self.cg = np.sum(self.mass * self.station) / self.total_mass
+
+    def get_CNa(self, M: float, alpha: float):
+
+        for sec in self.sections:
+            sec.get_CNa(M, alpha)
+
+        self.CNa = np.concatenate([sec.CNa for sec in self.sections])
+        self.cp = np.sum(self.CNa * self.station) / np.sum(self.CNa)
 
     # def update(self):

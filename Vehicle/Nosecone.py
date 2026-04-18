@@ -8,7 +8,7 @@ class Nosecone(Section):
         
         super().__init__(cfg)
         self.OMLD = self.cfg["vehicle"]["OMLD"]
-        self.fineness_ratio = 5
+        self.fineness_ratio = self.cfg['nosecone']["fineness_ratio"]
         self.length = self.OMLD * self.fineness_ratio
         self.n = int(np.ceil(self.length / self.dx))
 
@@ -21,11 +21,12 @@ class Nosecone(Section):
 
         self.mass = shell_mass + self.reco_mass
 
-    def _get_shell_mass(self):
+    def _get_shell_mass(self) -> float:
 
         R = self.OMLD * 0.5
         x = (np.arange(self.n) + 0.5) * self.dx
-        self.radius = self._get_vk_profile(x, self.length, R)
+        self.radius = self._get_power_series(x, self.length, R, n=0.66)
+        #self.radius = self._get_vk_profile(x, self.length, R)
         self.surf_area = 2 * np.pi * self.radius * self.dx
 
         self.wall_thickness = 0.0032
@@ -54,16 +55,14 @@ class Nosecone(Section):
         self.EI = E * I
 
     def get_area(self):
+        self.lat_area = 2 * self.radius * self.dx
 
-        R = self.OMLD * 0.5
-        x = (np.arange(self.n) + 0.5) * self.dx
-
-        r = self._get_vk_profile(x, self.length, R)
-
-        self.lat_area = 2 * r * self.dx
+    def get_CNa(self, M: float, alpha: float):
+        CNa = 2 * self.get_comp_factor(M)
+        self.CNa = self.distribute(CNa, self.lat_area)
 
     @staticmethod
-    def _get_vk_profile(x, L, R):
+    def _get_vk_profile(x: np.ndarray, L: float, R: float) -> np.ndarray:
 
         theta = np.arccos(1 - 2 * x / L)
         r = (R / np.sqrt(np.pi)) * np.sqrt(
@@ -72,7 +71,10 @@ class Nosecone(Section):
 
         return r
     
-    #@staticmethod
-    #def _get_power_series(x, L, R, n):
+    @staticmethod
+    def _get_power_series(x: np.ndarray, L: float, R: float, n: float) -> np.ndarray:
+
+        xi = np.clip(x / L, 0.0, 1.0)
+        r = R * xi**n
         
-        
+        return r

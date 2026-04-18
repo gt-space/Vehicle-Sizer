@@ -1,28 +1,34 @@
 from abc import ABC, abstractmethod
+import numpy as np
 
 class Section(ABC):
 
     def __init__(self, cfg: dict):
 
-        self.cfg = cfg
+        self.cfg: dict = cfg
         
-        self.dx = cfg["vehicle"]["dx"]
-        self.length = None
-        self.n = None
+        self.dx: float = cfg["vehicle"]["dx"]
+        self.length: float = None
+        self.n: int = None
 
-        self.station = None
-        self.start_station = None
-        self.end_station = None
+        self.station: np.ndarray = None
+        self.start_station: float = None
+        self.end_station: float = None
 
-        self.ax_load = None
-        self.bending_moment = None
+        self.ax_load: float = None
+        self.bending_moment: float = None
 
-        self.mass = None
-        self.EI = None
+        self.mass: np.ndarray = None
+        self.EI: np.ndarray = None
 
-        self.lat_area = None
-        self.surf_area = None
-        self.radius = None
+        self.Ixx: float = None
+        self.Iyy: float = None
+
+        self.lat_area: np.ndarray = None
+        self.surf_area: np.ndarray = None
+
+        self.ref_area: float = 1
+        self.CNa: np.ndarray = None
 
     def build(self):
         
@@ -41,3 +47,23 @@ class Section(ABC):
     @abstractmethod
     def get_area(self):
         pass
+
+    @abstractmethod
+    def get_CNa(self, M: float, alpha: float):
+        pass
+
+    @staticmethod
+    def distribute(C: float, vec: np.ndarray) -> np.ndarray:
+        return C * (vec / np.sum(vec))
+
+    @staticmethod
+    def get_comp_factor(M: float) -> float:
+
+        if M <= 0.8:
+            return 1 / np.sqrt(1 - M**2)
+
+        elif M < np.sqrt(34 / 5):
+            return 1 / np.sqrt(1 - 0.8**2)
+
+        else:
+            return 1 / np.sqrt(M**2 - 1)

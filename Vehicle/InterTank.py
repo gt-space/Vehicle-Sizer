@@ -22,7 +22,7 @@ class InterTank(Section):
         mass = self._get_clamshell_mass() + stringer_mass + feed_system_mass + avi_mass
         self.mass = np.full(self.n, mass / self.n)
 
-    def _get_clamshell_mass(self):
+    def _get_clamshell_mass(self) -> float:
 
         t = self.cfg["inter_tank"]["clamshell_wall_thickness"]
         r_o = self.cfg["vehicle"]["OMLD"] * 0.5
@@ -39,7 +39,7 @@ class InterTank(Section):
 
         return m
 
-    def _get_stringer_mass(self):
+    def _get_stringer_mass(self) -> float:
         
         T = 350.0
         mat = mp.db.get_material(self.cfg["inter_tank"]["stringer_material"])
@@ -57,7 +57,7 @@ class InterTank(Section):
 
         return m, a
     
-    def _get_stringer_thickness(self, P, M, sigma, E):
+    def _get_stringer_thickness(self, P: float, M: float, sigma: float, E: float) -> float:
 
         r = self.cfg["vehicle"]["OMLD"] * 0.5
         FOS = 1.5
@@ -94,7 +94,7 @@ class InterTank(Section):
         EI = self._get_clamshell_EI() + self._get_stringer_EI(self.stringer_thickness)
         self.EI = np.full(self.n, EI)
 
-    def _get_clamshell_EI(self):
+    def _get_clamshell_EI(self) -> float:
 
         r_o = self.cfg["vehicle"]["OMLD"] * 0.5
 
@@ -109,7 +109,7 @@ class InterTank(Section):
 
         return EI
 
-    def _get_stringer_EI(self, a):
+    def _get_stringer_EI(self, a: float) -> float:
 
         r_o = self.cfg["vehicle"]["OMLD"] * 0.5
         t = self.cfg["inter_tank"]["clamshell_wall_thickness"]
@@ -130,3 +130,12 @@ class InterTank(Section):
         D = self.cfg["vehicle"]["OMLD"]
         self.lat_area = np.full(self.n, D * self.dx)
         self.surf_area = self.lat_area * np.pi
+
+    def get_CNa(self, M: float, alpha: float):
+
+        K = 1.1
+        P = self.get_comp_factor(M)
+        A_plan = self.length * self.cfg["vehicle"]["OMLD"]
+        CNa = K * P * (A_plan / self.ref_area) * (np.sin(alpha)**2 / alpha)
+        
+        self.CNa = self.distribute(CNa, self.lat_area)
