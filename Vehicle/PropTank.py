@@ -6,19 +6,20 @@ from Flight import PropSystem
 
 class PropTank(Section):
 
-    def __init__(self, cfg: dict, medium: str, prop_mass: float, material: str, passthrough_diameter: float, ellipse_ratio: float, ullage_factor: float):
+    def __init__(self, cfg: dict, medium: str, prop_mass: float, material: str, passthrough_diameter: float, ellipse_ratio: float, ullage_factor: float, P_liq0: float, T_liq0: float):
         
         super().__init__(cfg)
         self.passthrough_diameter = passthrough_diameter
         self.ellipse_ratio = ellipse_ratio
         self.ullage_factor = ullage_factor
-        self.OMLD = self.cfg["vehicle"]["OMLD"]
+        self.OMLD = cfg["vehicle"]["OMLD"]
         self.prop_mass = prop_mass
         self.material = material
         self.medium = medium
-        self.P_ull0 = cfg["P_ull0"]
-        self.T_ull0 = cfg["T_ull0"]
-        self.gas = cfg.get("pressurant", "Helium") 
+        self.P_liq0 = P_liq0 # Initial ullage pressure
+        self.T_liq0 = T_liq0 # Initial ullage temperature
+        self.gas = cfg.get("pressurant")
+        self.TankVolume = self._tank_volume(self) 
 
     def get_mass(self):
 
@@ -71,20 +72,20 @@ class PropTank(Section):
         
         return 1e6
 
-    def get_tank_volume(self) -> float:
+    def _tank_volume(self) -> float:
         # Sized using initial ullage pressure and temperature 
-        return self.liquid_capacity() * self.ullage_factor
+        return self._liquid_capacity() * self.ullage_factor
 
-    def liquid_density(self, T_liq: float, P_liq: float) -> float:
-        return PropsSI("D", "T", T_liq, "P", P_liq, self.medium)
-
-    def liquid_capacity(self) -> float:
+    def _liquid_capacity(self) -> float:
         # Required liquid volume of tank, not to be confused with dynamic volume tracking
-        rho = self.liquid_density(self.T_ull0, self.P_ull0)
+        rho = self.get_liquid_density(self.T_liq0, self.P_liq0)
         return self.prop_mass / rho
 
-    def ullage_volume(self, T_liq: float, P_liq: float) -> float:
-        return self.get_tank_volume() - self.liquid_capacity(T_liq, P_liq)
+    def get_ullage_volume(self, T_liq: float, P_liq: float, mOX: float) -> float:
+        return self.TankVolume - (mOX / self.get_liquid_density(T_liq, P_liq))
+    
+    def get_liquid_density(self, T_liq: float, P_liq: float) -> float:
+        return PropsSI("D", "T", T_liq, "P", P_liq, self.medium)
 
     def _get_wall_thickness(self):
 
