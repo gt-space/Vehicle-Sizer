@@ -16,11 +16,6 @@ class FlightSim:
         self.fluids = fluids
         self.vehicle = vehicle
 
-    def on_rail(self, h: float) -> bool:
-        L = self.cfg.launch.rail_length
-        h0 = self.cfg.launch.altitude
-        return h < (h0 + L)
-
     def step_plant_coupled(self, kin: KinematicsState, atm: AtmosState, aero_out: AeroOut) -> PlantOut:
         dt = kin.dt
         couple = self.cfg.sim.coupling
@@ -123,3 +118,11 @@ class FlightSim:
             kin = self.step_kinematics_RK4(kin, plant)
 
             # TODO: log
+
+    def on_rail(self, h: float) -> bool:
+        L = self.cfg.launch.rail_length
+        h0 = self.cfg.launch.altitude
+        return h < (h0 + L)
+    
+    def powered(self, T: float) -> bool:
+        return T > 0

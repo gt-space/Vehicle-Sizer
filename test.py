@@ -74,7 +74,7 @@ def main():
     q=100e3
     A=1.0
     alpha_vec=np.full(vehicle.n, 0.1)
-    N=vehicle.CNa*alpha_vec*q*A
+    #N=vehicle.CNa*alpha_vec*q*A
 
     SM = (vehicle.cp - vehicle.cg) / cfg["vehicle"]["OMLD"]
 
