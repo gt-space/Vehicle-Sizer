@@ -44,7 +44,6 @@ class FluidNetwork:
 
     def resolve_network(self, 
                         bcs: Dict[str, Dict[str, Any]], 
-                        controls: Dict[str, Any], 
                         liquid_props: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
 
         unknown_nodes = self._unsolved_nodes(bcs)
@@ -55,7 +54,6 @@ class FluidNetwork:
                 x=x,
                 unknown_nodes=unknown_nodes,
                 bcs=bcs,
-                controls=controls,
                 liquid_props=liquid_props,
             ),
             x0,
@@ -69,7 +67,6 @@ class FluidNetwork:
             x=sol.x,
             unknown_nodes=unknown_nodes,
             bcs=bcs,
-            controls=controls,
             liquid_props=liquid_props,
         )
 
@@ -94,9 +91,9 @@ class FluidNetwork:
             ntype = node["type"]
 
             if nid in bcs:
-                continue
+                continue # Dynamic node boundaries
 
-            if ntype == "boundary_pressure":
+            if ntype == "boundary_pressure": # Ex. ambient pressure node
                 continue
 
             state.append(nid)
@@ -121,7 +118,6 @@ class FluidNetwork:
                          x: np.ndarray,
                          unknown_nodes: List[str],
                          bcs: Dict[str, Dict[str, Any]],
-                         controls: Dict[str, Any],
                          liquid_props: Dict[str, Dict[str, float]]) -> np.ndarray:
 
         node_state = self._build_node_state(x, unknown_nodes, bcs)
@@ -131,7 +127,6 @@ class FluidNetwork:
             mdot, extra = self._branch_mdot(
                 br=br,
                 node_state=node_state,
-                controls=controls,
                 liquid_props=liquid_props,
             )
             br_state[br["id"]] = {"mdot": mdot, **extra}
@@ -163,13 +158,11 @@ class FluidNetwork:
 
         return node_state
 
-    def _eval_branch_mdot(
-        self,
-        br: Dict[str, Any],
-        node_state: Dict[str, Dict[str, Any]],
-        controls: Dict[str, Any],
-        liquid_props: Dict[str, Dict[str, float]],
-    ) -> Tuple[float, Dict[str, Any]]:
+    def _branch_mdot(self,
+                          br: Dict[str, Any],
+                          node_state: Dict[str, Dict[str, Any]],
+                          liquid_props: Dict[str, Dict[str, float]]
+                          ) -> Tuple[float, Dict[str, Any]]:
 
         bid = br["id"]
         btype = br["type"]
@@ -179,55 +172,33 @@ class FluidNetwork:
         P_from = node_state[n_from]["P"]
         P_to = node_state[n_to]["P"]
 
-        valve_mult = self._branch_open_fraction(bid, controls)
-
-        if btype in ("liquid_loss", "injector"):
-            tag = self._fluid_tag_from_branch(bid)
-            rho = liquid_props[tag]["rho"]
-            CdA = br["CdA"]
+        if btype in ("liquid_orifice"):
+            fluid = br["fluid"]       
+            rho = liquid_props[fluid]["rho"]
             dP = P_from - P_to
 
-            mdot = valve_mult * np.sign(dP) * CdA * np.sqrt(max(2.0 * rho * abs(dP), 0.0))
+            mdot = np.sign(dP) * CdA * np.sqrt(max(2.0 * rho * abs(dP), 0.0))
             return mdot, {"dP": dP, "rho": rho}
 
         if btype == "gas_orifice":
-            dP = P_from - P_to
-            rho = br.get("rho_ref", self.params.get("gas_rho_ref", 1.0))
+            fluid = br["fluid"]       
+            rho = liquid_props[fluid]["rho"]
             CdA = br["CdA"]
 
-            # placeholder incompressible-style form
-            # replace later with compressible choked/un-choked gas model
-            mdot = valve_mult * np.sign(dP) * CdA * np.sqrt(max(2.0 * rho * abs(dP), 0.0))
+            mdot = np.sign(dP) * CdA * np.sqrt(max(2.0 * rho * abs(dP), 0.0))
             return mdot, {"dP": dP, "rho": rho}
 
         if btype == "pump":
-            tag = self._fluid_tag_from_branch(bid)
-            rho = liquid_props[tag]["rho"]
-
-            pump_dP = br["dP"]
-            CdA = br.get("CdA", None)
-
-            if CdA is None:
-                raise ValueError(
-                    f"Pump branch '{bid}' needs a flow law as well as dP "
-                    "(or you need to model the pump another way)."
-                )
+            fluid = br["fluid"]       
+            rho = liquid_props[fluid]["rho"]
+            CdA = br["CdA"]
 
             dP_eff = (P_from + pump_dP) - P_to
-            mdot = valve_mult * np.sign(dP_eff) * CdA * np.sqrt(max(2.0 * rho * abs(dP_eff), 0.0))
+            mdot = np.sign(dP_eff) * CdA * np.sqrt(max(2.0 * rho * abs(dP_eff), 0.0))
             return mdot, {"dP_eff": dP_eff, "rho": rho}
 
         raise ValueError(f"Unsupported branch type '{btype}' for branch '{bid}'")
 
-    def _fluid_tag_from_branch(self, branch_id: str) -> str:
-
-        bid = branch_id.upper()
-        if bid.startswith("OX"):
-            return "ox"
-        if bid.startswith("FUEL"):
-            return "fuel"
-        return "gas"
-    
 
     """
     Temp functions to filter out dynamic nodes, eventually should move generalize (support multiple templates) and 
