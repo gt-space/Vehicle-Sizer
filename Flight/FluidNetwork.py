@@ -44,17 +44,17 @@ class FluidNetwork:
 
     def resolve_network(self, 
                         bcs: Dict[str, Dict[str, Any]], 
-                        liquid_props: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
+                        fluid_props: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
 
         unknown_nodes = self._unsolved_nodes(bcs)
-        x0 = self._initial_guess(self, unknown_nodes)
+        x0 = self._initial_guess(unknown_nodes)
 
         sol = root(
             lambda x: self._steady_residual(
                 x=x,
                 unknown_nodes=unknown_nodes,
                 bcs=bcs,
-                liquid_props=liquid_props,
+                fluid_props=fluid_props,
             ),
             x0,
             method="hybr",
@@ -67,7 +67,7 @@ class FluidNetwork:
             x=sol.x,
             unknown_nodes=unknown_nodes,
             bcs=bcs,
-            liquid_props=liquid_props,
+            fluid_props=fluid_props,
         )
 
         return {
@@ -86,8 +86,8 @@ class FluidNetwork:
         """
         state = []
 
-        for node in self.nodes:
-            nid = node["id"]
+        for nid, node in self.nodes.items():
+
             ntype = node["type"]
 
             if nid in bcs:
@@ -118,24 +118,25 @@ class FluidNetwork:
                          x: np.ndarray,
                          unknown_nodes: List[str],
                          bcs: Dict[str, Dict[str, Any]],
-                         liquid_props: Dict[str, Dict[str, float]]) -> np.ndarray:
+                         fluid_props: Dict[str, Dict[str, float]]) -> np.ndarray:
 
         node_state = self._build_node_state(x, unknown_nodes, bcs)
         br_state: Dict[str, Dict[str, Any]] = {}
 
-        for br in self.branches:
+        for bid, br in self.branches.items():
             mdot, extra = self._branch_mdot(
+                bid=bid,
                 br=br,
                 node_state=node_state,
-                liquid_props=liquid_props,
+                fluid_props=fluid_props,
             )
-            br_state[br["id"]] = {"mdot": mdot, **extra}
+            br_state[bid] = {"mdot": mdot, **extra}
 
         R = np.zeros(len(unknown_nodes), dtype=float)
 
         for i, nid in enumerate(unknown_nodes):
-            mdot_in = sum(br_state[br["id"]]["mdot"] for br in self.incoming[nid])
-            mdot_out = sum(br_state[br["id"]]["mdot"] for br in self.outgoing[nid])
+            mdot_in = sum(br_state[bid]["mdot"] for bid in self.incoming[nid])
+            mdot_out = sum(br_state[bid]["mdot"] for bid in self.outgoing[nid])
             R[i] = mdot_in - mdot_out
 
         self.state = NetworkState(node=node_state, br=br_state)
@@ -158,11 +159,11 @@ class FluidNetwork:
 
         return node_state
 
-    def _branch_mdot(self,
-                          br: Dict[str, Any],
-                          node_state: Dict[str, Dict[str, Any]],
-                          liquid_props: Dict[str, Dict[str, float]]
-                          ) -> Tuple[float, Dict[str, Any]]:
+    def _branch_mdot(bid,
+                     br: Dict[str, Any],
+                     node_state: Dict[str, Dict[str, Any]],
+                     fluid_props: Dict[str, Dict[str, float]]
+                     ) -> Tuple[float, Dict[str, Any]]:
 
         bid = br["id"]
         btype = br["type"]
@@ -171,10 +172,19 @@ class FluidNetwork:
 
         P_from = node_state[n_from]["P"]
         P_to = node_state[n_to]["P"]
+        CdA = br["CdA"]
 
         if btype in ("liquid_orifice"):
             fluid = br["fluid"]       
-            rho = liquid_props[fluid]["rho"]
+            rho = fluid_props[fluid]["rho"]
+            dP = P_from - P_to
+
+            mdot = np.sign(dP) * CdA * np.sqrt(max(2.0 * rho * abs(dP), 0.0))
+            return mdot, {"dP": dP, "rho": rho}
+        
+        if btype in ("liquid_loss"):
+            fluid = br["fluid"]       
+            rho = fluid_props[fluid]["rho"]
             dP = P_from - P_to
 
             mdot = np.sign(dP) * CdA * np.sqrt(max(2.0 * rho * abs(dP), 0.0))
@@ -182,26 +192,22 @@ class FluidNetwork:
 
         if btype == "gas_orifice":
             fluid = br["fluid"]       
-            rho = liquid_props[fluid]["rho"]
-            CdA = br["CdA"]
+            rho = fluid_props[fluid]["rho"]
+            dP = P_from - P_to
 
             mdot = np.sign(dP) * CdA * np.sqrt(max(2.0 * rho * abs(dP), 0.0))
             return mdot, {"dP": dP, "rho": rho}
 
         if btype == "pump":
-            fluid = br["fluid"]       
-            rho = liquid_props[fluid]["rho"]
-            CdA = br["CdA"]
-
-            dP_eff = (P_from + pump_dP) - P_to
-            mdot = np.sign(dP_eff) * CdA * np.sqrt(max(2.0 * rho * abs(dP_eff), 0.0))
-            return mdot, {"dP_eff": dP_eff, "rho": rho}
+            pump_dP = br["dP"]
+            return mdot, {"dP": dP, "rho": rho}
 
         raise ValueError(f"Unsupported branch type '{btype}' for branch '{bid}'")
 
 
     """
-    Temp functions to filter out dynamic nodes, eventually should move generalize (support multiple templates) and 
+    Temp functions to filter out dynamic nodes, eventually should move generalize (
+        \support multiple templates) and 
     move transient solve (residual, packing functions) from propsystem to fluid network. Since it is not generalized
     the dynamic nodes (need transient solver) need to be filtered out as they are not used.
     """
