@@ -2,10 +2,10 @@ import numpy as np
 
 class Vehicle:
 
-    def __init__(self, cfg: dict, sections: list):
+    def __init__(self, cfg: dict, engine: Engine, sections: list):
 
         self.cfg: dict = cfg
-        #self.engine = engine
+        self.engine = engine
         self.sections: list = sections
         self.dx: float = cfg["vehicle"]["dx"]
         self.n: int = None
@@ -25,7 +25,7 @@ class Vehicle:
         self.Iyy: float = None
 
     def build(self):
-
+        self.engine.build()
         self._stack_sections()
         self._assemble_vectors()
         self.get_mass_properties()
