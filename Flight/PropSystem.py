@@ -2,128 +2,122 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Iterable
+from scipy.optimize import root_scalar
 from .types import KinematicsState, AtmosState, ThermalOut, AeroOut, FluidOut
-import FluidNetwork
+from .FluidNetwork import FluidNetwork
 
 class PropSystem:
 
-    def __init__(self, cfg: Dict[str, any]):
+    def __init__(self, cfg: Dict[str, Any]):
 
         self.cfg = cfg
         self.model = cfg["press_model"]
-        self._init_model(cfg) 
+
+        self._init_model(cfg)
         self.target_ladder = self._build_pressure_ladder(cfg)
-        nodes, branches, params = self._wire_network(cfg)
-        self._size_network(nodes, branches, cfg)
 
-        self.network = FluidNetwork(
-            nodes=nodes,
-            branches=branches,
-            params=params,
-        )
+        nodes, branches = self._wire_network(cfg)
+        nodes, branches = self._size_network(nodes, branches, cfg)
 
-    def _wire_network(self, cfg) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+        self.network = FluidNetwork(nodes=nodes, branches=branches)
+
+    def _wire_network(self,
+                      cfg: Dict[str, Any],
+                      ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
 
         if self.model == "pump_fed":
-            nodes, branches = self._template_pump_fed(cfg)
-            return nodes, branches
-
+            return self._template_pump_fed(cfg)
         elif self.model == "pressure_fed":
-            nodes, branches = self._template_pressure_fed(cfg)
-            return nodes, branches
-
+            return self._template_pressure_fed(cfg)
         elif self.model == "blowdown":
-            nodes, branches = self._template_blowdown(cfg)
-            return nodes, branches
+            return self._template_blowdown(cfg)
+        else:
+            raise ValueError(f"Unknown press_model={self.model}")
 
-        else: raise ValueError(f"Unknown press_model={self.model}")
-    
-    def _template_pump_fed(self, cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
-
-        nodes: List[Dict[str, Any]] = [
-            {"id": "press_tank", "type": "gas_volume", "V": None, "state0": {"P": None, "T": None}},
-            {"id": "ox_ullage",   "type": "gas_volume", "V": None, "state0": {"P": None, "T": None}},
-            {"id": "fuel_ullage", "type": "gas_volume", "V": None, "state0": {"P": None, "T": None}},
-            {"id": "ox_pump_in", "type": "liquid_junction"},
-            {"id": "ox_pump_out", "type": "liquid_junction"},
-            {"id": "ox_inj_in", "type": "liquid_junction"},
-            {"id": "fuel_pump_in", "type": "liquid_junction"},
-            {"id": "fuel_pump_out", "type": "liquid_junction"},
-            {"id": "fuel_inj_in", "type": "liquid_junction"},
-            {"id": "thrust_chamber", "type": "chamber"},
-            {"id": "ambient", "type": "boundary_pressure"},
-        ]
-
-        branches: List[Dict[str, Any]] = [
-            {"id": "OX_BANGBANG", "type": "gas_orifice", "from": "press_tank", "to": "ox_ullage", "CdA": None},
-            {"id": "FUEL_BANGBANG", "type": "gas_orifice", "from": "press_tank", "to": "fuel_ullage", "CdA": None},
-            {"id": "OX_TANK_PUMP", "type": "liquid_loss", "from": "ox_ullage", "to": "ox_pump_in", "CdA": None},
-            {"id": "OX_PUMP", "type": "pump", "from": "ox_pump_in", "to": "ox_pump_out", "dP": None},
-            {"id": "OX_PUMP_INJ", "type": "liquid_loss", "from": "ox_pump_out", "to": "ox_inj_in", "CdA": None},
-            {"id": "OX_INJ", "type": "injector", "from": "ox_inj_in", "to": "thrust_chamber", "CdA": None},
-            {"id": "FUEL_TANK_PUMP", "type": "liquid_loss", "from": "fuel_ullage", "to": "fuel_pump_in", "CdA": None},
-            {"id": "FUEL_PUMP", "type": "pump", "from": "fuel_pump_in", "to": "fuel_pump_out", "dP": None},
-            {"id": "FUEL_PUMP_INJ", "type": "liquid_loss", "from": "fuel_pump_out", "to": "fuel_inj_in", "CdA": None},
-            {"id": "FUEL_INJ", "type": "injector", "from": "fuel_inj_in", "to": "thrust_chamber", "CdA": None},
-            {"id": "Nozzle", "type": "gas_orifice", "from": "thrust_chamber", "to": "ambient", "CdA": None}
-        ]
-
+    def _size_network(self,
+                      nodes: Dict[str, Dict[str, Any]],
+                      branches: Dict[str, Dict[str, Any]],
+                      cfg: Dict[str, Any],
+                      ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
+        self._size_nodes(nodes, cfg)
+        self._size_branches(branches, cfg)
         return nodes, branches
     
-    def _template_pressure_fed(self, cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    def _template_pump_fed(self,
+                           cfg: Dict[str, Any]
+                           ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
 
-        nodes: List[Dict[str, Any]] = [
-            {"id": "press_tank", "type": "gas_volume", "V": None, "state0": {"P": None, "T": None}},
-            {"id": "ox_ullage",   "type": "gas_volume", "V": None, "state0": {"P": None, "T": None}},
-            {"id": "fuel_ullage", "type": "gas_volume", "V": None, "state0": {"P": None, "T": None}},
-            {"id": "ox_inj_in", "type": "liquid_junction"},
-            {"id": "fuel_inj_in", "type": "liquid_junction"},
-            {"id": "thrust_chamber", "type": "chamber"},
-            {"id": "ambient", "type": "boundary_pressure"},
-        ]
+        nodes = {"press_tank": {"type": "gas_volume","V": None,"state0": {"P": None, "T": None},"steady": False},
+                 "ox_ullage": {"type": "gas_volume","V": None,"state0": {"P": None, "T": None},"steady": True},
+                 "fuel_ullage": {"type": "gas_volume","V": None,"state0": {"P": None, "T": None},"steady": True,},
+                 "ox_pump_in": {"type": "liquid_volume", "steady": True},
+                 "ox_pump_out": {"type": "liquid_volume", "steady": True},
+                 "ox_inj_in": {"type": "liquid_volume", "steady": True},
+                 "fuel_pump_in": {"type": "liquid_volume", "steady": True},
+                 "fuel_pump_out": {"type": "liquid_volume", "steady": True},
+                 "fuel_inj_in": {"type": "liquid_volume", "steady": True},
+                 "thrust_chamber": {"type": "comb_device", "steady": True},
+                 "ambient": {"type": "boundary_pressure", "steady": True}}
 
-        branches: List[Dict[str, Any]] = [
-
-            {"id": "OX_BANGBANG", "type": "gas_orifice", "from": "press_tank", "to": "ox_ullage", "CdA": None},
-            {"id": "FUEL_BANGBANG", "type": "gas_orifice", "from": "press_tank", "to": "fuel_ullage", "CdA": None},
-            {"id": "OX_TANK_INJ", "type": "liquid_loss", "from": "ox_ullage", "to": "ox_inj_in", "CdA": None},
-            {"id": "OX_INJ", "type": "injector", "from": "ox_inj_in", "to": "thrust_chamber", "CdA": None},
-            {"id": "FUEL_TANK_INJ", "type": "liquid_loss", "from": "fuel_ullage", "to": "fuel_inj_in", "CdA": None},
-            {"id": "FUEL_INJ", "type": "injector", "from": "fuel_inj_in", "to": "thrust_chamber", "CdA": None},
-            {"id": "Nozzle", "type": "gas_orifice", "from": "thrust_chamber", "to": "ambient", "CdA": None}
-        ]
+        branches = {"OX_BANGBANG": {"type": "gas_orifice","fluid": "gas","from": "press_tank","to": "ox_ullage","CdA": None,"steady": False},
+                    "FUEL_BANGBANG": {"type": "gas_orifice","fluid": "gas","from": "press_tank","to": "fuel_ullage","CdA": None,"steady": False},
+                    "OX_TANK_PUMP": {"type": "liquid_loss","fluid": "ox","from": "ox_ullage","to": "ox_pump_in","CdA": None,"steady": True},
+                    "OX_PUMP": {"type": "pump","fluid": "ox","from": "ox_pump_in","to": "ox_pump_out","dP": self.ox_Pump_head,"CdA": None,"steady": True},
+                    "OX_PUMP_INJ": {"type": "liquid_loss","fluid": "ox","from": "ox_pump_out","to": "ox_inj_in","CdA": None,"steady": True},
+                    "OX_INJ": {"type": "liquid_orifice","fluid": "ox","from": "ox_inj_in","to": "thrust_chamber","CdA": None,"steady": True},
+                    "FUEL_TANK_PUMP": {"type": "liquid_loss","fluid": "fuel","from": "fuel_ullage","to": "fuel_pump_in","CdA": None,"steady": True},
+                    "FUEL_PUMP": {"type": "pump","fluid": "fuel","from": "fuel_pump_in","to": "fuel_pump_out","dP": self.ox_Pump_head, "CdA": None,"steady": True},
+                    "FUEL_PUMP_INJ": {"type": "liquid_loss","fluid": "fuel","from": "fuel_pump_out","to": "fuel_inj_in","CdA": None,"steady": True},
+                    "FUEL_INJ": {"type": "liquid_orifice","fluid": "fuel","from": "fuel_inj_in","to": "thrust_chamber","CdA": None,"steady": True},
+                    "NOZZLE": {"type": "gas_orifice","fluid": "gas","from": "thrust_chamber","to": "ambient","CdA": None,"steady": True}}
 
         return nodes, branches
-    
-        # each branch/node dict should call size function? Sizing branches and nodes? For nodes might need to call on geometry classes
-        # sections for prop tanks and press tanks should get passed into here to assign for node
-        # each type should have a call 
-        # 
-    
-    def _template_blowdown(self, cfg: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
 
-        nodes: List[Dict[str, Any]] = [
-            {"id": "ox_ullage",   "type": "gas_volume", "V": None, "state0": {"P": None, "T": None}},
-            {"id": "fuel_ullage", "type": "gas_volume", "V": None, "state0": {"P": None, "T": None}},
-            {"id": "ox_inj_in", "type": "liquid_junction"},
-            {"id": "fuel_inj_in", "type": "liquid_junction"},
-            {"id": "thrust_chamber", "type": "chamber"},
-            {"id": "ambient", "type": "boundary_pressure"},
-        ]
+    def _template_pressure_fed(self,
+                               cfg: Dict[str, Any],
+                               ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
 
-        branches: List[Dict[str, Any]] = [
+        nodes = {"press_tank": {"type": "gas_volume","V": None,"state0": {"P": None, "T": None},"steady": False},
+                 "ox_ullage": {"type": "gas_volume","V": None,"state0": {"P": None, "T": None},"steady": True},
+                 "fuel_ullage": {"type": "gas_volume","V": None,"state0": {"P": None, "T": None},"steady": True},
+                 "ox_inj_in": {"type": "liquid_volume", "steady": True},
+                 "fuel_inj_in": {"type": "liquid_volume", "steady": True},
+                 "thrust_chamber": {"type": "comb_device", "steady": True},
+                 "ambient": {"type": "boundary_pressure", "steady": True}}
 
-            {"id": "OX_TANK_INJ", "type": "liquid_loss", "from": "ox_ullage", "to": "ox_inj_in", "CdA": None},
-            {"id": "OX_INJ", "type": "injector", "from": "ox_inj_in", "to": "thrust_chamber", "CdA": None},
-            {"id": "FUEL_TANK_INJ", "type": "liquid_loss", "from": "fuel_ullage", "to": "fuel_inj_in", "CdA": None},
-            {"id": "FUEL_INJ", "type": "injector", "from": "fuel_inj_in", "to": "thrust_chamber", "CdA": None},
-            {"id": "Nozzle", "type": "gas_orifice", "from": "thrust_chamber", "to": "ambient", "CdA": None}
-        ]
+        branches = {"OX_BANGBANG": {"type": "gas_orifice","fluid": "gas","from": "press_tank","to": "ox_ullage","CdA": None,"steady": False},
+                    "FUEL_BANGBANG": {"type": "gas_orifice","fluid": "gas","from": "press_tank","to": "fuel_ullage","CdA": None,"steady": False},
+                    "OX_TANK_INJ": {"type": "liquid_loss","fluid": "ox","from": "ox_ullage","to": "ox_inj_in","CdA": None,"steady": True},
+                    "OX_INJ": {"type": "liquid_orifice","fluid": "ox","from": "ox_inj_in","to": "thrust_chamber","CdA": None,"steady": True},
+                    "FUEL_TANK_INJ": {"type": "liquid_loss","fluid": "fuel","from": "fuel_ullage","to": "fuel_inj_in","CdA": None,"steady": True},
+                    "FUEL_INJ": {"type": "liquid_orifice","fluid": "fuel","from": "fuel_inj_in","to": "thrust_chamber","CdA": None,"steady": True},
+                    "NOZZLE": {"type": "gas_orifice","fluid": "gas","from": "thrust_chamber","to": "ambient","CdA": None,"steady": True}}
+
+        return nodes, branches
+
+    def _template_blowdown(self,
+                           cfg: Dict[str, Any],
+                           ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
+
+        nodes = {"ox_ullage": {"type": "gas_volume","V": None,"state0": {"P": None, "T": None},"steady": True},
+                 "fuel_ullage": {"type": "gas_volume","V": None,"state0": {"P": None, "T": None},"steady": True},
+                 "ox_inj_in": {"type": "liquid_volume", "steady": True},
+                 "fuel_inj_in": {"type": "liquid_volume", "steady": True},
+                 "thrust_chamber": {"type": "comb_device", "steady": True},
+                 "ambient": {"type": "boundary_pressure", "steady": True}}
+
+        branches = {"OX_TANK_INJ": {"type": "liquid_loss","fluid": "ox","from": "ox_ullage","to": "ox_inj_in","CdA": None,"steady": True},
+                    "OX_INJ": {"type": "liquid_orifice","fluid": "ox","from": "ox_inj_in","to": "thrust_chamber","CdA": None,"steady": True},
+                    "FUEL_TANK_INJ": {"type": "liquid_loss","fluid": "fuel","from": "fuel_ullage","to": "fuel_inj_in","CdA": None,"steady": True},
+                    "FUEL_INJ": {"type": "liquid_orifice","fluid": "fuel","from": "fuel_inj_in","to": "thrust_chamber","CdA": None,"steady": True},
+                    "NOZZLE": {"type": "gas_orifice","fluid": "gas","from": "thrust_chamber","to": "ambient","CdA": None,"steady": True}}
 
         return nodes, branches
 
     def _init_model(self, cfg: Dict[str, Any]) -> None:
         # initialize from config based on model
+        self.duty_cyl = cfg['duty_cyl']
+        #rewrite to reduce rewritten lines
         if self.model == "pump_fed":
             self.Pc_target = cfg['Pc_target']
             self.fuel_Pump_head = cfg["fuel_Pump_head"]
@@ -191,74 +185,11 @@ class PropSystem:
                 "Pfuel_inj": Pfuel_inj,
                 "Pfuel_tank": Pfuel_tank,
             }
-        
-    def _tank_compatability(m_liq, U_liq, m_gas, U_gas, V_tank, tank_obj):
-        """
-        Solve for ullage and liquid volumes from (m, U) states.
 
-        Returns:
-            V_liq, V_gas,
-            P, (common tank pressure)
-            liquid_state, gas_state
-        """
-
-        eps = 1e-6
-        Vg_min = eps
-        Vg_max = V_tank - eps
-
-        def residual(Vg):
-            Vl = V_tank - Vg
-
-            rho_g = m_gas / Vg
-            u_g = U_gas / m_gas
-
-            Pg = tank_obj.gas_eos_rho_u(rho_g, u_g)
-
-            rho_l = m_liq / Vl
-            u_l = U_liq / m_liq
-
-            Pl = tank_obj.liq_eos_rho_u(rho_l, u_l)
-
-            return Pl - Pg  
-
-        sol = root_scalar(residual, bracket=[Vg_min, Vg_max], method="bisect")
-
-        if not sol.converged:
-            raise RuntimeError("Tank volume solve failed")
-
-        Vg = sol.root
-        Vl = V_tank - Vg
-
-        rho_g = m_gas / Vg
-        u_g = U_gas / m_gas
-        Pg, Tg, hg = tank_obj.gas_eos_rho_u(rho_g, u_g)
-
-        rho_l = m_liq / Vl
-        u_l = U_liq / m_liq
-        Pl, Tl, hl = tank_obj.liq_eos_rho_u(rho_l, u_l)
-
-        return {
-            "V_gas": Vg,
-            "V_liq": Vl,
-            "P": Pg,  
-            "gas": {
-                "rho": rho_g,
-                "T": Tg,
-                "h": hg,
-                "u": u_g,
-            },
-            "liquid": {
-                "rho": rho_l,
-                "T": Tl,
-                "h": hl,
-                "u": u_l,
-            },
-        }
-        
-    def _size_branches(self, branches: List[Dict[str, Any]], cfg: Dict[str, Any]) -> None:
+    def _size_branches(self, branches: Dict[str, Dict[str, Any]], cfg: Dict[str, Any]) -> None:
         pass
 
-    def _size_nodes(self, nodes: List[Dict[str, Any]], cfg: Dict[str, Any]) -> None:
+    def _size_nodes(self, nodes: Dict[str, Dict[str, Any]], cfg: Dict[str, Any]) -> None:
         pass
 
     def _has_press_tank(self) -> bool:
@@ -450,7 +381,7 @@ class PropSystem:
         if self._has_press_tank():
             bcs["press_tank"] = {"P": Pcopv, "T": Tcopv}
 
-        liquid_props = {
+        fluid_props = {
             "ox": {
                 "rho": rho_ox_liq,
                 "T": T_ox_liq,
@@ -461,16 +392,16 @@ class PropSystem:
                 "T": T_fuel_liq,
                 "h": h_fuel_liq,
             },
-        }
-
-        controls = {
-            "valves": self._valve_state,
+            "gas": {
+                "rho": Pcopv,
+                "T": Tcopv,
+                "h": h_copv,
+            },
         }
 
         net_out = self.network.resolve_network(
             bcs=bcs,
-            controls=controls,
-            liquid_props=liquid_props,
+            fluid_props=fluid_props,
         )
 
         mdot_ox_out = net_out["mdot"].get("OX_INJ", 0.0)
@@ -478,10 +409,7 @@ class PropSystem:
 
         mdot_ox_press = 0.0
         mdot_fuel_press = 0.0
-        if self._has_press_tank():
-            mdot_ox_press = net_out["mdot"].get("OX_BANGBANG", 0.0)
-            mdot_fuel_press = net_out["mdot"].get("FUEL_BANGBANG", 0.0)
-
+ 
         mdot_press_total = mdot_ox_press + mdot_fuel_press
 
         Q_copv = Qdot.get("press_tank", 0.0) if self._has_press_tank() else 0.0

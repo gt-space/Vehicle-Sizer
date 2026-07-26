@@ -2,6 +2,7 @@ vehicle:
   OMLD: 0.35                           # m
   prop_mass: 300                     # kg
   dx: 0.01
+  duty_cyl: 0.5
 
 engine: 
   perfectly_expanded_thrust: 1e4      # N
