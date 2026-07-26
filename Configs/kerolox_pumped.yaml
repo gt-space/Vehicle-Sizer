@@ -50,7 +50,9 @@ press_tank:
   mount_material: "aluminum_7075_t6"
 
 avi_bay:
+  length: 0.3                      # m
   avi_mass: 2                      # kg
+  clamshell_thickness: 0.003175    # m
   clamshell_material: "fiberglass_standard"
   bulkhead_material: "carbon_fiber_standard"
   ring_material: "aluminum_6061_t6"
@@ -65,13 +67,17 @@ vehicle:
   prop_mass: 300                  # kg
   dx: 0.01
 
-engine: 
+engine:
   perfectly_expanded_thrust: 10000 # N
   chamber_pressure: 2.4e6         # Pa
   exit_pressure: 5e3              # Pa
+  mixture_ratio: 2.7              # O/F mass ratio (LOX/RP-1)
+  oxidizer: LOX
+  fuel: RP-1
   cstar_efficiency: 0.90
   cf_efficiency: 0.95
-  mass: 35
+  base_mass: 20                   # kg — chamber + nozzle + gimbal (excl. turbopump)
+  mass: 35                        # kg — used when turbopump model is off
   length: 0.51
 
 fin_can:
@@ -112,13 +118,15 @@ press_tank:
   mount_material: "aluminum_7075_t6"
 
 avi_bay:
+  length: 0.3                     # m
   avi_mass: 1.5                   # kg
+  clamshell_thickness: 0.003175   # m
   clamshell_material: "fiberglass_standard"
   bulkhead_material: "carbon_fiber_standard"
   ring_material: "aluminum_7075_t6"
 
 nosecone:
-  profile: "von_karman"           # von_karman || 
-  fineness_ratio: 12
+  profile: "von_karman"           # von_karman ||
+  fineness_ratio: 5
   reco_mass: 5                    # kg
   material: "carbon_fiber_standard"

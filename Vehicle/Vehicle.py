@@ -1,4 +1,5 @@
 import numpy as np
+from .Engine import Engine
 
 class Vehicle:
 
@@ -36,11 +37,10 @@ class Vehicle:
 
         for sec in self.sections:
 
-            sec.build()
-
             sec.start_station = x_current
             sec.end_station = x_current + sec.length
             sec.station = sec.start_station + np.arange(sec.n) * sec.dx
+            sec.build()
 
             x_current = sec.end_station
 
@@ -48,7 +48,6 @@ class Vehicle:
         self.n = int(np.ceil(self.length / self.dx))
 
     def _assemble_vectors(self):
-
         self.station = np.concatenate([sec.station for sec in self.sections])
         self.mass = np.concatenate([sec.mass for sec in self.sections])
         self.EI = np.concatenate([sec.EI for sec in self.sections])
@@ -56,15 +55,17 @@ class Vehicle:
         self.surf_area = np.concatenate([sec.surf_area for sec in self.sections])
 
     def get_mass_properties(self):
-        
         self.total_mass = np.sum(self.mass)
         self.cg = np.sum(self.mass * self.station) / self.total_mass
+        self.Ixx = sum(sec.Ixx for sec in self.sections)
+        self.Iyy = sum(
+            sec.Iyy + np.sum(sec.mass) * (sec.cg - self.cg)**2
+            for sec in self.sections
+        )
 
     def get_CNa(self, M: float, alpha: float):
-
         for sec in self.sections:
             sec.get_CNa(M, alpha)
-
         self.CNa = np.concatenate([sec.CNa for sec in self.sections])
         self.cp = np.sum(self.CNa * self.station) / np.sum(self.CNa)
 

@@ -1,15 +1,10 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy.integrate import cumulative_trapezoid
-
+from unittest.mock import MagicMock
 from Vehicle.Vehicle import Vehicle
-from Vehicle.InterTank import InterTank
-from Vehicle.PressTank import PressTank
-from Vehicle.FinCan import FinCan
-#from Vehicle.PropTank import PropTank
-from Vehicle.Nosecone import Nosecone
+from Vehicle.sections import Nosecone, AviBay, InterTank, PressTank, FinCan, PropTank
 from Vehicle.COPV import COPV
 from Configs.loader import load_config
+from plot import plot_vehicle, plot_rocket_3d
 
 
 def main():
@@ -24,6 +19,7 @@ def main():
     # -------------------------------------------------
 
     s8 = Nosecone(cfg)
+    s9 = AviBay(cfg)
 
     # Intertank 1
     L1 = 0.12
@@ -53,22 +49,25 @@ def main():
     M3 = 10000.0
     s3 = InterTank(cfg, L3, P3, M3)
 
-    s4 = FinCan(cfg)
+    engine = MagicMock()   # Engine.py incomplete — stub until ready
+    engine.mass = cfg["engine"]["mass"]
+    engine.exit_area = 0.025  # m^2, consistent with hardcoded Ae in FinCan
+    s4 = FinCan(cfg, engine)
 
-    #s5 = PropTank(cfg, medium="oxygen", prop_mass=200, material="aluminum_6061_t6", passthrough_diameter=0.052, ellipse_ratio=1.5, ullage_factor=1.1)
-    #s6 = PropTank(cfg, medium="n-Dodecane", prop_mass=100, material="aluminum_6061_t6", passthrough_diameter=0.05, ellipse_ratio=1.5, ullage_factor=1.1)
+    s5 = PropTank(cfg, medium="oxygen", prop_mass=200, material="aluminum_6061_t6", passthrough_diameter=0.052, ellipse_ratio=1.5, ullage_factor=1.1, P_liq0=1e6, T_liq0=90.0)
+    s6 = PropTank(cfg, medium="n-Dodecane", prop_mass=100, material="aluminum_6061_t6", passthrough_diameter=0.05, ellipse_ratio=1.5, ullage_factor=1.1, P_liq0=1e6, T_liq0=300.0)
 
     L7 = 0.36
     P7 = 15000.0
     M7 = 7000.0
     s7 = InterTank(cfg, L7, P7, M7)
 
-    sections = [s8, s2, s1, s3, s7, s4]
+    sections = [s8, s9, s2, s1, s5, s3, s6, s7, s4]
 
     # -------------------------------------------------
     # Build Vehicle
     # -------------------------------------------------
-    vehicle = Vehicle(cfg, sections)
+    vehicle = Vehicle(cfg, engine, sections)
     vehicle.build()
     vehicle.get_CNa(M=3, alpha=0.1)
     q=100e3
@@ -95,22 +94,8 @@ def main():
     print("CP:", vehicle.cp)
     print("SM:", SM)
 
-    fig, ax1 = plt.subplots()
-
-    ax1.plot(vehicle.station, vehicle.mass, label="Mass", color="black")
-    ax1.axvline(vehicle.cg, color="red", linestyle="--", linewidth=2, label="CG")
-    ax1.set_xlabel("Station (m)")
-    ax1.set_ylabel("Mass per slice (kg)")
-
-    ax2 = ax1.twinx()
-    ax2.plot(vehicle.station, vehicle.CNa, linestyle=":", label="CNa", color="blue")
-    ax2.axvline(vehicle.cp, color="green", linestyle="--", linewidth=2, label="CP")
-    ax2.set_ylabel("CNa")
-
-    fig.legend(loc="upper right")
-    plt.title("Mass and CNa Distribution")
-    plt.grid(True)
-    plt.show()
+    plot_vehicle(vehicle, cfg["vehicle"]["OMLD"])
+    plot_rocket_3d(vehicle, cfg)
 
 if __name__ == "__main__":
     main()

@@ -2,6 +2,10 @@ import numpy as np
 from scipy.optimize import root
 import matproplib as mp
 from .Section import Section
+from ..utils import distribute as dist
+from ..utils import aero
+from ..utils import geometry as geo
+from ..utils import heating
 
 class InterTank(Section):
 
@@ -14,128 +18,78 @@ class InterTank(Section):
         self.bending_moment = bending_moment
 
     def get_mass(self):
-
         feed_system_mass = self.cfg["inter_tank"]["feed_system_mass"]
         avi_mass = self.cfg["inter_tank"]["avi_mass"]
         stringer_mass, self.stringer_thickness = self._get_stringer_mass()
-        
         mass = self._get_clamshell_mass() + stringer_mass + feed_system_mass + avi_mass
-        self.mass = np.full(self.n, mass / self.n)
+        self.mass = dist.uniform(mass, self.n)
 
     def _get_clamshell_mass(self) -> float:
-
         t = self.cfg["inter_tank"]["clamshell_wall_thickness"]
         r_o = self.cfg["vehicle"]["OMLD"] * 0.5
-        A_o = np.pi * r_o**2
-
         r_i = r_o - t
-        A_i = np.pi * r_i**2
-
-        A = A_o - A_i
-
-        mat = mp.db.get_material(self.cfg["inter_tank"]["clamshell_material"])
-        rho = mat.get("density")
-        m = A * self.length * rho
-
-        return m
+        rho = mp.db.get_material(self.cfg["inter_tank"]["clamshell_material"]).get("density")
+        return geo.annulus_volume(r_o, r_i, self.length) * rho
 
     def _get_stringer_mass(self) -> float:
-        
-        T = 350.0
         mat = mp.db.get_material(self.cfg["inter_tank"]["stringer_material"])
-        sigma = mat.get("yield_strength", T)
-        E = mat.get("elastic_modulus", T)
-
+        sigma = mat.get("yield_strength", 350.0)
+        E = mat.get("elastic_modulus", 350.0)
         a = self._get_stringer_thickness(self.ax_load, self.bending_moment, sigma, E)
-
-        n = 4
-        A = a**2
-        V = A * self.length * n
-
-        rho = mat.get("density")
-        m = V * rho
-
+        m = a**2 * self.length * 4 * mat.get("density")
         return m, a
-    
+
     def _get_stringer_thickness(self, P: float, M: float, sigma: float, E: float) -> float:
 
         r = self.cfg["vehicle"]["OMLD"] * 0.5
         FOS = 1.5
 
         def equations(x):
-
             a, I = x
-
             if a <= 0 or I <= 0:
                 return [1e9, 1e9]
-
             eq1 = (M * np.sqrt(r**2 - 0.25 * a**2)) / (I + (P / (4 * a**2))) - sigma
             eq2 = (2 * a**2) * ((a**2) / 3 + r**2 - r * a) - I
-
             return [eq1, eq2]
-        
+
         a_guess = 0.0001
         I_guess = (2 * a_guess**2) * ((a_guess**2) / 3 + r**2 - r * a_guess)
-
         sol = root(equations, [a_guess, I_guess])
-        a = sol.x[0] * FOS
-
-        #n = 1
-        #Le = self.length * n
-
-        #a_buckling = ((12 * Le**2 * P) / (np.pi**2 * E))**0.25 * FOS
-        #a_yielding = np.sqrt(P / sigma) * FOS
-        #a = max(a_buckling, a_yielding)
-
-        return a
+        return sol.x[0] * FOS
 
     def get_EI(self):
-
         EI = self._get_clamshell_EI() + self._get_stringer_EI(self.stringer_thickness)
-        self.EI = np.full(self.n, EI)
+        self.EI = dist.uniform_full(EI, self.n)
 
     def _get_clamshell_EI(self) -> float:
-
-        r_o = self.cfg["vehicle"]["OMLD"] * 0.5
-
         t = self.cfg["inter_tank"]["clamshell_wall_thickness"]
+        r_o = self.cfg["vehicle"]["OMLD"] * 0.5
         r_i = r_o - t
-
-        I = np.pi * 0.25 * (r_o**4 - r_i**4)
-        mat = mp.db.get_material(self.cfg["inter_tank"]["clamshell_material"])
-        T = 300.0
-        E = mat.get("elastic_modulus_0deg", T)
-        EI = E * I
-
-        return EI
+        E = mp.db.get_material(self.cfg["inter_tank"]["clamshell_material"]).get("elastic_modulus_0deg", 300.0)
+        return E * geo.annulus_second_moment(r_o, r_i)
 
     def _get_stringer_EI(self, a: float) -> float:
-
-        r_o = self.cfg["vehicle"]["OMLD"] * 0.5
         t = self.cfg["inter_tank"]["clamshell_wall_thickness"]
-        r_i = r_o - t
-        r = r_i - (a * 0.5)
+        r_o = self.cfg["vehicle"]["OMLD"] * 0.5
+        r = r_o - t - a * 0.5
+        I = 4 * (a**4 / 12 + a**2 * r**2)
+        E = mp.db.get_material(self.cfg["inter_tank"]["stringer_material"]).get("elastic_modulus", 300.0)
+        return E * I
 
-        n = 4
-        I = n * (a**4 / 12 + a**2 * r**2)
-        mat = mp.db.get_material(self.cfg["inter_tank"]["stringer_material"])
-        T = 300.0
-        E = mat.get("elastic_modulus", T)
-        EI = E * I
-
-        return EI
-    
     def get_area(self):
+        r = self.cfg["vehicle"]["OMLD"] * 0.5
+        self.lat_area = dist.uniform(geo.cylinder_lateral_area(r, self.length), self.n)
+        self.surf_area = dist.uniform(geo.cylinder_surface_area(r, self.length), self.n)
 
-        D = self.cfg["vehicle"]["OMLD"]
-        self.lat_area = np.full(self.n, D * self.dx)
-        self.surf_area = self.lat_area * np.pi
+    def get_MOI(self):
+        r = self.cfg["vehicle"]["OMLD"] * 0.5
+        self.cg = np.sum(self.mass * self.station) / np.sum(self.mass)
+        self.Ixx = np.sum(self.mass * r**2)
+        self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
     def get_CNa(self, M: float, alpha: float):
+        A_plan = self.cfg["vehicle"]["OMLD"] * self.length
+        self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
-        K = 1.1
-        P = self.get_comp_factor(M)
-        A_plan = self.length * self.cfg["vehicle"]["OMLD"]
-        CNa = K * P * (A_plan / self.ref_area) * (np.sin(alpha)**2 / alpha)
-        
-        self.CNa = self.distribute(CNa, self.lat_area)
+    def get_heat_flux(self, ):
+        self.heat_flux = heating.get_body_heating()

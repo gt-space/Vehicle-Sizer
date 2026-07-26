@@ -22,7 +22,6 @@ class AtmosState:
     a: float
     q: float
     Ma: float
-    Tr: float
 
 @dataclass
 class AeroOut:
