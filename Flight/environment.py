@@ -12,7 +12,6 @@ GAMMA = 1.4
 def sutherland(T):
     return 1.458e-6 * T**1.5 / (T + 110.4)
 
-
 class Environment:
 
     def __init__(self, h_max: float = 150e3, dh: float = 100.0):
