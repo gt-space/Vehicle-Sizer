@@ -15,6 +15,23 @@ class PressTankInputs:
     mount_thickness: float
     airframe_material: str
 
+
+@dataclass(frozen=True)
+class PressTankGeometry:
+    """Immutable COPV geometry used by the gas-volume node."""
+
+    volume: float
+    length: float
+    diameter: float
+    internal_area: float
+
+    def __post_init__(self):
+        if any(
+            value <= 0.0
+            for value in (self.volume, self.length, self.diameter, self.internal_area)
+        ):
+            raise ValueError("Pressure tank geometry values must be positive")
+
 class PressTank(Section):
 
     def __init__(self, cfg: dict, copv: COPV):
@@ -23,6 +40,16 @@ class PressTank(Section):
         self.copv = copv
         self.length = self.copv.length
         self.n = int(np.ceil(self.length / self.dx))
+
+    def get_fluid_geometry(self) -> PressTankGeometry:
+        """Export immutable internal geometry for the fluid network."""
+
+        return PressTankGeometry(
+            volume=self.copv.volume,
+            length=self.copv.length,
+            diameter=self.copv.diameter,
+            internal_area=self.copv.internal_area,
+        )
 
     def get_mass(self):
         mass = self._get_mount_mass() + self._get_airframe_mass() + self.copv.mass

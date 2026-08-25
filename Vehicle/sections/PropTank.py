@@ -1,11 +1,103 @@
 import numpy as np
 import matproplib as mp
+from dataclasses import dataclass
+from functools import cached_property
 from CoolProp.CoolProp import PropsSI
 from .Section import Section
 from ..utils import distribute as dist
 from ..utils import aero
 from ..utils import geometry as geo
 from ..utils import heating
+
+
+@dataclass(frozen=True)
+class PropTankGeometry:
+    """Immutable internal geometry used to derive fill-dependent properties."""
+
+    volume: float
+    inner_diameter: float
+    cylinder_length: float
+    ellipse_ratio: float
+    passthrough_diameter: float
+    resolution: int = 512
+
+    def __post_init__(self):
+        positive = (
+            self.volume,
+            self.inner_diameter,
+            self.cylinder_length,
+            self.ellipse_ratio,
+        )
+        if any(value <= 0.0 for value in positive):
+            raise ValueError("Propellant tank geometry values must be positive")
+        if not 0.0 <= self.passthrough_diameter < self.inner_diameter:
+            raise ValueError("Passthrough diameter must be smaller than the tank")
+        if self.resolution < 2:
+            raise ValueError("Tank geometry resolution must be at least two")
+
+    @cached_property
+    def _profile(self):
+        radius = 0.5 * self.inner_diameter
+        passthrough_radius = 0.5 * self.passthrough_diameter
+        head_depth = radius / self.ellipse_ratio
+        length = self.cylinder_length + 2.0 * head_depth
+        dx = length / self.resolution
+        x = (np.arange(self.resolution) + 0.5) * dx
+
+        wall_radius = np.full_like(x, radius)
+        slope = np.zeros_like(x)
+        lower = x < head_depth
+        upper = x > head_depth + self.cylinder_length
+        for mask, center in (
+            (lower, head_depth),
+            (upper, head_depth + self.cylinder_length),
+        ):
+            axial = (x[mask] - center) / head_depth
+            root = np.sqrt(np.maximum(1.0 - axial**2, 0.0))
+            wall_radius[mask] = radius * root
+            slope[mask] = -radius * axial / (head_depth * root)
+
+        open_section = wall_radius > passthrough_radius
+        cross_area = np.where(
+            open_section,
+            np.pi * (wall_radius**2 - passthrough_radius**2),
+            0.0,
+        )
+        wall_area = np.where(
+            open_section,
+            (
+                2.0 * np.pi * wall_radius * np.sqrt(1.0 + slope**2)
+                + 2.0 * np.pi * passthrough_radius
+            )
+            * dx,
+            0.0,
+        )
+        cell_volume = cross_area * dx
+        return {
+            "length": length,
+            "volume": np.concatenate(([0.0], np.cumsum(cell_volume))),
+            "area": np.concatenate(([0.0], np.cumsum(wall_area))),
+            "height": np.linspace(0.0, length, self.resolution + 1),
+        }
+
+    def fill_state(self, liquid_volume: float):
+        """Return fill height and liquid/ullage wall contact areas."""
+
+        if not 0.0 <= liquid_volume <= self.volume:
+            raise ValueError("Liquid volume must remain within the tank volume")
+        profile = self._profile
+        geometric_volume = profile["volume"][-1]
+        if geometric_volume <= 0.0:
+            raise ValueError("Tank geometry has no usable internal volume")
+        target = liquid_volume / self.volume * geometric_volume
+        height = float(np.interp(target, profile["volume"], profile["height"]))
+        liquid_area = float(np.interp(target, profile["volume"], profile["area"]))
+        total_area = float(profile["area"][-1])
+        return {
+            "fill_height": height,
+            "liquid_contact_area": liquid_area,
+            "ullage_contact_area": total_area - liquid_area,
+        }
 
 class PropTank(Section):
 
@@ -67,6 +159,17 @@ class PropTank(Section):
     def get_liquid_density(self, T_liq: float, P_liq: float) -> float:
         return PropsSI("D", "T", T_liq, "P", P_liq, self.medium)
 
+    def get_fluid_geometry(self) -> PropTankGeometry:
+        """Export immutable geometry for the fluid-network tank node."""
+
+        return PropTankGeometry(
+            volume=self.volume,
+            inner_diameter=self.OMLD - 2.0 * self.wall_thickness,
+            cylinder_length=self.cyl_length,
+            ellipse_ratio=self.ellipse_ratio,
+            passthrough_diameter=self.passthrough_diameter,
+        )
+
     def _get_wall_thickness(self):
         sigma = mp.db.get_material(self.material).get("yield_strength", 400.0)
         self.pressure = self._get_pressure()
@@ -115,21 +218,6 @@ class PropTank(Section):
     def get_CNa(self, M: float, alpha: float):
         A_plan = self.cfg["vehicle"]["OMLD"] * self.length
         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
-
-    def drain_prop(self, dm: float):
-        self.prop_mass = max(self.prop_mass - dm, 0.0)
-
-        self.prop_end_station = self.end_station
-        self.prop_start_station = self.start_station - self.prop_height
-
-        T = 300
-        p = 1e6
-        rho = PropsSI("D", "T", T, "P", p, self.medium)
-        dV = dm / rho
-        self.ullage_volume += dV
-
-        rho_press = 1600
-        self.press_mass = self.ullage_volume * rho_press
 
     def get_heat_flux(self, ):
         self.heat_flux = heating.get_body_heating()

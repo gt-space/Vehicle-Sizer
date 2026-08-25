@@ -32,7 +32,7 @@ class AeroOut:
 @dataclass
 class ThermalOut:
     wall_T: Any
-    Qdot_to_fluids: Dict[str, float]
+    heat_flux_to_fluids: Dict[str, float]
 
 @dataclass
 class FluidOut:

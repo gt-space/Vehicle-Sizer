@@ -32,14 +32,16 @@ def main():
         volume=0.040,
         mass=18.2,
         length=1.4,
-        diameter=0.25
+        diameter=0.25,
+        internal_area=1.2,
     )
 
     copv2 = COPV(
         volume=0.020,
         mass=7.0,
         length=0.661,
-        diameter=0.25
+        diameter=0.25,
+        internal_area=0.7,
     )
     s2 = PressTank(cfg, copv2)
 

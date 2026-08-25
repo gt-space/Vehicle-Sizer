@@ -6,3 +6,4 @@ class COPV:
     mass: float
     length: float
     diameter: float
+    internal_area: float
