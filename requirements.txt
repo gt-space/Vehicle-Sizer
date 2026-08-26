@@ -1,0 +1,6 @@
+numpy
+matproplib
+scipy
+meson
+rocketcea
+pyyaml
