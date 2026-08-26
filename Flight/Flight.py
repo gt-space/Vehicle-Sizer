@@ -7,7 +7,7 @@ from types import AtmosState, AeroOut, ThermalOut, FluidOut, PlantOut
 import PropSystem
 
 class FlightSim:
-
+        """Outdated, nee                                                                                                                                                                                                                                                                                                                   d to update with fluids/heat transfer rewrite"""
     def __init__(self, cfg, env, aero, thermal, fluids, vehicle):
         self.cfg = cfg
         self.env = env

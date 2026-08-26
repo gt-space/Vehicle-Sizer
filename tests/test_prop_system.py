@@ -67,7 +67,6 @@ class PropSystemSizingTests(unittest.TestCase):
         return {
             "prop_system": {
                 "press_model": "pressure_fed",
-                "duty_cyl": 0.5,
                 "Pc_target": 2.0e6,
                 "MR_target": 3.0,
                 "thrust_target": 12_000.0,
@@ -77,10 +76,24 @@ class PropSystemSizingTests(unittest.TestCase):
                 "ox_tank_inj_dp": 200_000.0,
                 "expansion_ratio": 5.0,
                 "nozzle_cd": 1.0,
+                "bang_bang": {
+                    branch_id: {
+                        "duty_cycle": 0.5,
+                        "collapse_factor": 1.2,
+                        "min_temperature": 220.0,
+                    }
+                    for branch_id in ("OX_BANGBANG", "FUEL_BANGBANG")
+                },
                 "state0": {
-                    "press_tank": {"m": 5.0, "U": 1.0e6},
+                    "press_tank": {
+                        "fluid": "Nitrogen",
+                        "P": 30.0e6,
+                        "m": 5.0,
+                        "U": 1.0e6,
+                    },
                     "ox_tank": {
                         "fluid": "Oxygen",
+                        "gas_fluid": "Nitrogen",
                         "P": 2.6e6,
                         "T": 100.0,
                         "m_liq": 90.0,
@@ -90,6 +103,7 @@ class PropSystemSizingTests(unittest.TestCase):
                     },
                     "fuel_tank": {
                         "fluid": "n-Dodecane",
+                        "gas_fluid": "Nitrogen",
                         "P": 2.6e6,
                         "T": 300.0,
                         "m_liq": 30.0,
@@ -106,13 +120,6 @@ class PropSystemSizingTests(unittest.TestCase):
                 "cf_efficiency": 1.0,
                 "exit_pressure": 100_000.0,
             },
-            "press_tank": {
-                "pressurant": "Nitrogen",
-                "design_pressure": 30.0e6,
-                "start_temp": 300.0,
-                "min_temp": 220.0,
-                "collapse_factor": 1.2,
-            },
         }
 
     @staticmethod
@@ -128,16 +135,35 @@ class PropSystemSizingTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _make_system(config, ox_tank, fuel_tank, press_tank):
+    def _make_system(config, ox_tank, fuel_tank, press_tank=None):
+        tanks = {"ox_tank": ox_tank, "fuel_tank": fuel_tank}
+        if press_tank is not None:
+            tanks["press_tank"] = press_tank
         with patch("Flight.PropSystem.CEA_Obj", return_value=FakeCEA()):
-            return PropSystem(
-                config,
-                {
-                    "ox_tank": ox_tank,
-                    "fuel_tank": fuel_tank,
-                    "press_tank": press_tank,
-                },
+            return PropSystem(config, tanks)
+
+    def test_blowdown_does_not_require_a_pressure_tank(self):
+        config = self._config()
+        config["prop_system"]["press_model"] = "blowdown"
+        del config["prop_system"]["bang_bang"]
+        del config["prop_system"]["state0"]["press_tank"]
+        ox_tank, fuel_tank, _ = self._tanks()
+
+        system = self._make_system(config, ox_tank, fuel_tank)
+
+        self.assertNotIn("press_tank", system.network.node_definitions)
+        self.assertFalse(
+            any(
+                branch["type"] == "bang_bang"
+                for branch in system.network.branches.values()
             )
+        )
+
+    def test_pressure_fed_requires_its_template_pressure_tank(self):
+        ox_tank, fuel_tank, _ = self._tanks()
+
+        with self.assertRaisesRegex(ValueError, "requires tank 'press_tank'"):
+            self._make_system(self._config(), ox_tank, fuel_tank)
 
     def test_pressure_ladder_sizes_engine_and_branches(self):
         system = self._make_system(self._config(), *self._tanks())
@@ -197,9 +223,15 @@ class PropSystemSizingTests(unittest.TestCase):
             "n-Dodecane", tank_pressure, 300.0, 30.0 / fuel_density
         )
         config["prop_system"]["state0"] = {
-            "press_tank": {"m": press_mass, "U": press_energy},
+            "press_tank": {
+                "fluid": "Nitrogen",
+                "P": 30.0e6,
+                "m": press_mass,
+                "U": press_energy,
+            },
             "ox_tank": {
                 "fluid": "Oxygen",
+                "gas_fluid": "Nitrogen",
                 "P": tank_pressure,
                 "T": 100.0,
                 "m_liq": ox_mass,
@@ -209,6 +241,7 @@ class PropSystemSizingTests(unittest.TestCase):
             },
             "fuel_tank": {
                 "fluid": "n-Dodecane",
+                "gas_fluid": "Nitrogen",
                 "P": tank_pressure,
                 "T": 300.0,
                 "m_liq": fuel_mass,
