@@ -58,9 +58,12 @@ class VolumeSizer(Sizer):
 
 
 
-class TankSection(Section):
+class Nosecone(Section):
+    def __init__(self, name, vehicle):
+        self.setup()
 
-    def __init__(self, name, vehicle, tank:Volume):
+class AviBay(Section):
+    def __init__(self, name, vehicle):
         self.setup()
 
 
@@ -76,8 +79,15 @@ Line1 = Pipe("Line 1", PropSystem, 3e5, pressure, 1, (np.pi/4)* (0.5 / 39.37)**2
 Node = Volume("Vol", PropSystem, P=Line1.P2, V=3, mdot_in=Line1.mdot,mdot_out=0, sizer=vol_sizer)
 Line2 = Pipe("Line 2", PropSystem, Node.P, 101325, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, mdot=Node.mdot_out)
 
+ElyNosecone = Nosecone("Elytra Nosecone", Elytra)
+ElyAviBay = AviBay("Elytra Avionics Bay", Elytra)
+
+print(Elytra.sections)
+
 Elytra.size()
 sol = Elytra.fly(dt=0.0005, t_final=0.1)
+
+
 
 pressure_trace = Trace(
     x=sol["time"],
@@ -92,4 +102,3 @@ plot(
     title="Volume Pressure",
     show=True,
 )
-

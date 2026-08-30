@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 class Section(ABC):
 
     def __init__(self, name: str, vehicle: Vehicle):
+        # the stacking order of sections in the vehicle is the same as the instantiation order
         self.setup()
 
 
@@ -28,3 +29,15 @@ class Section(ABC):
 
     def evaluate(self) -> None:
         pass
+
+    @property
+    @abstractmethod
+    def length(self): pass
+
+    @property
+    @abstractmethod
+    def mass(self): pass
+
+    @property
+    @abstractmethod
+    def EI(self): pass

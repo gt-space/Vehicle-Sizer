@@ -15,7 +15,6 @@ build/
 .mypy_cache/
 
 .DS_Store
-test.py
 
 
 # Local/generated engineering files

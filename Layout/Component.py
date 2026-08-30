@@ -55,3 +55,15 @@ class Component:
     @property
     def balances(self) -> list[tuple]:
         return []
+
+    def __str__(self) -> str:
+        lines = [f"{self.__class__.__name__}: {self.name}"]
+        for name, value in vars(self).items():
+            if name in ("name", "network"):
+                continue
+            if isinstance(value, State):
+                value = value.value
+            elif isinstance(value, Sizer):
+                value = value.__class__.__name__
+            lines.append(f"  {name}: {value}")
+        return "\n".join(lines)

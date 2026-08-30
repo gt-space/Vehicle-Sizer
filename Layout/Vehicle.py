@@ -10,7 +10,7 @@ class Vehicle:
     def __init__(self, name:str):
         self.name = name
         self.network = None
-        self.sections: list[Section] = []
+        self.sections: list[Section] = [] # the stacking order of sections in the vehicle is the same as the instantiation order
 
     def add_network(self, network:Network): # extende to multiple networks in a single vehicle
         if self.network is None:
