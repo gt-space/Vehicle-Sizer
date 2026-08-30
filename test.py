@@ -1,4 +1,4 @@
-from Layout import Network, Component, State, Vehicle
+from Layout import Network, Component, State, Vehicle, Section
 from Flight import Flight
 import numpy as np
 from thermoprop import Fluid
@@ -49,9 +49,19 @@ class Volume(Component):
 
 
 
+class TankSection(Section):
+
+    def __init__(self, name, vehicle, tank:Volume):
+        self.setup()
 
         
-PropSystem = Network("PropSystem")
+
+
+    
+
+
+Elytra = Vehicle("Elytra")
+PropSystem = Network("PropSystem", Elytra)
 
 pressure = State(101325)
 
@@ -59,8 +69,7 @@ Line1 = Pipe("Line 1", PropSystem, 3e5, pressure, 1, (np.pi/4)* (0.5 / 39.37)**2
 Node = Volume("Vol", PropSystem, P=Line1.P2, V=(np.pi/4)*(1.5 / 39.37)**2, mdot_in=Line1.mdot,mdot_out=0)
 Line2 = Pipe("Line 2", PropSystem, Node.P, 101325, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, mdot=Node.mdot_out)
 
-Elytra = Vehicle(PropSystem)
-
+'''
 sol = Flight(Elytra, dt = 0.0005, t_final=0.1).simulate()
 
 print(sol.get('Vol').get('P'))
@@ -80,3 +89,4 @@ plot(
     title="Volume Pressure",
     show=True,
 )
+'''

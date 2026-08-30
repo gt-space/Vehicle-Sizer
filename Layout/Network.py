@@ -3,11 +3,14 @@ from typing import TYPE_CHECKING
 from .State import State
 if TYPE_CHECKING:
     from .Component import Component
+    from .Vehicle import Vehicle
 
 class Network:
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, vehicle: Vehicle):
         self.name = name
+        self.vehicle = vehicle
+        self.vehicle.add_network(self)
         self.components: list[Component] = []
 
     def add_component(self, component: Component) -> None:
