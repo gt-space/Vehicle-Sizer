@@ -1,4 +1,5 @@
-from Layout import Network, Component, State
+from Layout import Network, Component, State, Vehicle
+from Flight import Flight
 import numpy as np
 from thermoprop import Fluid
 
@@ -50,24 +51,32 @@ class Volume(Component):
 
 
         
-Test = Network("Test")
+PropSystem = Network("PropSystem")
 
-pressure = State(2e5)
+pressure = State(101325)
 
-Line1 = Pipe("Line 1", Test, 3e5, pressure, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, 0)
-Node = Volume(
-    "Vol",
-    Test,
-    P=Line1.P2,
-    V=(np.pi/4)*(0.5 / 39.37)**2,
-    mdot_in=Line1.mdot,
-    mdot_out=0,
+Line1 = Pipe("Line 1", PropSystem, 3e5, pressure, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, 0)
+Node = Volume("Vol", PropSystem, P=Line1.P2, V=(np.pi/4)*(1.5 / 39.37)**2, mdot_in=Line1.mdot,mdot_out=0)
+Line2 = Pipe("Line 2", PropSystem, Node.P, 101325, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, mdot=Node.mdot_out)
+
+Elytra = Vehicle(PropSystem)
+
+sol = Flight(Elytra, dt = 0.0005, t_final=0.1).simulate()
+
+print(sol.get('Vol').get('P'))
+
+from fullplot import Trace, plot
+
+pressure_trace = Trace(
+    x=sol["time"],
+    y=sol["Vol"]["P"],
+    name="Volume pressure",
 )
 
-Line2 = Pipe("Line 2", Test, Node.P, 101325, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, mdot=Node.mdot_out)
-
-Test.evaluate()
-print(Test.collect_states())
-print(Test.collect_stored_states())
-print(Test.collect_derivatives())
-print(Test.collect_balances())
+plot(
+    [pressure_trace],
+    xlabel="Time (s)",
+    ylabel="Pressure (Pa)",
+    title="Volume Pressure",
+    show=True,
+)

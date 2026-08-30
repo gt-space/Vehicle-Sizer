@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
+from .State import State
 if TYPE_CHECKING:
     from .Component import Component
-    from .State import State
 
 class Network:
 
@@ -76,6 +76,7 @@ class Network:
             c.evaluate()
 
 
+
     def __str__(self) -> str:
         lines = [
             f"Network: {self.name}",
@@ -86,3 +87,21 @@ class Network:
             for component in self.components
         )
         return "\n".join(lines)
+
+
+
+
+
+    def collect_results(self) -> dict:
+        variables = {}
+        for component in self.components:
+            component_variables = {}
+            for name, value in vars(component).items():
+                if name in ("name", "network"):
+                    continue
+                if isinstance(value, State):
+                    value = value.value
+                if isinstance(value, (int, float)):
+                    component_variables[name] = value
+            variables[component.name] = component_variables
+        return variables
