@@ -2,6 +2,7 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING
 from .State import State
+from .Sizer import Sizer
 if TYPE_CHECKING:
     from .Network import Network
 
@@ -9,7 +10,7 @@ if TYPE_CHECKING:
 
 class Component:
 
-    def __init__(self, name: str, network: Network):
+    def __init__(self, name: str, network: Network, sizer: Sizer = None):
         self.setup()
 
 
@@ -20,6 +21,7 @@ class Component:
         name = arguments.pop("name")
         network = arguments.pop("network")
         self.initialize_component(name, network)
+        self.sizer = arguments.pop("sizer", None)
 
         for name, value in arguments.items():
             setattr(self, name, self.initialize_attribute(value))
@@ -31,10 +33,17 @@ class Component:
 
 
     def initialize_attribute(self, value=None):
+        if isinstance(value, Sizer): # Sizer objects should not be turned into States
+            return value
         if isinstance(value, State):
             return value
         return State(value)
 
+
+    def size(self) -> None:
+        if self.sizer is not None:
+            self.sizer.size(self)
+            
 
     def evaluate(self) -> None:
         pass

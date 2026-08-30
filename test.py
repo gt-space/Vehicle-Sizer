@@ -1,5 +1,5 @@
-from Layout import Network, Component, State, Vehicle, Section
-from Flight import Flight
+from Layout import Network, Component, State, Vehicle, Section, Sizer
+from Solver.Flight import Flight
 import numpy as np
 from thermoprop import Fluid
 
@@ -33,7 +33,7 @@ class Pipe(Component):
 
 class Volume(Component):
 
-    def __init__(self, name, network, P, V, mass = None, mdot_in = None, mdot_out = None):
+    def __init__(self, name, network, P, V, mass = None, mdot_in = None, mdot_out = None, sizer:Sizer = None):
         self.setup()
 
     def evaluate(self):
@@ -48,16 +48,21 @@ class Volume(Component):
         return[(self.P, self.mass, self.mdot_in.value - self.mdot_out.value)]
 
 
+class VolumeSizer(Sizer):
+
+    def __init__(self, volume):
+        self.volume = volume
+
+    def size(self, vol):
+        vol.V.value = self.volume
+
+
 
 class TankSection(Section):
 
     def __init__(self, name, vehicle, tank:Volume):
         self.setup()
 
-        
-
-
-    
 
 
 Elytra = Vehicle("Elytra")
@@ -65,14 +70,16 @@ PropSystem = Network("PropSystem", Elytra)
 
 pressure = State(101325)
 
+vol_sizer = VolumeSizer((np.pi/4)* (1.5 / 39.37)**2)
+
 Line1 = Pipe("Line 1", PropSystem, 3e5, pressure, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, 0)
-Node = Volume("Vol", PropSystem, P=Line1.P2, V=(np.pi/4)*(1.5 / 39.37)**2, mdot_in=Line1.mdot,mdot_out=0)
+Node = Volume("Vol", PropSystem, P=Line1.P2, V=3, mdot_in=Line1.mdot,mdot_out=0, sizer=vol_sizer)
 Line2 = Pipe("Line 2", PropSystem, Node.P, 101325, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, mdot=Node.mdot_out)
+
+Elytra.size()
 
 '''
 sol = Flight(Elytra, dt = 0.0005, t_final=0.1).simulate()
-
-print(sol.get('Vol').get('P'))
 
 from fullplot import Trace, plot
 

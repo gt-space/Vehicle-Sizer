@@ -18,3 +18,11 @@ class Vehicle:
     def add_section(self, section:Section): # change to have the order of the sections matter
         if section not in self.sections:
             self.sections.append(section)
+
+    def size(self) -> None:
+        #for network in self.networks: # eventually, when there are multiple networks
+        for component in self.network.components:
+            component.size()
+
+    def fly(self):
+        pass
