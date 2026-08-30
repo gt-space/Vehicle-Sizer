@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
+from Solver import solve
 if TYPE_CHECKING:
     from .Network import Network
     from .Section import Section
@@ -24,5 +25,5 @@ class Vehicle:
         for component in self.network.components:
             component.size()
 
-    def fly(self):
-        pass
+    def fly(self, dt: float, t_final: float) -> dict:
+        return solve(self, dt, t_final)

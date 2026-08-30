@@ -1,7 +1,7 @@
 from Layout import Network, Component, State, Vehicle, Section, Sizer
-from Solver.Flight import Flight
 import numpy as np
 from thermoprop import Fluid
+from fullplot import Trace, plot
 
 
 class Pipe(Component):
@@ -77,11 +77,7 @@ Node = Volume("Vol", PropSystem, P=Line1.P2, V=3, mdot_in=Line1.mdot,mdot_out=0,
 Line2 = Pipe("Line 2", PropSystem, Node.P, 101325, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, mdot=Node.mdot_out)
 
 Elytra.size()
-
-'''
-sol = Flight(Elytra, dt = 0.0005, t_final=0.1).simulate()
-
-from fullplot import Trace, plot
+sol = Elytra.fly(dt=0.0005, t_final=0.1)
 
 pressure_trace = Trace(
     x=sol["time"],
@@ -96,4 +92,4 @@ plot(
     title="Volume Pressure",
     show=True,
 )
-'''
+
