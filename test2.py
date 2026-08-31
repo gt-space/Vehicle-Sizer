@@ -1,6 +1,5 @@
-from Layout import Network, Component, State, Vehicle, Section, Sizer, KeroLOXEngineSizer, KeroLOXEngine
+from Layout import Network, Component, State, Vehicle, Section, Sizer, KeroLOXEngineSizer, KeroLOXEngine, LaunchInputs
 from CONFIGURATION import *
-import fullplot as fplt
 
 # ---- Sizers ---- #
 engine_sizer = KeroLOXEngineSizer(
@@ -17,12 +16,39 @@ engine_sizer = KeroLOXEngineSizer(
 
 
 # ---- New Section (if needed) ---- #
-EngineSection = S
+class Boattail(Component): 
+    def __init__(self, name, network, mass):
+        self.setup()
 
+
+class EngineSection(Section):
+
+    def __init__(self, 
+                 name: str, 
+                 vehicle: Vehicle,
+                 engine: KeroLOXEngine,
+                 boattail: Boattail):
+        self.setup()
+
+    @property
+    def length(self):
+        return 20.0 * IN_TO_M
+
+    @property
+    def mass(self):
+        return self.boattail.mass.value + self.engine.engine_mass.value
+
+    @property
+    def EI(self):
+        return 1.0
+
+
+# ---- Laucnh Inputs ---- #
+ElytraLaunch = LaunchInputs(initial_altitude=INITIAL_ALTITUDE)
 
 
 # ---- Vehicle Architecture ---- #
-Elytra = Vehicle("Elytra")
+Elytra = Vehicle("Elytra", ElytraLaunch)
 PropSystem = Network("Propellant Feed System", Elytra)
 
 chamber_pressure = 250 * PSIA_TO_PA
@@ -34,37 +60,37 @@ Engine = KeroLOXEngine(
     chamber_volume=1,
     throat_area=1,
     expansion_ratio=1,
-    ambient_pressure=14.67 * PSIA_TO_PA,
+    ambient_pressure=Elytra.atmospheric_pressure,
     nfz=2,
     fuel_mass_flow=2,
     oxidizer_mass_flow=4,
     engine_mass=50*LBM_TO_KG,
+    thrust=Elytra.thrust
     sizer=engine_sizer
 )
 
+FinCan = Boattail("Fin Can", PropSystem, mass=BOATTAIL_MASS)
 
+
+ElyEngineSection = EngineSection(
+    "Elytra Engine Section",
+    Elytra,
+    engine=Engine,
+    boattail=FinCan
+)
 
 # ---- Size and Solve ----
 Elytra.size()
 print(Engine)
+print(Elytra)
 sol = Elytra.fly(dt=0.0005, t_final=0.1)
 print(Engine)
+print(Elytra.thrust.value / LBF_TO_N)
+print(Engine.chamber_pressure.value / PSIA_TO_PA)
+print(Elytra.mass / LBM_TO_KG)
 
 
 '''
 # ---- Plotting ---- #
-pressure_trace = fplt.Trace(
-    x=sol["time"],
-    y=sol["Ares Ablative"]["chamber_pressure"],
-    name="Volume pressure",
-)
 
-fplt.plot(
-    [pressure_trace],
-    xlabel="Time (s)",
-    ylabel="Pressure (Pa)",
-    title="Volume Pressure",
-)
-
-fplt.show()
 '''

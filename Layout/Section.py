@@ -21,6 +21,9 @@ class Section(ABC):
         vehicle = arguments.pop("vehicle")
         self.initialize_section(name, vehicle)
 
+        for name, value in arguments.items():
+            setattr(self, name, value)
+
 
     def initialize_section(self, name: str, vehicle: Vehicle) -> None:
         self.name = name

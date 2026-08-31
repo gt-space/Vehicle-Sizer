@@ -20,7 +20,7 @@ def solve(vehicle, dt: float, t_final: float) -> dict:
         solution = root(
             residual,
             x0,
-            args=(network, dt, states, stored_states, previous),
+            args=(vehicle, dt, states, stored_states, previous),
         )
         if not solution.success:
             raise RuntimeError(
@@ -37,18 +37,15 @@ def solve(vehicle, dt: float, t_final: float) -> dict:
     return data
 
 
-def residual(x, network, dt, states, stored_states, previous):
+def residual(x, vehicle, dt, states, stored_states, previous):
     """Makes the backward Euler residual function for each timestep"""
+    network = vehicle.network
     for state, value in zip(states, x):
         state.value = value
 
-    network.evaluate()
+    vehicle.evaluate()
+
     derivatives = network.collect_derivatives()
     balances = network.collect_balances()
-    dynamics = [
-        state.value - old - dt * derivative
-        for state, old, derivative in zip(
-            stored_states, previous, derivatives
-        )
-    ]
+    dynamics = [state.value - old - dt * derivative for state, old, derivative in zip(stored_states, previous, derivatives)]
     return [float(value) for value in dynamics + balances]

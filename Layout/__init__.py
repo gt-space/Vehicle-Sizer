@@ -4,4 +4,4 @@ from .Components import *
 from .Network import Network
 from .Section import Section
 from .Sizer import Sizer
-from .Vehicle import Vehicle
+from .Vehicle import *
