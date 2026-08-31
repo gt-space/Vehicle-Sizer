@@ -1,6 +1,8 @@
 # ELYTRA SIZING CONFIGURATION
 # All simulation units are in SI
 
+UNASSIGNED = 0
+
 # ---- UNITS ---- #
 PSIA_TO_PA = 6894.76
 LBF_TO_N = 4.44822
