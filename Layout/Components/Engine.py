@@ -112,6 +112,7 @@ class EngineSizer(Sizer):
             oxidizer=ox,
             chamber_pressure=Pc,
             mixture_ratio=MR,
+            ambient_pressure=Pe,
             expansion_ratio=eps,
             nfz=nfz,
         )

@@ -1,7 +1,9 @@
-from Layout import KeroLOXEngineSizer, InjectorSizer
+from Layout import EngineSizer, InjectorSizer
 from CONFIGURATION import *
 
-engine_sizer = KeroLOXEngineSizer(
+engine_sizer = EngineSizer(
+    fuel=FUEL,
+    oxidizer=OXIDIZER,
     chamber_pressure=CHAMBER_PRESSURE,
     mixture_ratio=MIXTURE_RATIO,
     thrust=THRUST,

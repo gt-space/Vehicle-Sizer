@@ -29,6 +29,8 @@ class Injector(Component):
                  mass,
                  fuel_mass_flow_in=None,
                  oxidizer_mass_flow_in=None,
+                 fuel_stiffness=None,
+                 oxidizer_stiffness=None,
                  sizer: Sizer = None):
         self.setup()
         self.fuel_fluid_mass = State()
@@ -54,6 +56,9 @@ class Injector(Component):
 
         self.oxidizer_mass_flow_out.value = IncompressibleFlow.mass_flow_from_cda(self.oxidizer_pressure.value,
             Pc, oxidizer_density, self.oxidizer_flow_area.value)
+
+        self.fuel_stiffness.value = (self.fuel_pressure.value - Pc) / Pc
+        self.oxidizer_stiffness.value = (self.oxidizer_pressure.value - Pc) / Pc
         
 
     @property
@@ -83,11 +88,11 @@ class InjectorSizer(Sizer):
         stiff_fuel = self.fuel_stiffness
         rho_f = self.fuel_density
         mdot_f = self.fuel_mass_flow
-        stiff_ox = self.ox_stiffness
+        stiff_ox = self.oxidizer_stiffness
         rho_ox = self.oxidizer_density
         mdot_ox = self.oxidizer_mass_flow
 
         Pf = (1 + stiff_fuel) * Pc
         Pox = (1 + stiff_ox) * Pc
-        self.injector.fuel_flow_area.value = IncompressibleFlow.cda_from_mass_flow(Pf, Pc, rho_f, mdot_f)
-        self.injector.oxidizer_flow_area.value = IncompressibleFlow.cda_from_mass_flow(Pox, Pc, rho_ox, mdot_ox)
+        injector.fuel_flow_area.value = IncompressibleFlow.cda_from_mass_flow(Pf, Pc, rho_f, mdot_f)
+        injector.oxidizer_flow_area.value = IncompressibleFlow.cda_from_mass_flow(Pox, Pc, rho_ox, mdot_ox)

@@ -53,6 +53,7 @@ class CEA:
     @staticmethod
     def calculate_expansion_ratio(fuel, oxidizer, chamber_pressure, mixture_ratio, exit_pressure, nfz=0):
         pressure_ratio = chamber_pressure / exit_pressure
+        cea = CEA(fuel, oxidizer, chamber_pressure, mixture_ratio, nfz=nfz)
         if nfz == 2:
             frozen, frozen_at_throat = 1, 1
         elif nfz == 1:
@@ -60,6 +61,6 @@ class CEA:
         else:
             frozen, frozen_at_throat = 0, 0
 
-        return CEA._cea.get_eps_at_PcOvPe(
+        return cea._cea.get_eps_at_PcOvPe(
             chamber_pressure, mixture_ratio, pressure_ratio,
             frozen, frozen_at_throat)
