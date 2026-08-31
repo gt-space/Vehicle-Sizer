@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from .State import State
 from Solver import solve
 
-from Physics import get_atmospheric_pressure
+from ambiance import Atmosphere
 
 if TYPE_CHECKING:
     from .Network import Network
@@ -16,7 +16,7 @@ class LaunchInputs:
 
     @property
     def initial_atmospheric_pressure(self):
-        return get_atmospheric_pressure(self.initial_altitude)
+        return Atmosphere(self.initial_altitude).pressure
 
 
 class Vehicle:
@@ -28,6 +28,7 @@ class Vehicle:
 
         self.sections: list[Section] = [] # the stacking order of sections in the vehicle is the same as the instantiation order
 
+        self.altitude = State(self.launch_inputs.initial_altitude)
         self.atmospheric_pressure = State(self.launch_inputs.initial_atmospheric_pressure)
         self.thrust = State()
         self.mass = State()

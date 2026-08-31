@@ -1,104 +1,92 @@
-from Layout import Network, Component, State, Vehicle, Section, Sizer
-import numpy as np
-from thermoprop import Fluid
-from fullplot import Trace, plot
+from Layout import Network, Component, State, Vehicle, Section, Sizer, KeroLOXEngineSizer, KeroLOXEngine, LaunchInputs
+from CONFIGURATION import *
+import matplotlib.pyplot as plt
+
+# ---- Sizers ---- #
+engine_sizer = KeroLOXEngineSizer(
+    chamber_pressure=CHAMBER_PRESSURE,
+    mixture_ratio=MIXTURE_RATIO,
+    thrust=THRUST,
+    exit_pressure=EXIT_PRESSURE,
+    chamber_length=CHAMBER_LENGTH,
+    contraction_ratio=CONTRACTION_RATIO,
+    thrust_coefficient_efficiency=THRUST_COEFFICIENT_EFFICIENCY,
+    nfz=NFZ
+)
 
 
-class Pipe(Component):
 
-    def __init__(self, name, network, P1, P2, Cd, A, L, mdot):
+# ---- New Section (if needed) ---- #
+class Boattail(Component): 
+    def __init__(self, name, network, mass):
+        self.setup()
+
+
+class EngineSection(Section):
+
+    def __init__(self, 
+                 name: str, 
+                 vehicle: Vehicle,
+                 engine: KeroLOXEngine,
+                 boattail: Boattail):
         self.setup()
 
     def evaluate(self):
-        P1 = self.P1.value
-        P2 = self.P2.value
-        Cd = self.Cd.value
-        A = self.A.value
-        L = self.L.value
-        mdot = self.mdot.value
-
-        CdA = Cd*A
-        R = 1/(2*(CdA**2))
-        Z = L/A
-
-        mdot_dot = ((P1-P2) - (R / 1000) * mdot * abs(mdot)) / Z
-
-        self.derivative = mdot_dot
-
-    @property
-    def dynamics(self):
-        return [(self.mdot, self.derivative)]
+        self.mass.value = self.engine.mass.value + self.boattail.mass.value
+        self.length.value = 20 * IN_TO_M
+        self.EI.value = 1.0
 
 
-
-class Volume(Component):
-
-    def __init__(self, name, network, P, V, mass = None, mdot_in = None, mdot_out = None, sizer:Sizer = None):
-        self.setup()
-
-    def evaluate(self):
-        P = self.P.value
-        V = self.V.value
-
-        rho = Fluid("water", pressure=P, temperature=300).density
-        self.mass.value = rho*V
-
-    @property
-    def dynamics(self):
-        return[(self.P, self.mass, self.mdot_in.value - self.mdot_out.value)]
+# ---- Laucnh Inputs ---- #
+ElytraLaunch = LaunchInputs(initial_altitude=INITIAL_ALTITUDE)
 
 
-class VolumeSizer(Sizer):
+# ---- Vehicle Architecture ---- #
+Elytra = Vehicle("Elytra", ElytraLaunch)
+PropSystem = Network("Propellant Feed System", Elytra)
 
-    def __init__(self, volume):
-        self.volume = volume
+chamber_pressure = 250 * PSIA_TO_PA
 
-    def size(self, vol):
-        vol.V.value = self.volume
+Engine = KeroLOXEngine(
+    "Ares Ablative",
+    PropSystem,
+    chamber_pressure=chamber_pressure,
+    chamber_volume=1,
+    throat_area=1,
+    expansion_ratio=1,
+    ambient_pressure=Elytra.atmospheric_pressure,
+    nfz=2,
+    fuel_mass_flow=2,
+    oxidizer_mass_flow=4,
+    mass=50*LBM_TO_KG,
+    thrust=Elytra.thrust,
+    sizer=engine_sizer
+)
+
+FinCan = Boattail("Fin Can", PropSystem, mass=BOATTAIL_MASS)
 
 
+ElyEngineSection = EngineSection(
+    "Elytra Engine Section",
+    Elytra,
+    engine=Engine,
+    boattail=FinCan
+)
 
-class Nosecone(Section):
-    def __init__(self, name, vehicle):
-        self.setup()
-
-class AviBay(Section):
-    def __init__(self, name, vehicle):
-        self.setup()
-
-
-
-Elytra = Vehicle("Elytra")
-PropSystem = Network("PropSystem", Elytra)
-
-pressure = State(101325)
-
-vol_sizer = VolumeSizer((np.pi/4)* (1.5 / 39.37)**2)
-
-Line1 = Pipe("Line 1", PropSystem, 3e5, pressure, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, 0)
-Node = Volume("Vol", PropSystem, P=Line1.P2, V=3, mdot_in=Line1.mdot,mdot_out=0, sizer=vol_sizer)
-Line2 = Pipe("Line 2", PropSystem, Node.P, 101325, 1, (np.pi/4)* (0.5 / 39.37)**2, 3, mdot=Node.mdot_out)
-
-ElyNosecone = Nosecone("Elytra Nosecone", Elytra)
-ElyAviBay = AviBay("Elytra Avionics Bay", Elytra)
-
-print(Elytra.sections)
-
+# ---- Size and Solve ----
 Elytra.size()
-sol = Elytra.fly(dt=0.0005, t_final=0.1)
+print(Engine)
+print(Elytra)
+sol = Elytra.fly(dt=DT, t_final=T_FINAL)
+print(Engine)
+print(Elytra.thrust.value / LBF_TO_N)
 
 
+'''
+# ---- Plotting ---- #
+time = sol['time']
+Pc = [P / PSIA_TO_PA for P in sol["Ares Ablative"]["chamber_pressure"]]
 
-pressure_trace = Trace(
-    x=sol["time"],
-    y=sol["Vol"]["P"],
-    name="Volume pressure",
-)
-
-plot(
-    [pressure_trace],
-    xlabel="Time (s)",
-    ylabel="Pressure (Pa)",
-    title="Volume Pressure",
-    show=True,
-)
+plt.plot(time, Pc)
+plt.show()
+'''

@@ -4,18 +4,19 @@ from ..Component import Component
 from ..Sizer import Sizer
 from typing import TYPE_CHECKING
 
-from Physics import get_cf_ideal, get_eps, get_chamber_density, get_cstar_ideal
+from Physics import CEA
 
 if TYPE_CHECKING:
     from ..Network import Network
-    from ..Sizer import Sizer
 
 
-class KeroLOXEngine(Component):
+class Engine(Component):
 
     def __init__(self, 
                  name: str, 
                  network: Network,
+                 fuel:str, 
+                 oxidizer:str,
                  chamber_pressure,
                  chamber_volume,
                  throat_area,
@@ -45,17 +46,27 @@ class KeroLOXEngine(Component):
         Pamb = self.ambient_pressure.value
         eps = self.expansion_ratio.value
         nfz = self.nfz.value
+        fuel = self.fuel.value
+        ox = self.oxidizer.value
 
         MR = ox_mdot / fuel_mdot
         self.mixture_ratio.value = MR
-        rho = get_chamber_density(Pc=Pc, MR=MR)
-        self.gas_mass.value = rho*V
+        cea = CEA(
+            fuel=fuel,
+            oxidizer=ox,
+            chamber_pressure=Pc,
+            mixture_ratio=MR,
+            ambient_pressure=Pamb,
+            expansion_ratio=eps,
+            nfz=nfz,
+        )
+        self.gas_mass.value = cea.chamber_density * V
 
-        cstar_ideal = get_cstar_ideal(Pc=Pc, MR=MR)
-        self.nozzle_mass_flow.value = Pc * At / (cstar_ideal * eta_cstar)
+        self.nozzle_mass_flow.value = Pc * At / (
+            cea.characteristic_velocity * eta_cstar
+        )
 
-        cf_ideal = get_cf_ideal(Pc=Pc, MR=MR, Pamb=Pamb, eps=eps, nfz=nfz)
-        self.thrust.value = cf_ideal * eta_cf * Pc * At
+        self.thrust.value = cea.thrust_coefficient * eta_cf * Pc * At
 
 
     @property
@@ -68,9 +79,11 @@ class KeroLOXEngine(Component):
 
 
 
-class KeroLOXEngineSizer(Sizer):
+class EngineSizer(Sizer):
 
     def __init__(self,
+                 fuel:str, 
+                 oxidizer:str,
                  chamber_pressure,
                  mixture_ratio,
                  thrust,
@@ -81,7 +94,7 @@ class KeroLOXEngineSizer(Sizer):
                  nfz = 0):
         self.setup()
 
-    def size(self, engine: KeroLOXEngine):
+    def size(self, engine: Engine):
         Pc = self.chamber_pressure
         MR = self.mixture_ratio
         F = self.thrust
@@ -90,9 +103,19 @@ class KeroLOXEngineSizer(Sizer):
         eps_c = self.contraction_ratio
         eta_cf = self.thrust_coefficient_efficiency
         nfz = self.nfz
+        fuel = self.fuel
+        ox = self.oxidizer
 
-        eps = get_eps(Pc=Pc, MR=MR, Pe=Pe, nfz=nfz)
-        cf = get_cf_ideal(Pc=Pc, MR=MR, Pamb=Pe, eps=eps, nfz=nfz)
+        eps = CEA.calculate_expansion_ratio(fuel, ox, Pc, MR, Pe, nfz)
+        cea = CEA(
+            fuel=fuel,
+            oxidizer=ox,
+            chamber_pressure=Pc,
+            mixture_ratio=MR,
+            expansion_ratio=eps,
+            nfz=nfz,
+        )
+        cf = cea.thrust_coefficient
 
     
         engine.expansion_ratio.value = eps
