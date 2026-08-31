@@ -30,17 +30,10 @@ class EngineSection(Section):
                  boattail: Boattail):
         self.setup()
 
-    @property
-    def length(self):
-        return 20.0 * IN_TO_M
-
-    @property
-    def mass(self):
-        return self.boattail.mass.value + self.engine.engine_mass.value
-
-    @property
-    def EI(self):
-        return 1.0
+    def evaluate(self):
+        self.mass.value = self.engine.mass.value + self.boattail.mass.value
+        self.length.value = 20 * IN_TO_M
+        self.EI.value = 1.0
 
 
 # ---- Laucnh Inputs ---- #
@@ -64,8 +57,8 @@ Engine = KeroLOXEngine(
     nfz=2,
     fuel_mass_flow=2,
     oxidizer_mass_flow=4,
-    engine_mass=50*LBM_TO_KG,
-    thrust=Elytra.thrust
+    mass=50*LBM_TO_KG,
+    thrust=Elytra.thrust,
     sizer=engine_sizer
 )
 
@@ -85,9 +78,8 @@ print(Engine)
 print(Elytra)
 sol = Elytra.fly(dt=0.0005, t_final=0.1)
 print(Engine)
-print(Elytra.thrust.value / LBF_TO_N)
 print(Engine.chamber_pressure.value / PSIA_TO_PA)
-print(Elytra.mass / LBM_TO_KG)
+print(Elytra.thrust.value / LBF_TO_N)
 
 
 '''

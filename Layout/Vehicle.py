@@ -29,7 +29,9 @@ class Vehicle:
         self.sections: list[Section] = [] # the stacking order of sections in the vehicle is the same as the instantiation order
 
         self.atmospheric_pressure = State(self.launch_inputs.initial_atmospheric_pressure)
-        self.length = sum(section.length for section in self.sections)
+        self.thrust = State()
+        self.mass = State()
+        self.length = State()
 
 
     def add_network(self, network:Network): # extende to multiple networks in a single vehicle
@@ -44,6 +46,11 @@ class Vehicle:
         self.network.evaluate()
         for section in self.sections:
             section.evaluate()
+            section.check_properties()
+
+        self.mass.value = sum(section.mass.value for section in self.sections)
+        self.length.value = sum(section.length.value for section in self.sections)
+
 
     def size(self) -> None:
         #for network in self.networks: # eventually, when there are multiple networks
@@ -53,14 +60,6 @@ class Vehicle:
     def fly(self, dt: float, t_final: float) -> dict:
         return solve(self, dt, t_final)
 
-
-    @property
-    def mass(self):
-        return sum(section.mass for section in self.sections)
-
-    @property
-    def length(self):
-        return sum(section.length for section in self.sections)
 
     def __str__(self) -> str:
         lines = [f"Vehicle: {self.name}", f"Sections ({len(self.sections)}):"]

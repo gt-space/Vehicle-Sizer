@@ -7,7 +7,7 @@ def solve(vehicle, dt: float, t_final: float) -> dict:
     network = vehicle.network
     time = 0.0
 
-    network.evaluate()
+    vehicle.evaluate()
     states = network.collect_states()
     stored_states = network.collect_stored_states()
     data = initialize_data(network)
@@ -30,7 +30,7 @@ def solve(vehicle, dt: float, t_final: float) -> dict:
         for state, value in zip(states, solution.x):
             state.value = float(value)
 
-        network.evaluate()
+        vehicle.evaluate()
         time += dt
         record(data, network, time)
 

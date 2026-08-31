@@ -21,7 +21,7 @@ class KeroLOXEngine(Component):
                  throat_area,
                  expansion_ratio,
                  ambient_pressure,
-                 engine_mass,
+                 mass,
                  characteristic_velocity_efficiency = 1.0,
                  thrust_coefficient_efficiency = 1.0,
                  nfz = 0,
