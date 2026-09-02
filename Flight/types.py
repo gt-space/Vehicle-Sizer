@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple, Protocol, Optional
+from typing import Any, Dict, Optional
 
 @dataclass
 class KinematicsState:
@@ -35,21 +35,7 @@ class ThermalOut:
     heat_flux_to_fluids: Dict[str, float]
 
 @dataclass
-class FluidOut:
-    thrust: float
-    dm_fuel: float
-    dm_ox: float
-    dm_press: float
-
-    Pc: float
-    Pox: float
-    Pfuel: float
-    Pcopv: float
-
-    Pvec: Tuple[float, float, float]
-
-@dataclass
 class PlantOut:
     aero: AeroOut
-    thermal: ThermalOut
-    fluids: FluidOut
+    thermal: Optional[ThermalOut]
+    fluids: Dict[str, Any]

@@ -13,6 +13,10 @@ class GasGeometry:
     volume: float
     internal_area: float = 1.0
 
+    @staticmethod
+    def axial_mass(mass):
+        return [mass]
+
 
 @dataclass(frozen=True)
 class TankGeometry:
@@ -26,6 +30,10 @@ class TankGeometry:
             "liquid_contact_area": self.internal_area * fraction,
             "ullage_contact_area": self.internal_area * (1.0 - fraction),
         }
+
+    @staticmethod
+    def axial_mass(liquid_volume, liquid_mass, ullage_mass):
+        return [liquid_mass + ullage_mass]
 
 
 class GeometrySource:
@@ -88,6 +96,7 @@ class PropSystemSizingTests(unittest.TestCase):
                     "press_tank": {
                         "fluid": "Nitrogen",
                         "P": 30.0e6,
+                        "T": 300.0,
                         "m": 5.0,
                         "U": 1.0e6,
                     },
@@ -165,6 +174,34 @@ class PropSystemSizingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires tank 'press_tank'"):
             self._make_system(self._config(), ox_tank, fuel_tank)
 
+    def test_branch_sizing_rejects_parallel_paths_for_now(self):
+        system = object.__new__(PropSystem)
+        circuits = {
+            "fuel": {
+                "prop": "fuel",
+                "fluid": "Water",
+                "state0": {"P": 300_000.0, "T": 300.0},
+            }
+        }
+        nodes = {
+            "tank_1": {"P0": 300_000.0},
+            "tank_2": {"P0": 300_000.0},
+            "manifold": {"P0": 200_000.0},
+        }
+        branches = {
+            branch_id: {
+                "type": "liquid_loss",
+                "circuit": "fuel",
+                "from": tank_id,
+                "to": "manifold",
+                "CdA": None,
+            }
+            for branch_id, tank_id in (("feed_1", "tank_1"), ("feed_2", "tank_2"))
+        }
+
+        with self.assertRaisesRegex(ValueError, "Parallel branches"):
+            system._size_branches(circuits, nodes, branches)
+
     def test_pressure_ladder_sizes_engine_and_branches(self):
         system = self._make_system(self._config(), *self._tanks())
 
@@ -172,15 +209,40 @@ class PropSystemSizingTests(unittest.TestCase):
         self.assertAlmostEqual(system.mdot_total, 16.0 / 3.0)
         self.assertAlmostEqual(system.mdot_ox, 4.0)
         self.assertAlmostEqual(system.mdot_fuel, 4.0 / 3.0)
+        self.assertFalse(hasattr(system, "fluid_circuits"))
         self.assertEqual(system.network.node_definitions["ox_inj_in"]["P0"], 2.4e6)
+        self.assertFalse(hasattr(system.network, "circuits"))
+        self.assertEqual(
+            system.network.node_definitions["ox_ullage"]["liquid_fluid"],
+            "Oxygen",
+        )
+        self.assertEqual(
+            system.network.node_definitions["ox_ullage"]["gas_fluid"],
+            "Nitrogen",
+        )
+        self.assertNotIn("circuit", system.network.node_definitions["ox_ullage"])
+        self.assertNotIn(
+            "liquid_circuit",
+            system.network.node_definitions["ox_ullage"],
+        )
+        self.assertEqual(system.network.branches["OX_INJ"]["circuit"], "oxidizer")
+        self.assertNotIn("state0", system.network.branches["OX_INJ"])
+        self.assertEqual(system.network.branch_objects["OX_INJ"].state["mdot"], 0.0)
+        self.assertEqual(system.network.branches["OX_INJ"]["fluid"], "Oxygen")
         self.assertGreater(system.network.branches["OX_INJ"]["CdA"], 0.0)
         self.assertGreater(system.network.branches["OX_BANGBANG"]["CdA"], 0.0)
+        self.assertGreater(system.network.branches["OX_BANGBANG"]["eol_pressure"], 0.0)
+        self.assertGreater(
+            system.network.branches["FUEL_BANGBANG"]["eol_pressure"],
+            0.0,
+        )
+        self.assertFalse(hasattr(system, "press_tank_eol_pressure"))
         self.assertEqual(system.network.branches["OX_BANGBANG"]["type"], "bang_bang")
         self.assertNotIn("displaced_fluid", system.network.branches["OX_BANGBANG"])
         self.assertEqual(system.network.branches["NOZZLE"]["At"], system.throat_area)
-        self.assertEqual(
-            system.network.node_definitions["thrust_chamber"]["design_state"]["cstar"],
-            system.cstar,
+        self.assertNotIn(
+            "design_state",
+            system.network.node_definitions["thrust_chamber"],
         )
         self.assertEqual(system.network.branches["NOZZLE"]["Cd"], 1.0)
 
@@ -226,6 +288,7 @@ class PropSystemSizingTests(unittest.TestCase):
             "press_tank": {
                 "fluid": "Nitrogen",
                 "P": 30.0e6,
+                "T": 300.0,
                 "m": press_mass,
                 "U": press_energy,
             },

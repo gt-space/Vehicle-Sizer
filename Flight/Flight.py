@@ -1,128 +1,147 @@
 from __future__ import annotations
-import math
-from typing import Any, Dict, Optional
 
-from types import KinematicsState, PlantOut
-from types import AtmosState, AeroOut, ThermalOut, FluidOut, PlantOut
-import PropSystem
+import math
+from typing import Any, Dict, List, Optional
+
+from .PropSystem import PropSystem
+from .flight_forces import gravity
+from .types import AeroOut, AtmosState, KinematicsState, PlantOut, ThermalOut
+
 
 class FlightSim:
-        """Outdated, nee                                                                                                                                                                                                                                                                                                                   d to update with fluids/heat transfer rewrite"""
-    def __init__(self, cfg, env, aero, thermal, fluids, vehicle):
+    """Coordinate atmosphere, propulsion, vehicle mass, and 1D kinematics."""
+
+    def __init__(
+        self,
+        cfg: Dict[str, Any],
+        env: Any,
+        aero: Any,
+        prop_system: PropSystem,
+        vehicle: Any,
+        thermal: Optional[Any] = None,
+    ) -> None:
         self.cfg = cfg
         self.env = env
         self.aero = aero
-        self.thermal = thermal
-        self.fluids = fluids
+        self.prop_system = prop_system
         self.vehicle = vehicle
+        self.thermal = thermal
 
-    def step_plant_coupled(self, kin: KinematicsState, atm: AtmosState, aero_out: AeroOut) -> PlantOut:
-        dt = kin.dt
-        couple = self.cfg.sim.coupling
+    def step_thermal(
+        self,
+        kin: KinematicsState,
+        atm: AtmosState,
+        aero_out: AeroOut,
+    ) -> Optional[ThermalOut]:
+        """Extension point for the wall-to-fluid heat-transfer solve."""
 
-        Tguess = self.thermal.get_wall_temp()
-        Pguess = self.fluids.get_pressures()
+        if self.thermal is None:
+            return None
+        raise NotImplementedError("Thermal coupling has not been connected")
 
-        thermal_out: Optional[ThermalOut] = None
-        fluid_out: Optional[FluidOut] = None
+    def step_plant(
+        self,
+        kin: KinematicsState,
+        atm: AtmosState,
+        aero_out: AeroOut,
+        thermal_out: Optional[ThermalOut] = None,
+        commit: bool = True,
+    ) -> PlantOut:
+        """Advance the propulsion system once using the current atmosphere."""
 
-        for _it in range(couple.max_iters):
-            fluids_bc = self.fluids.get_internal_thermal_bc()
-
-            thermal_out = PropSystem.step(
-                dt=dt,
-                heat_bc=aero_out.heat_bc,
-                fluids_bc=fluids_bc,
-                wall_T0=Tguess,
-            )
-            Tnew = thermal_out.wall_T
-
-            fluid_out = self.fluids.step(
-                dt=dt,
-                kin=kin,
-                atm=atm,
-                thermal_out=thermal_out,
-                aero_out=aero_out,
-            )
-            Pnew = fluid_out.Pvec
-
-            dP = max(abs(Pnew[0] - Pguess[0]), abs(Pnew[1] - Pguess[1]), abs(Pnew[2] - Pguess[2]))
-            dT = abs(float(Tnew) - float(Tguess))
-
-            Pguess = Pnew
-            Tguess = Tnew
-
-            if dP < couple.tol_P and dT < couple.tol_T:
-                break
-
-        assert thermal_out is not None and fluid_out is not None
+        heat_flux = (
+            thermal_out.heat_flux_to_fluids if thermal_out is not None else {}
+        )
+        fluid_out = self.prop_system.update(
+            dt=kin.dt,
+            atm=atm,
+            heat_flux=heat_flux,
+            commit=commit,
+        )
         return PlantOut(aero=aero_out, thermal=thermal_out, fluids=fluid_out)
 
-    def step_kinematics_RK4(self, kin: KinematicsState, plant: PlantOut) -> KinematicsState:
-        dt = 
-        g = 
+    def step_kinematics(
+        self,
+        kin: KinematicsState,
+        plant: PlantOut,
+        mass: float,
+    ) -> KinematicsState:
+        """Propagate vertical position and velocity with constant acceleration."""
 
-        W = 
-        F = 
-        D = 
+        if mass <= 0.0:
+            raise ValueError("Vehicle mass must remain positive")
 
-        a = 
-        v1 = 
-        h1 = 
+        dt = kin.dt
+        thrust = float(plant.fluids["propulsion"]["thrust"])
+        drag = math.copysign(float(plant.aero.D), kin.v) if kin.v != 0.0 else 0.0
+        acceleration = (thrust - drag - gravity(mass, kin.h)) / mass
+        velocity = kin.v + acceleration * dt
+        altitude = kin.h + kin.v * dt + 0.5 * acceleration * dt**2
 
         return KinematicsState(
             t=kin.t + dt,
             dt=dt,
-            h=h1,
-            v=v1,
-            w=kin.w,         
+            h=altitude,
+            v=velocity,
+            w=kin.w,
             alpha=kin.alpha,
-            m=kin.m,
+            m=mass,
             Ixx=kin.Ixx,
         )
 
-    def run(self, h0: float = 0.0, v0: float = 0.01) -> None:
-        
-        dt = self.cfg.sim.dt
+    def run(self, h0: float = 0.0, v0: float = 0.0) -> List[Dict[str, Any]]:
+        """Run the 1D trajectory until the configured end time or apogee."""
 
-        self.vehicle.mass()
+        if self.vehicle.total_mass is None:
+            self.vehicle.build()
 
-        kin = KinematicsState(
-            t=0.0, dt=dt,
-            h=h0, v=v0, w=0.0, alpha=0.0,
-            m=self.vehicle.mass, Ixx=self.vehicle.Ixx
+        simulation = self.cfg["simulation"]
+        dt = float(simulation["dt"])
+        t_end = float(simulation["t_end"])
+        atmosphere = self.env.atmosphere(h0, v0)
+        initial_fluid = self.prop_system.update(
+            dt=None,
+            atm=atmosphere,
+            heat_flux={},
+            commit=False,
         )
+        self.vehicle.update_mass_distribution(initial_fluid["node"])
+        kin = KinematicsState(
+            t=0.0,
+            dt=dt,
+            h=h0,
+            v=v0,
+            w=0.0,
+            alpha=0.0,
+            m=float(self.vehicle.total_mass),
+            Ixx=float(self.vehicle.Ixx),
+        )
+        history: List[Dict[str, Any]] = []
 
-        while kin.t < self.cfg.sim.t_end and kin.v >= 0.0:
+        while kin.t < t_end and (kin.t == 0.0 or kin.v >= 0.0):
+            atmosphere = self.env.atmosphere(kin.h, kin.v)
+            kin.alpha = self.aero.aoa(kin, atmosphere, self.on_rail(kin.h))
+            aero_out = self.aero.evaluate(kin, atmosphere)
+            thermal_out = self.step_thermal(kin, atmosphere, aero_out)
+            plant = self.step_plant(kin, atmosphere, aero_out, thermal_out)
 
-            self.vehicle.update_mass_vector() #mass vec
-            self.vehicle.update_mass_properties() #total mass, COG, MOI, etc.
+            self.vehicle.update_mass_distribution(plant.fluids["node"])
+            kin.Ixx = float(self.vehicle.Ixx)
+            kin = self.step_kinematics(kin, plant, float(self.vehicle.total_mass))
+            history.append(
+                {
+                    "kinematics": kin,
+                    "atmosphere": atmosphere,
+                    "plant": plant,
+                }
+            )
 
-            atm = self.env.atmosphere(kin.h, kin.v)
+        return history
 
-            kin.alpha = self.aero.aoa(kin, atm, self.on_rail(kin.h))
+    def on_rail(self, altitude: float) -> bool:
+        launch = self.cfg["launch"]
+        return altitude < float(launch["altitude"]) + float(launch["rail_length"])
 
-            aero_out = self.aero.evaluate(kin, atm)
-
-            plant = self.step_plant_coupled(kin, atm, aero_out)
-
-            dm_by_tank = {
-                "fuel_tank": plant.fluids.dm_fuel,
-                "ox_tank": plant.fluids.dm_ox,
-            }
-            self.vehicle.tankdrain(dm_by_tank)
-
-            kin.m = self.vehicle.total_mass
-            kin.Ixx = self.vehicle.Ixx
-
-            kin = self.step_kinematics_RK4(kin, plant)
-
-            # TODO: log
-
-    def on_rail(self, h: float) -> bool:
-        L = self.cfg.launch.rail_length
-        h0 = self.cfg.launch.altitude
-        return h < (h0 + L)
-    
-    def powered(self, T: float) -> bool:
-        return T > 0
+    @staticmethod
+    def powered(thrust: float) -> bool:
+        return thrust > 0.0

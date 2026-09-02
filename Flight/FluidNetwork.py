@@ -24,13 +24,13 @@ class FluidNode:
         self.definition = definition
         self.incoming: List[str] = []
         self.outgoing: List[str] = []
-        self.state: Dict[str, float] = {}
+        self.state: Dict[str, Any] = {}
 
     @property
     def is_dynamic(self) -> bool:
         return False
 
-    def initial_state(self) -> Dict[str, float]:
+    def initial_state(self) -> Dict[str, Any]:
         return {}
 
     def initialize(self) -> None:
@@ -45,22 +45,11 @@ class FluidNode:
 
     def trial_state(
         self,
-        variables: Dict[str, float],
-        prescribed: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        return dict(prescribed or self.state)
-
-    def evaluate(self, state: Dict[str, float]) -> Dict[str, Any]:
-        return dict(state)
-
-    def coupled_evaluate(
-        self,
         state: Dict[str, Any],
-        node_state: Dict[str, Dict[str, Any]],
-        branch_state: Dict[str, Dict[str, float]],
-        branches: Dict[str, "FluidBranch"],
+        adjacent: List[Dict[str, Any]],
+        node_states: Dict[str, Dict[str, Any]],
     ) -> Dict[str, Any]:
-        return state
+        return dict(state)
 
     def residual(
         self,
@@ -86,9 +75,6 @@ class AlgebraicNode(FluidNode):
     def state_variables(self, dt, prescribed) -> Dict[str, float]:
         return {} if prescribed is not None else {"P": float(self.state["P"])}
 
-    def trial_state(self, variables, prescribed) -> Dict[str, Any]:
-        return dict(prescribed if prescribed is not None else variables)
-
     def residual(self, trial, previous, evaluated, adjacent, dt, heat_flux) -> np.ndarray:
         mdot_net = sum(item["sign"] * item["state"]["mdot"] for item in adjacent)
         return np.array([mdot_net], dtype=float)
@@ -97,45 +83,43 @@ class AlgebraicNode(FluidNode):
 class CombustionNode(AlgebraicNode):
     """Algebraic chamber with CEA combustion properties."""
 
-    def coupled_evaluate(
+    def trial_state(
         self,
         state: Dict[str, Any],
-        node_state: Dict[str, Dict[str, Any]],
-        branch_state: Dict[str, Dict[str, float]],
-        branches: Dict[str, "FluidBranch"],
+        adjacent: List[Dict[str, Any]],
+        node_states: Dict[str, Dict[str, Any]],
     ) -> Dict[str, Any]:
         def inflow(fluid: str) -> float:
-            total = 0.0
-            for bid in self.incoming:
-                if branches[bid].definition.get("fluid") == fluid:
-                    total += branch_state[bid]["mdot"]
-            for bid in self.outgoing:
-                if branches[bid].definition.get("fluid") == fluid:
-                    total -= branch_state[bid]["mdot"]
-            return total
+            return sum(
+                item["sign"] * item["state"]["mdot"]
+                for item in adjacent
+                if item["state"]["fluid"] == fluid
+            )
 
-        design = dict(self.definition["design_state"])
-        mdot_oxidizer = inflow(self.definition.get("oxidizer_fluid", "ox"))
-        mdot_fuel = inflow(self.definition.get("fuel_fluid", "fuel"))
-        mixture_ratio = (
-            mdot_oxidizer / mdot_fuel
-        )
-        chamber_pressure = float(state["P"])
-        ambient_pressure = node_state[
-            self.definition.get("ambient_node", "ambient")
-        ]["P"]
-        if chamber_pressure <= 0.0:
-            performance = design
-        else:
+        oxidizer_fluid = self.definition["oxidizer_fluid"]
+        fuel_fluid = self.definition["fuel_fluid"]
+        combustion_fluid = self.definition["combustion_fluid"]
+        mdot_oxidizer = inflow(oxidizer_fluid)
+        mdot_fuel = inflow(fuel_fluid)
+        flowing = mdot_oxidizer > 0.0 and mdot_fuel > 0.0
+        mixture_ratio = mdot_oxidizer / (mdot_fuel + 1.0e-12) if flowing else 0.0
+        if flowing:
             performance = FluidsDef.combustion_properties(
-                chamber_pressure=chamber_pressure,
+                chamber_pressure=float(state["P"]),
                 mixture_ratio=mixture_ratio,
-                ambient_pressure=ambient_pressure,
+                ambient_pressure=node_states[
+                    self.definition.get("ambient_node", "ambient")
+                ]["P"],
                 expansion_ratio=self.definition["expansion_ratio"],
                 cea=self.definition["cea"],
                 cstar_efficiency=self.definition.get("cstar_efficiency", 1.0),
                 cf_efficiency=self.definition.get("cf_efficiency", 1.0),
             )
+        else:
+            performance = {
+                name: 0.0
+                for name in ("cstar", "Cf", "R", "gamma", "T", "h")
+            }
 
         fluid_state = {
             name: performance[name]
@@ -149,17 +133,17 @@ class CombustionNode(AlgebraicNode):
             "MR": mixture_ratio,
             "mdot_oxidizer": mdot_oxidizer,
             "mdot_fuel": mdot_fuel,
-            "fluids": {
-                self.definition.get("combustion_fluid", "combustion_gas"): fluid_state
-            },
+            "fluids": {combustion_fluid: fluid_state},
         }
 
 
 class BoundaryNode(FluidNode):
     """Prescribed node; it adds no unknown and no residual equation."""
 
-    def trial_state(self, variables, prescribed) -> Dict[str, Any]:
-        state = prescribed if prescribed is not None else self.definition
+    def initial_state(self) -> Dict[str, Any]:
+        return dict(self.definition)
+
+    def trial_state(self, state, adjacent, node_states) -> Dict[str, Any]:
         if "P" not in state:
             raise ValueError(f"Boundary node '{self.id}' requires a pressure state")
         return dict(state)
@@ -176,11 +160,6 @@ class DynamicNode(FluidNode):
             return {}
         return dict(self.state)
 
-    def trial_state(self, variables, prescribed) -> Dict[str, Any]:
-        if prescribed is not None:
-            return dict(prescribed)
-        return dict(variables or self.state)
-
     @staticmethod
     def _fluxes(
         adjacent: List[Dict[str, Any]],
@@ -189,7 +168,7 @@ class DynamicNode(FluidNode):
         mdot = 0.0
         hdot = 0.0
         for item in adjacent:
-            if fluid is not None and item["branch"].get("fluid") != fluid:
+            if fluid is not None and item["state"]["fluid"] != fluid:
                 continue
             signed_mdot = item["sign"] * item["state"]["mdot"]
             mdot += signed_mdot
@@ -210,12 +189,13 @@ class GasVolumeNode(DynamicNode):
         state0 = self.definition["state0"]
         return {"m": float(state0["m"]), "U": float(state0["U"])}
 
-    def evaluate(self, state: Dict[str, float]) -> Dict[str, Any]:
+    def trial_state(self, state, adjacent, node_states) -> Dict[str, Any]:
         geometry = self.definition["geometry"]
+        fluid = self.definition["fluid"]
         density = state["m"] / geometry.volume
         internal_energy = state["U"] / state["m"]
         fluid_state = FluidsDef.coolprop_state(
-            self.definition["fluid"],
+            fluid,
             "Dmass",
             density,
             "Umass",
@@ -224,8 +204,11 @@ class GasVolumeNode(DynamicNode):
         fluid_state["V"] = geometry.volume
         return {
             **state,
+            "mass": state["m"],
+            "tank_id": self.definition.get("tank_id"),
+            "axial_mass": geometry.axial_mass(state["m"]),
             "P": fluid_state["P"],
-            "fluids": {self.definition["fluid"]: fluid_state},
+            "fluids": {fluid: fluid_state},
         }
 
     def residual(self, trial, previous, evaluated, adjacent, dt, heat_flux) -> np.ndarray:
@@ -254,7 +237,7 @@ class PropellantTankNode(DynamicNode):
             for name in ("m_liq", "U_liq", "m_ull", "U_ull")
         }
 
-    def evaluate(self, state: Dict[str, float]) -> Dict[str, Any]:
+    def trial_state(self, state, adjacent, node_states) -> Dict[str, Any]:
         geometry = self.definition["geometry"]
         liquid_fluid = self.definition["liquid_fluid"]
         gas_fluid = self.definition["gas_fluid"]
@@ -272,6 +255,13 @@ class PropellantTankNode(DynamicNode):
 
         return {
             **state,
+            "mass": state["m_liq"] + state["m_ull"],
+            "tank_id": self.definition.get("tank_id"),
+            "axial_mass": geometry.axial_mass(
+                liquid_volume=tank["liquid"]["V"],
+                liquid_mass=state["m_liq"],
+                ullage_mass=state["m_ull"],
+            ),
             "P": tank["P"],
             **fill,
             "fluids": {
@@ -312,10 +302,11 @@ class FluidBranch:
     def __init__(self, branch_id: str, definition: Dict[str, Any]) -> None:
         self.id = branch_id
         self.definition = definition
-        self.state = {"mdot": float(definition.get("design_mdot", 0.0))}
+        self.state = {"mdot": 0.0}
 
     def state_variables(self) -> Dict[str, float]:
-        return {"mdot": self.state["mdot"]}
+        mdot = self.state["mdot"] if self.state["mdot"] != 0.0 else 1.0e-6
+        return {"mdot": mdot}
 
     def evaluate(
         self,
@@ -327,6 +318,7 @@ class FluidBranch:
         donor = self.definition["from"] if mdot >= 0.0 else self.definition["to"]
         return {
             "mdot": mdot,
+            "fluid": self.definition["fluid"],
             "h": get_property(donor, self.definition["fluid"], "h"),
             "dP": (
                 node_state[self.definition["from"]]["P"]
@@ -346,7 +338,7 @@ class FluidBranch:
         self.state = {"mdot": float(state["mdot"])}
 
     def flow_scale(self) -> float:
-        return max(abs(float(self.definition.get("design_mdot", 0.0))), 1.0)
+        return max(abs(self.state["mdot"]), 1.0)
 
 
 class LiquidBranch(FluidBranch):
@@ -420,7 +412,7 @@ class NozzleBranch(FluidBranch):
     def residual(self, state, node_state, get_property) -> np.ndarray:
         chamber = node_state[self.definition["from"]]
         expected = 0.0
-        if state["dP"] > 0.0:
+        if state["dP"] > 0.0 and chamber["cstar"] > 0.0:
             expected = (
                 self.definition.get("Cd", 1.0)
                 * chamber["P"]
@@ -474,7 +466,7 @@ class FluidNetwork:
         if branch_class is not None:
             return branch_class(branch_id, definition)
         branch_type = definition["type"]
-        if branch_type in ("liquid_loss", "liquid_orifice"):
+        if branch_type == "liquid_loss":
             return LiquidBranch(branch_id, definition)
         if branch_type == "gas_orifice":
             return GasBranch(branch_id, definition)
@@ -525,7 +517,7 @@ class FluidNetwork:
             for nid, node in self.nodes.items():
                 names, indices = node_layout[nid]
                 values = {name: float(value) for name, value in zip(names, x[indices])}
-                raw_nodes[nid] = node.trial_state(values, bcs.get(nid))
+                raw_nodes[nid] = {**node.state, **values, **bcs.get(nid, {})}
             raw_branches = {}
             for bid in self.branch_objects:
                 names, indices = branch_layout[bid]
@@ -536,17 +528,32 @@ class FluidNetwork:
 
         def residual(x: np.ndarray) -> np.ndarray:
             raw_nodes, raw_branches = unpack(x)
+            trial_branches = {
+                bid: {
+                    **state,
+                    "fluid": self.branches[bid]["fluid"],
+                }
+                for bid, state in raw_branches.items()
+            }
+
+            def adjacent(node, branch_states):
+                return [
+                    {"id": bid, "state": branch_states[bid], "sign": sign}
+                    for sign, branch_ids in (
+                        (1.0, node.incoming),
+                        (-1.0, node.outgoing),
+                    )
+                    for bid in branch_ids
+                ]
+
             node_state = {
-                nid: node.evaluate(raw_nodes[nid])
+                nid: node.trial_state(
+                    raw_nodes[nid],
+                    adjacent(node, trial_branches),
+                    raw_nodes,
+                )
                 for nid, node in self.nodes.items()
             }
-            for nid, node in self.nodes.items():
-                node_state[nid] = node.coupled_evaluate(
-                    node_state[nid],
-                    node_state,
-                    raw_branches,
-                    self.branch_objects,
-                )
 
             get_property = lambda nid, fluid, name: self._property(
                 nid, fluid, name, node_state, set()
@@ -561,21 +568,12 @@ class FluidNetwork:
                 names, _ = node_layout[nid]
                 if not names:
                     continue
-                adjacent = [
-                    {
-                        "branch": self.branches[bid],
-                        "state": branch_state[bid],
-                        "sign": sign,
-                    }
-                    for sign, branch_ids in ((1.0, node.incoming), (-1.0, node.outgoing))
-                    for bid in branch_ids
-                ]
                 equations.extend(
                     node.residual(
                         raw_nodes[nid],
                         node.state,
                         node_state[nid],
-                        adjacent,
+                        adjacent(node, branch_state),
                         dt,
                         heat_flux,
                     )
@@ -641,7 +639,7 @@ class FluidNetwork:
             return float(fluid_state[name])
         for bid in self.nodes[node_id].incoming:
             branch = self.branches[bid]
-            if branch.get("fluid") == fluid:
+            if branch["fluid"] == fluid:
                 try:
                     return self._property(
                         branch["from"], fluid, name, node_state, visited

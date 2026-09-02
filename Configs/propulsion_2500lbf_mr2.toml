@@ -1,0 +1,74 @@
+[simulation]
+duration = 0.25                # s
+dt = 0.005                     # s
+ambient_pressure = 101325.0    # Pa
+output = "outputs/propulsion_2500lbf_mr2_traces.png"
+
+[prop_system]
+press_model = "pressure_fed"
+Pc_target = 2.0e6              # Pa
+MR_target = 2.0                # oxidizer/fuel mass ratio
+thrust_target = 11120.554      # N (2500 lbf)
+ox_inj_stiffness = 0.20
+fuel_inj_stiffness = 0.20
+ox_tank_inj_dp = 2.0e5         # Pa
+fuel_tank_inj_dp = 2.0e5       # Pa
+nozzle_cd = 1.0
+
+[prop_system.bang_bang.OX_BANGBANG]
+duty_cycle = 0.50
+collapse_factor = 1.20
+min_temperature = 220.0        # K
+
+[prop_system.bang_bang.FUEL_BANGBANG]
+duty_cycle = 0.50
+collapse_factor = 1.20
+min_temperature = 220.0        # K
+
+[prop_system.state0.press_tank]
+fluid = "Nitrogen"
+P = 3.0e7                       # Pa
+T = 300.0                       # K
+
+[prop_system.state0.ox_tank]
+fluid = "Oxygen"                # CoolProp name for LOX
+gas_fluid = "Nitrogen"
+P = 2.6e6                       # Pa
+T = 95.0                        # K, liquid temperature
+gas_T = 293.0                   # K
+initial_fill_fraction = 0.85
+
+[prop_system.state0.fuel_tank]
+fluid = "n-Dodecane"
+gas_fluid = "Nitrogen"
+P = 2.6e6                       # Pa
+T = 293.0                       # K, liquid temperature
+gas_T = 293.0                   # K
+initial_fill_fraction = 0.85
+
+[engine]
+oxidizer = "LOX"
+fuel = "RP-1"
+cstar_efficiency = 0.95
+cf_efficiency = 0.95
+exit_pressure = 101325.0        # Pa
+
+[tank_geometry.ox_tank]
+volume = 0.070                   # m^3 (70 L)
+inner_diameter = 0.30            # m
+cylinder_length = 0.88           # m
+ellipse_ratio = 1.75
+passthrough_diameter = 0.0       # m
+
+[tank_geometry.fuel_tank]
+volume = 0.050                   # m^3 (50 L)
+inner_diameter = 0.30            # m
+cylinder_length = 0.61           # m
+ellipse_ratio = 1.75
+passthrough_diameter = 0.04      # m
+
+[tank_geometry.press_tank]
+volume = 0.020                   # m^3
+length = 0.60                    # m
+diameter = 0.22                  # m
+internal_area = 0.50             # m^2

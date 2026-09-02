@@ -99,11 +99,48 @@ class PropTankGeometry:
             "ullage_contact_area": total_area - liquid_area,
         }
 
+    def axial_mass(
+        self,
+        liquid_volume: float,
+        liquid_mass: float,
+        ullage_mass: float,
+    ) -> np.ndarray:
+        """Return the local fore-to-aft fluid mass vector."""
+
+        if not 0.0 <= liquid_volume <= self.volume:
+            raise ValueError("Liquid volume must remain within the tank volume")
+        if liquid_mass < 0.0 or ullage_mass < 0.0:
+            raise ValueError("Tank phase masses cannot be negative")
+
+        cell_volume = np.diff(self._profile["volume"])
+        cell_volume *= self.volume / np.sum(cell_volume)
+        aft_volume = cell_volume[::-1]
+        volume_before = np.concatenate(([0.0], np.cumsum(aft_volume)[:-1]))
+        liquid_cell_volume = np.clip(
+            liquid_volume - volume_before,
+            0.0,
+            aft_volume,
+        )[::-1]
+        ullage_cell_volume = cell_volume - liquid_cell_volume
+
+        def distribute(mass: float, volume: np.ndarray, phase: str) -> np.ndarray:
+            total_volume = np.sum(volume)
+            if mass == 0.0:
+                return np.zeros(self.resolution)
+            if total_volume <= 0.0:
+                raise ValueError(f"{phase} mass requires nonzero {phase} volume")
+            return mass * volume / total_volume
+
+        return distribute(
+            liquid_mass, liquid_cell_volume, "liquid"
+        ) + distribute(ullage_mass, ullage_cell_volume, "ullage")
+
 class PropTank(Section):
 
-    def __init__(self, cfg: dict, medium: str, prop_mass: float, material: str, passthrough_diameter: float, ellipse_ratio: float, ullage_factor: float, P_liq0: float, T_liq0: float):
+    def __init__(self, cfg: dict, medium: str, prop_mass: float, material: str, passthrough_diameter: float, ellipse_ratio: float, ullage_factor: float, P_liq0: float, T_liq0: float, tank_id: str):
 
         super().__init__(cfg)
+        self.tank_id = tank_id
         self.passthrough_diameter = passthrough_diameter
         self.ellipse_ratio = ellipse_ratio
         self.ullage_factor = ullage_factor
@@ -168,7 +205,21 @@ class PropTank(Section):
             cylinder_length=self.cyl_length,
             ellipse_ratio=self.ellipse_ratio,
             passthrough_diameter=self.passthrough_diameter,
+            resolution=self.n,
         )
+
+    def set_fluid_mass(self, axial_mass: np.ndarray) -> None:
+        """Add a network-supplied fluid vector to this tank's dry mass."""
+
+        axial_mass = np.asarray(axial_mass, dtype=float)
+        if axial_mass.shape != self.dry_mass.shape:
+            raise ValueError(
+                f"Tank '{self.tank_id}' requires {self.n} axial mass values"
+            )
+        if np.any(axial_mass < 0.0):
+            raise ValueError(f"Tank '{self.tank_id}' fluid mass cannot be negative")
+        self.mass = self.dry_mass + axial_mass
+        self.get_MOI()
 
     def _get_wall_thickness(self):
         sigma = mp.db.get_material(self.material).get("yield_strength", 400.0)

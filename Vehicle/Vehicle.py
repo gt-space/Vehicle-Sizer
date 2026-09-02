@@ -63,6 +63,48 @@ class Vehicle:
             for sec in self.sections
         )
 
+    def update_mass_distribution(self, node_states: dict) -> None:
+        """Apply fluid-network axial mass vectors and refresh mass properties."""
+
+        tank_sections = {
+            section.tank_id: section
+            for section in self.sections
+            if hasattr(section, "tank_id")
+        }
+        if len(tank_sections) != sum(
+            hasattr(section, "tank_id") for section in self.sections
+        ):
+            raise ValueError("Vehicle tank IDs must be unique")
+
+        fluid_tanks = {}
+        for node_id, state in node_states.items():
+            if "axial_mass" not in state:
+                continue
+            tank_id = state.get("tank_id")
+            if tank_id is None:
+                raise ValueError(
+                    f"Fluid node '{node_id}' with axial mass requires a tank_id"
+                )
+            if tank_id in fluid_tanks:
+                raise ValueError(f"Multiple fluid nodes reference tank '{tank_id}'")
+            fluid_tanks[tank_id] = state["axial_mass"]
+
+        missing_sections = set(fluid_tanks) - set(tank_sections)
+        if missing_sections:
+            raise ValueError(
+                f"Fluid nodes reference unknown vehicle tanks: {sorted(missing_sections)}"
+            )
+        missing_states = set(tank_sections) - set(fluid_tanks)
+        if missing_states:
+            raise ValueError(
+                f"Vehicle tanks have no fluid-node state: {sorted(missing_states)}"
+            )
+
+        for tank_id, axial_mass in fluid_tanks.items():
+            tank_sections[tank_id].set_fluid_mass(axial_mass)
+        self._assemble_vectors()
+        self.get_mass_properties()
+
     def get_CNa(self, M: float, alpha: float):
         for sec in self.sections:
             sec.get_CNa(M, alpha)

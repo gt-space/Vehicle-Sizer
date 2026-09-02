@@ -2,6 +2,8 @@ import unittest
 import sys
 from unittest.mock import MagicMock
 
+import numpy as np
+
 sys.modules.setdefault("matproplib", MagicMock())
 sys.modules.setdefault("Vehicle.utils.heating", MagicMock())
 
@@ -41,6 +43,41 @@ class TankGeometryTests(unittest.TestCase):
         )
 
         self.assertEqual(geometry.internal_area, 0.6)
+
+    def test_propellant_axial_mass_is_conserved_and_settles_aft(self):
+        geometry = PropTankGeometry(
+            volume=0.1,
+            inner_diameter=0.4,
+            cylinder_length=0.6,
+            ellipse_ratio=1.5,
+            passthrough_diameter=0.05,
+            resolution=20,
+        )
+
+        axial_mass = geometry.axial_mass(
+            liquid_volume=0.025,
+            liquid_mass=20.0,
+            ullage_mass=0.0,
+        )
+
+        self.assertEqual(len(axial_mass), 20)
+        self.assertAlmostEqual(np.sum(axial_mass), 20.0)
+        self.assertEqual(np.sum(axial_mass[:10]), 0.0)
+        self.assertGreater(np.sum(axial_mass[10:]), 0.0)
+
+    def test_pressure_tank_axial_mass_is_conserved(self):
+        geometry = PressTankGeometry(
+            volume=0.02,
+            length=0.7,
+            diameter=0.25,
+            internal_area=0.6,
+            resolution=7,
+        )
+
+        axial_mass = geometry.axial_mass(3.5)
+
+        self.assertEqual(len(axial_mass), 7)
+        self.assertAlmostEqual(np.sum(axial_mass), 3.5)
 
 
 if __name__ == "__main__":

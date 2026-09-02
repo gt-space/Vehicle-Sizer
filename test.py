@@ -43,7 +43,7 @@ def main():
         diameter=0.25,
         internal_area=0.7,
     )
-    s2 = PressTank(cfg, copv2)
+    s2 = PressTank(cfg, copv2, tank_id="press_tank")
 
     # Intertank 2
     L3 = 0.15
@@ -56,8 +56,8 @@ def main():
     engine.exit_area = 0.025  # m^2, consistent with hardcoded Ae in FinCan
     s4 = FinCan(cfg, engine)
 
-    s5 = PropTank(cfg, medium="oxygen", prop_mass=200, material="aluminum_6061_t6", passthrough_diameter=0.052, ellipse_ratio=1.5, ullage_factor=1.1, P_liq0=1e6, T_liq0=90.0)
-    s6 = PropTank(cfg, medium="n-Dodecane", prop_mass=100, material="aluminum_6061_t6", passthrough_diameter=0.05, ellipse_ratio=1.5, ullage_factor=1.1, P_liq0=1e6, T_liq0=300.0)
+    s5 = PropTank(cfg, medium="oxygen", prop_mass=200, material="aluminum_6061_t6", passthrough_diameter=0.052, ellipse_ratio=1.5, ullage_factor=1.1, P_liq0=1e6, T_liq0=90.0, tank_id="ox_tank")
+    s6 = PropTank(cfg, medium="n-Dodecane", prop_mass=100, material="aluminum_6061_t6", passthrough_diameter=0.05, ellipse_ratio=1.5, ullage_factor=1.1, P_liq0=1e6, T_liq0=300.0, tank_id="fuel_tank")
 
     L7 = 0.36
     P7 = 15000.0

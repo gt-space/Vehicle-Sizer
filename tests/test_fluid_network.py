@@ -11,6 +11,10 @@ class GasGeometry:
     volume: float
     internal_area: float
 
+    @staticmethod
+    def axial_mass(mass):
+        return [mass]
+
 
 @dataclass(frozen=True)
 class TankGeometry:
@@ -24,6 +28,10 @@ class TankGeometry:
             "liquid_contact_area": self.internal_area * fraction,
             "ullage_contact_area": self.internal_area * (1.0 - fraction),
         }
+
+    @staticmethod
+    def axial_mass(liquid_volume, liquid_mass, ullage_mass):
+        return [liquid_mass + ullage_mass]
 
 
 def stored_state(fluid, pressure, temperature, volume):
@@ -59,14 +67,42 @@ class FakeCEA:
 
 
 class FluidNetworkTests(unittest.TestCase):
+    def test_runtime_network_does_not_require_design_circuits(self):
+        network = FluidNetwork(
+            nodes={
+                "source": {"type": "boundary_pressure"},
+                "sink": {"type": "boundary_pressure"},
+            },
+            branches={
+                "feed": {
+                    "type": "liquid_loss",
+                    "fluid": "Water",
+                    "from": "source",
+                    "to": "sink",
+                    "CdA": 1.0e-5,
+                }
+            },
+        )
+
+        self.assertFalse(hasattr(network, "circuits"))
+        self.assertEqual(network.branches["feed"]["fluid"], "Water")
+
     def test_bang_bang_alone_applies_duty_cycle(self):
         gas_orifice = FluidNetwork._make_branch(
             "gas",
-            {"type": "gas_orifice", "CdA": 2.0, "duty_cycle": 0.25},
+            {
+                "type": "gas_orifice",
+                "CdA": 2.0,
+                "duty_cycle": 0.25,
+            },
         )
         bang_bang = FluidNetwork._make_branch(
             "bang",
-            {"type": "bang_bang", "CdA": 2.0, "duty_cycle": 0.25},
+            {
+                "type": "bang_bang",
+                "CdA": 2.0,
+                "duty_cycle": 0.25,
+            },
         )
 
         self.assertEqual(gas_orifice.effective_cda(), 2.0)
@@ -87,16 +123,8 @@ class FluidNetworkTests(unittest.TestCase):
                     "expansion_ratio": 5.0,
                     "oxidizer_fluid": "ox",
                     "fuel_fluid": "fuel",
+                    "combustion_fluid": "combustion_gas",
                     "ambient_node": "ambient",
-                    "design_state": {
-                        "MR": 3.0,
-                        "cstar": 2000.0,
-                        "Cf": 1.5,
-                        "R": 350.0,
-                        "gamma": 1.2,
-                        "T": 3200.0,
-                        "h": 5.0e6,
-                    },
                 },
                 "ambient": {"type": "boundary_pressure"},
             },
@@ -107,7 +135,6 @@ class FluidNetworkTests(unittest.TestCase):
                     "from": "ox_source",
                     "to": "chamber",
                     "CdA": oxidizer_cda,
-                    "design_mdot": 3.0,
                 },
                 "fuel": {
                     "type": "liquid_loss",
@@ -115,7 +142,6 @@ class FluidNetworkTests(unittest.TestCase):
                     "from": "fuel_source",
                     "to": "chamber",
                     "CdA": fuel_cda,
-                    "design_mdot": 1.0,
                 },
                 "nozzle": {
                     "type": "nozzle",
@@ -124,7 +150,6 @@ class FluidNetworkTests(unittest.TestCase):
                     "to": "ambient",
                     "At": 0.004,
                     "Cd": 1.0,
-                    "design_mdot": 4.0,
                 },
             },
         )
@@ -195,7 +220,10 @@ class FluidNetworkTests(unittest.TestCase):
         network = FluidNetwork(
             nodes={
                 "source": {"type": "boundary_pressure"},
-                "junction": {"type": "liquid_volume", "P0": 200_000.0},
+                "junction": {
+                    "type": "liquid_volume",
+                    "P0": 200_000.0,
+                },
                 "sink": {"type": "boundary_pressure"},
             },
             branches={
@@ -287,7 +315,7 @@ class FluidNetworkTests(unittest.TestCase):
             },
             branches={
                 "out": {
-                    "type": "liquid_orifice",
+                    "type": "liquid_loss",
                     "fluid": "Water",
                     "from": "tank",
                     "to": "ambient",
@@ -353,7 +381,10 @@ class FluidNetworkTests(unittest.TestCase):
         network = FluidNetwork(
             nodes={
                 "source": {"type": "boundary_pressure"},
-                "pump_out": {"type": "liquid_volume", "P0": 300_000.0},
+                "pump_out": {
+                    "type": "liquid_volume",
+                    "P0": 300_000.0,
+                },
                 "sink": {"type": "boundary_pressure"},
             },
             branches={
@@ -364,7 +395,6 @@ class FluidNetworkTests(unittest.TestCase):
                     "to": "pump_out",
                     "dP": 200_000.0,
                     "CdA": None,
-                    "design_mdot": 1.0,
                 },
                 "loss": {
                     "type": "liquid_loss",
