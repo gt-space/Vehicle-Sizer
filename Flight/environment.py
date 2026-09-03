@@ -29,7 +29,7 @@ class Environment:
         rho = np.exp(np.interp(z, self._z, self._log_rho))
         a = np.sqrt(GAMMA * R_AIR * T)
         mu = sutherland(T)
-        Ma = v / a
+        Ma = abs(v) / a
         q = 0.5 * rho * v**2
         return AtmosState(T=float(T), p=float(p), rho=float(rho), mu=float(mu),
                           a=float(a), q=float(q), Ma=float(Ma))

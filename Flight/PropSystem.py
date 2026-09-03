@@ -6,6 +6,7 @@ from rocketcea.cea_obj_w_units import CEA_Obj
 
 from .FluidNetwork import FluidNetwork
 from .FluidsDef import FluidsDef
+from .types import FluidOut, PropulsionOut
 
 
 class PropSystem:
@@ -812,23 +813,23 @@ class PropSystem:
     def _propulsion_output(
         self,
         network_output: Dict[str, Any],
-    ) -> Dict[str, float]:
+    ) -> PropulsionOut:
         mdot_ox = network_output["mdot"]["OX_INJ"]
         mdot_fuel = network_output["mdot"]["FUEL_INJ"]
         chamber = network_output["node"]["thrust_chamber"]
         Pc = chamber["P"]
         MR = chamber["MR"]
         Cf = chamber["Cf"]
-        return {
-            "thrust": Pc * self.throat_area * Cf,
-            "Pc": Pc,
-            "MR": MR,
-            "Cf": Cf,
-            "cstar": chamber["cstar"],
-            "mdot_ox": mdot_ox,
-            "mdot_fuel": mdot_fuel,
-            "mdot_nozzle": network_output["mdot"]["NOZZLE"],
-        }
+        return PropulsionOut(
+            thrust=Pc * self.throat_area * Cf,
+            Pc=Pc,
+            MR=MR,
+            Cf=Cf,
+            cstar=chamber["cstar"],
+            mdot_ox=mdot_ox,
+            mdot_fuel=mdot_fuel,
+            mdot_nozzle=network_output["mdot"]["NOZZLE"],
+        )
 
     def update(
         self,
@@ -837,7 +838,7 @@ class PropSystem:
         heat_flux: Dict[str, float],
         bcs: Optional[Dict[str, Dict[str, Any]]] = None,
         commit: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> FluidOut:
         boundaries = dict(bcs or {})
         boundaries["ambient"] = {"P": float(atm.p)}
 
@@ -847,5 +848,10 @@ class PropSystem:
             heat_flux=heat_flux,
             commit=commit,
         )
-        result["propulsion"] = self._propulsion_output(result)
-        return result
+        return FluidOut(
+            node=result["node"],
+            branch=result["branch"],
+            td_state=result["td_state"],
+            mdot=result["mdot"],
+            propulsion=self._propulsion_output(result),
+        )

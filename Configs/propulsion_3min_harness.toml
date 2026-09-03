@@ -1,0 +1,78 @@
+[simulation]
+duration = 180.0
+dt = 0.5
+ambient_pressure = 101325.0
+output = "outputs/propulsion_3min_harness.csv"
+mass_balance_rtol = 1.0e-6
+progress_every = 10
+
+[prop_system]
+press_model = "pressure_fed"
+Pc_target = 2.0e6
+MR_target = 2.0
+thrust_target = 11120.554
+ox_inj_stiffness = 0.20
+fuel_inj_stiffness = 0.20
+ox_tank_inj_dp = 2.0e5
+fuel_tank_inj_dp = 2.0e5
+nozzle_cd = 1.0
+
+[prop_system.bang_bang.OX_BANGBANG]
+duty_cycle = 0.50
+collapse_factor = 1.20
+min_temperature = 220.0
+
+[prop_system.bang_bang.FUEL_BANGBANG]
+duty_cycle = 0.50
+collapse_factor = 1.20
+min_temperature = 220.0
+
+[prop_system.state0.press_tank]
+fluid = "Nitrogen"
+P = 3.0e7
+T = 300.0
+
+[prop_system.state0.ox_tank]
+fluid = "Oxygen"
+gas_fluid = "Nitrogen"
+P = 2.6e6
+T = 95.0
+gas_T = 293.0
+initial_fill_fraction = 0.90
+
+[prop_system.state0.fuel_tank]
+fluid = "n-Dodecane"
+gas_fluid = "Nitrogen"
+P = 2.6e6
+T = 293.0
+gas_T = 293.0
+initial_fill_fraction = 0.90
+
+[engine]
+oxidizer = "LOX"
+fuel = "RP-1"
+cstar_efficiency = 0.95
+cf_efficiency = 0.95
+exit_pressure = 101325.0
+
+[tank_geometry.ox_tank]
+# Deliberately oversized so the network can remain powered for all 180 seconds.
+volume = 1.20
+inner_diameter = 0.80
+cylinder_length = 2.25
+ellipse_ratio = 1.75
+passthrough_diameter = 0.0
+
+[tank_geometry.fuel_tank]
+volume = 0.80
+inner_diameter = 0.80
+cylinder_length = 1.45
+ellipse_ratio = 1.75
+passthrough_diameter = 0.04
+
+[tank_geometry.press_tank]
+# Deliberately oversized to supply both ullage branches for the full test.
+volume = 0.50
+length = 1.50
+diameter = 0.70
+internal_area = 4.00

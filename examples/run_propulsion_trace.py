@@ -130,9 +130,9 @@ def run(config_path: Path):
     for step in range(steps):
         result = system.update(dt=dt, atm=atmosphere, heat_flux={})
         time.append((step + 1) * dt)
-        thrust.append(result["propulsion"]["thrust"])
+        thrust.append(result.propulsion.thrust)
         for node_id in pressure:
-            pressure[node_id].append(result["node"][node_id]["P"])
+            pressure[node_id].append(result.node[node_id]["P"])
 
     output = Path(sim["output"])
     if not output.is_absolute():
@@ -164,7 +164,7 @@ def run(config_path: Path):
     figure.savefig(output, dpi=180)
     print(f"Saved {output}")
     print(f"Final thrust: {thrust_lbf[-1]:.1f} lbf")
-    print(f"Final MR: {result['propulsion']['MR']:.4f}")
+    print(f"Final MR: {result.propulsion.MR:.4f}")
 
 
 if __name__ == "__main__":

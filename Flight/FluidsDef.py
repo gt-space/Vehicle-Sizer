@@ -35,6 +35,78 @@ class FluidsDef:
             "gamma": prop("Cpmass") / prop("Cvmass"),
         }
 
+    @classmethod
+    def coolprop_state_pu(
+        cls,
+        fluid: str,
+        pressure: float,
+        internal_energy: float,
+        phase: str,
+    ) -> Dict[str, float]:
+        """Evaluate P/U state, resolving known near-critical flash failures via T."""
+
+        if phase not in ("gas", "liquid"):
+            raise ValueError(f"Unsupported tank phase '{phase}'")
+        try:
+            return cls.coolprop_state(
+                fluid,
+                "P",
+                pressure,
+                "Umass",
+                internal_energy,
+            )
+        except ValueError as flash_error:
+            critical_pressure = float(PropsSI("PCRIT", fluid))
+            minimum_temperature = float(PropsSI("TMIN", fluid)) * 1.01
+            maximum_temperature = float(PropsSI("TMAX", fluid)) * 0.999
+            temperature_input = "T"
+
+            if pressure < critical_pressure:
+                quality = 1.0 if phase == "gas" else 0.0
+                saturation_temperature = float(
+                    PropsSI("T", "P", pressure, "Q", quality, fluid)
+                )
+                temperature_input = f"T|{phase}"
+                if phase == "gas":
+                    minimum_temperature = saturation_temperature * 1.000001
+                elif phase == "liquid":
+                    maximum_temperature = saturation_temperature * 0.999999
+            def energy_error(temperature: float) -> float:
+                return float(
+                    PropsSI(
+                        "Umass",
+                        "P",
+                        pressure,
+                        temperature_input,
+                        temperature,
+                        fluid,
+                    )
+                    - internal_energy
+                )
+
+            try:
+                solution = root_scalar(
+                    energy_error,
+                    bracket=(minimum_temperature, maximum_temperature),
+                    method="brentq",
+                )
+            except (ValueError, RuntimeError) as inversion_error:
+                raise ValueError(
+                    f"Invalid {phase} P/U state for {fluid}: "
+                    f"P={pressure}, u={internal_energy}"
+                ) from inversion_error
+            if not solution.converged:
+                raise RuntimeError(
+                    f"{phase.capitalize()} temperature inversion failed for {fluid}"
+                ) from flash_error
+            return cls.coolprop_state(
+                fluid,
+                "P",
+                pressure,
+                temperature_input,
+                float(solution.root),
+            )
+
     @staticmethod
     def compressible_mass_flux(
         P_upstream: float,
@@ -147,11 +219,11 @@ class FluidsDef:
 
         def volume_error(log_pressure: float) -> float:
             pressure = float(np.exp(log_pressure))
-            rho_gas = cls.coolprop_state(
-                gas_fluid, "P", pressure, "Umass", u_gas
+            rho_gas = cls.coolprop_state_pu(
+                gas_fluid, pressure, u_gas, "gas"
             )["rho"]
-            rho_liquid = cls.coolprop_state(
-                liquid_fluid, "P", pressure, "Umass", u_liquid
+            rho_liquid = cls.coolprop_state_pu(
+                liquid_fluid, pressure, u_liquid, "liquid"
             )["rho"]
             return m_gas / rho_gas + m_liquid / rho_liquid - tank_volume
 
@@ -165,9 +237,9 @@ class FluidsDef:
             raise RuntimeError("Tank pressure compatibility solve failed")
 
         pressure = float(np.exp(solution.root))
-        gas = cls.coolprop_state(gas_fluid, "P", pressure, "Umass", u_gas)
-        liquid = cls.coolprop_state(
-            liquid_fluid, "P", pressure, "Umass", u_liquid
+        gas = cls.coolprop_state_pu(gas_fluid, pressure, u_gas, "gas")
+        liquid = cls.coolprop_state_pu(
+            liquid_fluid, pressure, u_liquid, "liquid"
         )
         V_gas = m_gas / gas["rho"]
         V_liquid = m_liquid / liquid["rho"]

@@ -326,11 +326,11 @@ class PropSystemSizingTests(unittest.TestCase):
             heat_flux={},
         )
 
-        self.assertAlmostEqual(result["propulsion"]["MR"], 3.0, places=3)
-        self.assertAlmostEqual(result["propulsion"]["thrust"], 12_000.0, delta=20.0)
+        self.assertAlmostEqual(result.propulsion.MR, 3.0, places=3)
+        self.assertAlmostEqual(result.propulsion.thrust, 12_000.0, delta=20.0)
         self.assertAlmostEqual(
-            result["propulsion"]["mdot_nozzle"],
-            result["propulsion"]["mdot_ox"] + result["propulsion"]["mdot_fuel"],
+            result.propulsion.mdot_nozzle,
+            result.propulsion.mdot_ox + result.propulsion.mdot_fuel,
             places=7,
         )
 
