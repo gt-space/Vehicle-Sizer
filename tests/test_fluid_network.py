@@ -3,7 +3,23 @@ from dataclasses import dataclass
 
 from CoolProp.CoolProp import PropsSI
 
+from Flight.FluidBranch import (
+    CompressibleLossModel,
+    FluidBranch,
+    IncompressibleLossModel,
+    TwinPathNozzleModel,
+    ValveComponent,
+)
 from Flight.FluidNetwork import FluidNetwork
+from Flight.FluidNode import (
+    CombustionModel,
+    CombustorComponent,
+    FlowConn,
+    FluidNode,
+    JunctionModel,
+    TwinPathJunctionModel,
+)
+from FluidProperties.PropertyModels import CEAPropertySource, CoolPropPropertySource
 
 
 @dataclass(frozen=True)
@@ -67,15 +83,45 @@ class FakeCEA:
 
 
 class FluidNetworkTests(unittest.TestCase):
+    def test_components_own_models_while_plain_elements_use_models_directly(self):
+        junction = FluidNetwork._make_node(
+            "junction", {"model": "junction", "P0": 100_000.0}
+        )
+        combustor = FluidNetwork._make_node(
+            "chamber", {"component": "combustor", "P0": 2.0e6}
+        )
+        loss = FluidNetwork._make_branch(
+            "loss",
+            {"model": "compressible_loss", "fluid": "gas", "CdA": 1.0},
+        )
+        valve = FluidNetwork._make_branch(
+            "valve",
+            {
+                "component": "bang_bang_valve",
+                "fluid": "gas",
+                "CdA": 1.0,
+                "duty_cycle": 0.5,
+            },
+        )
+
+        self.assertIs(type(junction), FluidNode)
+        self.assertIsInstance(junction.model, JunctionModel)
+        self.assertIsInstance(combustor, CombustorComponent)
+        self.assertIsInstance(combustor.model, CombustionModel)
+        self.assertIs(type(loss), FluidBranch)
+        self.assertIsInstance(loss.model, CompressibleLossModel)
+        self.assertIsInstance(valve, ValveComponent)
+        self.assertIsInstance(valve.model, CompressibleLossModel)
+
     def test_runtime_network_does_not_require_design_circuits(self):
         network = FluidNetwork(
             nodes={
-                "source": {"type": "boundary_pressure"},
-                "sink": {"type": "boundary_pressure"},
+                "source": {"model": "boundary"},
+                "sink": {"model": "boundary"},
             },
             branches={
                 "feed": {
-                    "type": "liquid_loss",
+                    "model": "incompressible_loss",
                     "fluid": "Water",
                     "from": "source",
                     "to": "sink",
@@ -91,7 +137,8 @@ class FluidNetworkTests(unittest.TestCase):
         gas_orifice = FluidNetwork._make_branch(
             "gas",
             {
-                "type": "gas_orifice",
+                "model": "compressible_loss",
+                "fluid": "gas",
                 "CdA": 2.0,
                 "duty_cycle": 0.25,
             },
@@ -99,7 +146,8 @@ class FluidNetworkTests(unittest.TestCase):
         bang_bang = FluidNetwork._make_branch(
             "bang",
             {
-                "type": "bang_bang",
+                "component": "bang_bang_valve",
+                "fluid": "gas",
                 "CdA": 2.0,
                 "duty_cycle": 0.25,
             },
@@ -114,37 +162,38 @@ class FluidNetworkTests(unittest.TestCase):
         fuel_cda = 1.0 / (2.0 * 1000.0 * 100_000.0) ** 0.5
         network = FluidNetwork(
             nodes={
-                "ox_source": {"type": "boundary_pressure"},
-                "fuel_source": {"type": "boundary_pressure"},
+                "ox_source": {"model": "boundary"},
+                "fuel_source": {"model": "boundary"},
                 "chamber": {
-                    "type": "comb_device",
+                    "component": "combustor",
                     "P0": 2.0e6,
-                    "cea": cea,
                     "expansion_ratio": 5.0,
                     "oxidizer_fluid": "ox",
                     "fuel_fluid": "fuel",
                     "combustion_fluid": "combustion_gas",
                     "ambient_node": "ambient",
+                    "cstar_efficiency": 1.0,
+                    "cf_efficiency": 1.0,
                 },
-                "ambient": {"type": "boundary_pressure"},
+                "ambient": {"model": "boundary"},
             },
             branches={
                 "ox": {
-                    "type": "liquid_loss",
+                    "model": "incompressible_loss",
                     "fluid": "ox",
                     "from": "ox_source",
                     "to": "chamber",
                     "CdA": oxidizer_cda,
                 },
                 "fuel": {
-                    "type": "liquid_loss",
+                    "model": "incompressible_loss",
                     "fluid": "fuel",
                     "from": "fuel_source",
                     "to": "chamber",
                     "CdA": fuel_cda,
                 },
                 "nozzle": {
-                    "type": "nozzle",
+                    "component": "nozzle",
                     "fluid": "combustion_gas",
                     "from": "chamber",
                     "to": "ambient",
@@ -152,11 +201,18 @@ class FluidNetworkTests(unittest.TestCase):
                     "Cd": 1.0,
                 },
             },
+            combustion_properties=CEAPropertySource(cea),
         )
         def source_state(fluid):
             return {
                 "P": 2.1e6,
-                "fluids": {fluid: {"rho": 1000.0, "h": 100_000.0}},
+                "fluids": {
+                    fluid: {
+                        "phase": "liquid",
+                        "rho": 1000.0,
+                        "h": 100_000.0,
+                    }
+                },
             }
 
         sea_level = network.update(
@@ -188,12 +244,12 @@ class FluidNetworkTests(unittest.TestCase):
     def test_nozzle_uses_cstar_mass_flow(self):
         network = FluidNetwork(
             nodes={
-                "chamber": {"type": "boundary_pressure"},
-                "ambient": {"type": "boundary_pressure"},
+                "chamber": {"model": "boundary"},
+                "ambient": {"model": "boundary"},
             },
             branches={
                 "nozzle": {
-                    "type": "nozzle",
+                    "component": "nozzle",
                     "fluid": "combustion_gas",
                     "from": "chamber",
                     "to": "ambient",
@@ -208,7 +264,9 @@ class FluidNetworkTests(unittest.TestCase):
                 "chamber": {
                     "P": 2.0e6,
                     "cstar": 2000.0,
-                    "fluids": {"combustion_gas": {"h": 5.0e6}},
+                    "fluids": {
+                        "combustion_gas": {"phase": "gas", "h": 5.0e6}
+                    },
                 },
                 "ambient": {"P": 100_000.0},
             },
@@ -219,23 +277,23 @@ class FluidNetworkTests(unittest.TestCase):
     def test_algebraic_node_uses_the_same_update_path(self):
         network = FluidNetwork(
             nodes={
-                "source": {"type": "boundary_pressure"},
+                "source": {"model": "boundary"},
                 "junction": {
-                    "type": "liquid_volume",
+                    "model": "junction",
                     "P0": 200_000.0,
                 },
-                "sink": {"type": "boundary_pressure"},
+                "sink": {"model": "boundary"},
             },
             branches={
                 "in": {
-                    "type": "liquid_loss",
+                    "model": "incompressible_loss",
                     "fluid": "water",
                     "from": "source",
                     "to": "junction",
                     "CdA": 1.0e-5,
                 },
                 "out": {
-                    "type": "liquid_loss",
+                    "model": "incompressible_loss",
                     "fluid": "water",
                     "from": "junction",
                     "to": "sink",
@@ -248,7 +306,13 @@ class FluidNetworkTests(unittest.TestCase):
             bcs={
                 "source": {
                     "P": 300_000.0,
-                    "fluids": {"water": {"rho": 1000.0, "h": 100_000.0}},
+                    "fluids": {
+                        "water": {
+                            "phase": "liquid",
+                            "rho": 1000.0,
+                            "h": 100_000.0,
+                        }
+                    },
                 },
                 "sink": {"P": 100_000.0},
             },
@@ -264,23 +328,24 @@ class FluidNetworkTests(unittest.TestCase):
         network = FluidNetwork(
             nodes={
                 "tank": {
-                    "type": "gas_volume",
+                    "component": "pressurant_tank",
                     "fluid": "Nitrogen",
                     "steady": False,
                     "geometry": GasGeometry(1.0, 2.0),
                     "state0": {"m": initial_mass, "U": initial_energy},
                 },
-                "ambient": {"type": "boundary_pressure"},
+                "ambient": {"model": "boundary"},
             },
             branches={
                 "vent": {
-                    "type": "gas_orifice",
+                    "model": "compressible_loss",
                     "fluid": "Nitrogen",
                     "from": "tank",
                     "to": "ambient",
                     "CdA": 1.0e-5,
                 }
             },
+            fluid_properties=CoolPropPropertySource(),
         )
 
         result = network.update(
@@ -298,7 +363,7 @@ class FluidNetworkTests(unittest.TestCase):
         network = FluidNetwork(
             nodes={
                 "tank": {
-                    "type": "propellant_tank",
+                    "component": "propellant_tank",
                     "steady": False,
                     "geometry": TankGeometry(1.1),
                     "P0": 200_000.0,
@@ -311,17 +376,18 @@ class FluidNetworkTests(unittest.TestCase):
                     "liquid_fluid": "Water",
                     "gas_fluid": "Nitrogen",
                 },
-                "ambient": {"type": "boundary_pressure"},
+                "ambient": {"model": "boundary"},
             },
             branches={
                 "out": {
-                    "type": "liquid_loss",
+                    "model": "incompressible_loss",
                     "fluid": "Water",
                     "from": "tank",
                     "to": "ambient",
                     "CdA": 1.0e-5,
                 }
             },
+            fluid_properties=CoolPropPropertySource(),
         )
 
         result = network.update(
@@ -345,7 +411,7 @@ class FluidNetworkTests(unittest.TestCase):
         network = FluidNetwork(
             nodes={
                 "tank": {
-                    "type": "propellant_tank",
+                    "component": "propellant_tank",
                     "geometry": TankGeometry(1.1),
                     "P0": 200_000.0,
                     "state0": {
@@ -359,6 +425,7 @@ class FluidNetworkTests(unittest.TestCase):
                 },
             },
             branches={},
+            fluid_properties=CoolPropPropertySource(),
         )
 
         result = network.update(dt=0.1, heat_flux={"tank": 100_000.0})
@@ -377,19 +444,178 @@ class FluidNetworkTests(unittest.TestCase):
             delta=1.0,
         )
 
+    def test_tank_dryout_does_not_close_flow_path(self):
+        pressure = 300_000.0
+        liquid_volume = 1.0e-6
+        ullage_volume = 0.1
+        m_liq, U_liq = stored_state(
+            "Water", pressure, 300.0, liquid_volume
+        )
+        m_ull, U_ull = stored_state(
+            "Nitrogen", pressure, 300.0, ullage_volume
+        )
+        liquid_density = m_liq / liquid_volume
+        ox_cda = 0.01 / (2.0 * liquid_density * 50_000.0) ** 0.5
+        fuel_cda = 0.01 / (2.0 * 1000.0 * 100_000.0) ** 0.5
+        network = FluidNetwork(
+            nodes={
+                "ox_tank": {
+                    "component": "propellant_tank",
+                    "geometry": TankGeometry(liquid_volume + ullage_volume),
+                    "P0": pressure,
+                    "state0": {
+                        "m_liq": m_liq,
+                        "U_liq": U_liq,
+                        "m_ull": m_ull,
+                        "U_ull": U_ull,
+                    },
+                    "liquid_fluid": "Water",
+                    "gas_fluid": "Nitrogen",
+                },
+                "ox_junction": {"model": "junction", "P0": 250_000.0},
+                "fuel_source": {"model": "boundary"},
+                "chamber": {
+                    "component": "combustor",
+                    "P0": 200_000.0,
+                    "expansion_ratio": 5.0,
+                    "oxidizer_fluid": "Water",
+                    "fuel_fluid": "fuel",
+                    "combustion_fluid": "combustion_gas",
+                    "ambient_node": "ambient",
+                    "cstar_efficiency": 1.0,
+                    "cf_efficiency": 1.0,
+                },
+                "ambient": {"model": "boundary"},
+            },
+            branches={
+                "ox_feed": {
+                    "model": "incompressible_loss",
+                    "fluid": "Water",
+                    "from": "ox_tank",
+                    "to": "ox_junction",
+                    "CdA": ox_cda,
+                },
+                "ox_injector": {
+                    "model": "incompressible_loss",
+                    "fluid": "Water",
+                    "from": "ox_junction",
+                    "to": "chamber",
+                    "CdA": ox_cda,
+                },
+                "fuel_injector": {
+                    "model": "incompressible_loss",
+                    "fluid": "fuel",
+                    "from": "fuel_source",
+                    "to": "chamber",
+                    "CdA": fuel_cda,
+                },
+                "nozzle": {
+                    "component": "nozzle",
+                    "fluid": "combustion_gas",
+                    "from": "chamber",
+                    "to": "ambient",
+                    "At": 2.0e-4,
+                    "Cd": 1.0,
+                },
+            },
+            fluid_properties=CoolPropPropertySource(),
+            combustion_properties=CEAPropertySource(FakeCEA()),
+        )
+        boundaries = {
+            "fuel_source": {
+                "P": pressure,
+                "fluids": {
+                    "fuel": {
+                        "phase": "liquid",
+                        "rho": 1000.0,
+                        "h": 100_000.0,
+                    }
+                },
+            },
+            "ambient": {"P": 100_000.0},
+        }
+
+        network.update(bcs=boundaries, commit=False)
+        tank = network.nodes["ox_tank"]
+        tank.state["m_liq"] = tank.dry_mass
+
+        self.assertTrue(network._apply_transitions())
+        self.assertEqual(tank.mode, "gas")
+        self.assertEqual(set(tank.state), {"m", "U"})
+        self.assertAlmostEqual(tank.state["m"], m_ull)
+        self.assertIsInstance(
+            network.nodes["chamber"].model, TwinPathJunctionModel
+        )
+        self.assertIsInstance(
+            network.branch_objects["nozzle"].model, TwinPathNozzleModel
+        )
+        self.assertTrue(all(branch.enabled for branch in network.branch_objects.values()))
+
+    def test_loss_component_propagates_tank_fluid_and_switches_phase_model(self):
+        pressure = 300_000.0
+        liquid_volume = 0.01
+        ullage_volume = 0.1
+        m_liq, U_liq = stored_state("Water", pressure, 300.0, liquid_volume)
+        m_ull, U_ull = stored_state("Nitrogen", pressure, 300.0, ullage_volume)
+        network = FluidNetwork(
+            nodes={
+                "tank": {
+                    "component": "propellant_tank",
+                    "geometry": TankGeometry(liquid_volume + ullage_volume),
+                    "P0": pressure,
+                    "state0": {
+                        "m_liq": m_liq,
+                        "U_liq": U_liq,
+                        "m_ull": m_ull,
+                        "U_ull": U_ull,
+                    },
+                    "liquid_fluid": "Water",
+                    "gas_fluid": "Nitrogen",
+                },
+                "ambient": {"model": "boundary"},
+            },
+            branches={
+                "outlet": {
+                    "component": "loss",
+                    "fluid": "Water",
+                    "from": "tank",
+                    "to": "ambient",
+                    "CdA": 1.0e-6,
+                }
+            },
+            fluid_properties=CoolPropPropertySource(),
+        )
+        boundaries = {"ambient": {"P": 100_000.0}}
+
+        liquid_result = network.update(bcs=boundaries, commit=False)
+        outlet = network.branch_objects["outlet"]
+        self.assertIsInstance(outlet.model, IncompressibleLossModel)
+        self.assertEqual(liquid_result["branch"]["outlet"]["fluid"], "Water")
+        self.assertEqual(liquid_result["branch"]["outlet"]["phase"], "liquid")
+
+        tank = network.nodes["tank"]
+        tank.state["m_liq"] = tank.dry_mass
+        self.assertTrue(network._apply_transitions())
+        gas_result = network.update(bcs=boundaries, commit=False)
+
+        self.assertIsInstance(outlet.model, CompressibleLossModel)
+        self.assertEqual(gas_result["branch"]["outlet"]["fluid"], "Nitrogen")
+        self.assertEqual(gas_result["branch"]["outlet"]["phase"], "gas")
+        self.assertTrue(outlet.enabled)
+
     def test_fixed_head_pump_is_an_algebraic_branch(self):
         network = FluidNetwork(
             nodes={
-                "source": {"type": "boundary_pressure"},
+                "source": {"model": "boundary"},
                 "pump_out": {
-                    "type": "liquid_volume",
+                    "model": "junction",
                     "P0": 300_000.0,
                 },
-                "sink": {"type": "boundary_pressure"},
+                "sink": {"model": "boundary"},
             },
             branches={
                 "pump": {
-                    "type": "pump",
+                    "component": "pump",
                     "fluid": "water",
                     "from": "source",
                     "to": "pump_out",
@@ -397,7 +623,7 @@ class FluidNetworkTests(unittest.TestCase):
                     "CdA": None,
                 },
                 "loss": {
-                    "type": "liquid_loss",
+                    "model": "incompressible_loss",
                     "fluid": "water",
                     "from": "pump_out",
                     "to": "sink",
@@ -410,7 +636,13 @@ class FluidNetworkTests(unittest.TestCase):
             bcs={
                 "source": {
                     "P": 100_000.0,
-                    "fluids": {"water": {"rho": 1000.0, "h": 100_000.0}},
+                    "fluids": {
+                        "water": {
+                            "phase": "liquid",
+                            "rho": 1000.0,
+                            "h": 100_000.0,
+                        }
+                    },
                 },
                 "sink": {"P": 100_000.0},
             },
@@ -418,6 +650,103 @@ class FluidNetworkTests(unittest.TestCase):
 
         self.assertAlmostEqual(result["node"]["pump_out"]["P"], 300_000.0)
         self.assertAlmostEqual(result["mdot"]["pump"], 1.0)
+
+    def test_shutdown_chamber_solves_separate_gas_and_liquid_paths(self):
+        properties = CoolPropPropertySource()
+        gas = properties.state_pt("Nitrogen", 400_000.0, 300.0).as_dict()
+        liquid = properties.state_pt("Water", 400_000.0, 300.0).as_dict()
+        gas["phase"] = "gas"
+        liquid["phase"] = "liquid"
+        network = FluidNetwork(
+            nodes={
+                "gas_source": {"model": "boundary"},
+                "liquid_source": {"model": "boundary"},
+                "chamber": {
+                    "component": "combustor",
+                    "P0": 250_000.0,
+                    "oxidizer_fluid": "oxidizer",
+                    "fuel_fluid": "Water",
+                    "combustion_fluid": "products",
+                    "ambient_node": "ambient",
+                    "expansion_ratio": 5.0,
+                    "cstar_efficiency": 1.0,
+                    "cf_efficiency": 1.0,
+                },
+                "ambient": {"model": "boundary"},
+            },
+            branches={
+                "gas_feed": {
+                    "component": "loss",
+                    "fluid": "Nitrogen",
+                    "from": "gas_source",
+                    "to": "chamber",
+                    "CdA": 2.0e-5,
+                },
+                "liquid_feed": {
+                    "component": "loss",
+                    "fluid": "Water",
+                    "from": "liquid_source",
+                    "to": "chamber",
+                    "CdA": 2.0e-6,
+                },
+                "nozzle": {
+                    "component": "nozzle",
+                    "fluid": "products",
+                    "from": "chamber",
+                    "to": "ambient",
+                    "At": 2.0e-5,
+                    "Cd": 1.0,
+                },
+            },
+            fluid_properties=properties,
+        )
+        chamber = network.nodes["chamber"]
+        inflows = [
+            FlowConn(
+                "gas_feed",
+                1.0,
+                {
+                    "components": {"Nitrogen": {**gas, "mdot": 1.0}},
+                    "enabled": True,
+                },
+            ),
+            FlowConn(
+                "liquid_feed",
+                1.0,
+                {
+                    "components": {"Water": {**liquid, "mdot": 1.0}},
+                    "enabled": True,
+                },
+            ),
+        ]
+        self.assertTrue(chamber.update_mode(inflows))
+        network.branch_objects["nozzle"].set_mode(False, chamber.model.phases)
+
+        result = network.update(
+            bcs={
+                "gas_source": {"P": 400_000.0, "fluids": {"Nitrogen": gas}},
+                "liquid_source": {"P": 400_000.0, "fluids": {"Water": liquid}},
+                "ambient": {"P": 100_000.0},
+            },
+            commit=False,
+        )
+
+        nozzle = result["branch"]["nozzle"]
+        self.assertIsInstance(chamber.model, TwinPathJunctionModel)
+        self.assertIsInstance(
+            network.branch_objects["nozzle"].model, TwinPathNozzleModel
+        )
+        self.assertGreater(nozzle["mdot_gas"], 0.0)
+        self.assertGreater(nozzle["mdot_liquid"], 0.0)
+        self.assertAlmostEqual(
+            result["mdot"]["gas_feed"], nozzle["mdot_gas"], places=7
+        )
+        self.assertAlmostEqual(
+            result["mdot"]["liquid_feed"], nozzle["mdot_liquid"], places=7
+        )
+        self.assertGreater(nozzle["gas_area_fraction"], 0.0)
+        self.assertLess(nozzle["gas_area_fraction"], 1.0)
+        self.assertGreater(nozzle["thrust"], 0.0)
 
 
 if __name__ == "__main__":

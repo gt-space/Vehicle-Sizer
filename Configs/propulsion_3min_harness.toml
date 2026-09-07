@@ -49,6 +49,9 @@ gas_T = 293.0
 initial_fill_fraction = 0.90
 
 [engine]
+property_source = "cea"
+lookup_file = "FluidProperties/sizer_lookups.h5"
+nfz = 1
 oxidizer = "LOX"
 fuel = "RP-1"
 cstar_efficiency = 0.95
