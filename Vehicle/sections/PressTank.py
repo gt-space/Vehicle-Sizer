@@ -51,6 +51,9 @@ class PressTank(Section):
         self.copv = copv
         self.length = self.copv.length
         self.n = int(np.ceil(self.length / self.dx))
+        self.wall_thickness = cfg["press_tank"]["airframe_wall_thickness"]
+        self.wall_material = cfg["press_tank"]["airframe_material"]
+        self.emissivity = 0.85
 
     def get_fluid_geometry(self) -> PressTankGeometry:
         """Export immutable internal geometry for the fluid network."""
@@ -120,5 +123,5 @@ class PressTank(Section):
         A_plan = self.cfg["vehicle"]["OMLD"] * self.length
         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
-    def get_heat_flux(self, ):
-        self.heat_flux = heating.get_body_heating()
+    def get_heat_flux(self, atm, theta: float):
+        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)

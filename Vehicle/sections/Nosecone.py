@@ -4,6 +4,7 @@ from .Section import Section
 from ..utils import distribute as dist
 from ..utils import aero
 from ..utils import geometry as geo
+from ..utils import heating
 from dataclasses import dataclass
 
 @dataclass
@@ -24,6 +25,8 @@ class Nosecone(Section):
         self.L_total = self.OMLD * self.fineness_ratio
         self.length = self.L_total - cfg["avi_bay"]["length"]
         self.n = int(np.ceil(self.length / self.dx))
+        self.wall_material = cfg["nosecone"]["material"]
+        self.emissivity = 0.85
 
     def get_mass(self):
         reco_mass = self.cfg["nosecone"]["reco_mass"]
@@ -58,6 +61,10 @@ class Nosecone(Section):
         lat_area_avi = np.sum(2 * self._get_profile(x_avi) * self.dx)
         lat_area_total = np.sum(self.lat_area) + lat_area_avi
         self.CNa = aero.nosecone_CNa(M) * self.lat_area / lat_area_total
+
+    def get_heat_flux(self, atm, theta: float):
+        R_n = self.cfg["nosecone"].get("tip_radius", 0.01)
+        self.heat_flux = heating.get_nose_heating(atm, R_n, self.radius, self.dx, self.Tw)
 
     def _get_profile(self, x: np.ndarray) -> np.ndarray:
         R = self.OMLD * 0.5

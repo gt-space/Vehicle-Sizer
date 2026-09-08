@@ -147,6 +147,8 @@ class PropTank(Section):
         self.OMLD = cfg["vehicle"]["OMLD"]
         self.prop_mass = prop_mass
         self.material = material
+        self.wall_material = material
+        self.emissivity = 0.85
         self.medium = medium
         self.P_liq0 = P_liq0
         self.T_liq0 = T_liq0
@@ -270,5 +272,5 @@ class PropTank(Section):
         A_plan = self.cfg["vehicle"]["OMLD"] * self.length
         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
-    def get_heat_flux(self, ):
-        self.heat_flux = heating.get_body_heating()
+    def get_heat_flux(self, atm, theta: float):
+        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)

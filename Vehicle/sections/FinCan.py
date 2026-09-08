@@ -5,6 +5,7 @@ from ..Engine import Engine
 from ..utils import distribute as dist
 from ..utils import aero
 from ..utils import geometry as geo
+from ..utils import heating
 
 class FinCan(Section):
 
@@ -14,6 +15,9 @@ class FinCan(Section):
         self.length = cfg["engine"]["length"]
         self.n = int(np.ceil(self.length / self.dx))
         self.engine = engine
+        self.wall_thickness = cfg["fin_can"]["boattail_wall_thickness"]
+        self.wall_material = cfg["fin_can"]["material"]
+        self.emissivity = 0.85
 
     def get_mass(self):
         motor_mass = 2
@@ -133,3 +137,6 @@ class FinCan(Section):
         fin_CNa = aero.fins_CNa(M, N, s, Cr, Ct, R_ref)
         tail_CNa = aero.taper_CNa(M, alpha, 0.75, self.ref_area)
         self.CNa = dist.weighted(fin_CNa, self.lat_area_fins) + dist.weighted(tail_CNa, self.lat_area_body)
+
+    def get_heat_flux(self, atm, theta: float):
+        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)

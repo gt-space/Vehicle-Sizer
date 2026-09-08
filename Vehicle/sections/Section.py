@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import numpy as np
+import matproplib as mp
+
+SIGMA = 5.670374419e-8                          # Stefan-Boltzmann, W/m^2-K^4
 
 @dataclass
 class SectionInputs:
@@ -38,6 +41,12 @@ class Section(ABC):
         self.ref_area: float = 1
         self.CNa: np.ndarray = None
 
+        self.Tw: np.ndarray = None
+        self.heat_flux: np.ndarray = None
+        self.wall_thickness: float = None
+        self.wall_material: str = None
+        self.emissivity: float = None
+
     def build(self):
         self.get_mass()
         self.get_EI()
@@ -64,10 +73,17 @@ class Section(ABC):
     def get_CNa(self, M: float, alpha: float) -> np.ndarray:
         pass
     
+    def init_thermal(self, T0: float):
+        self.Tw = np.full(self.n, T0)
+
     @abstractmethod
-    def get_heat_flux() -> np.ndarray:
+    def get_heat_flux(self, atm, theta: float):
         pass
-    
-    @abstractmethod
-    def get_temp() -> np.ndarray:
-        pass
+
+    def get_temp(self, atm, dt: float):
+        # transient lumped-mass wall: convection in, grey-body re-radiation out
+        rho_w = mp.db.get_material(self.wall_material).get("density")
+        c_w = mp.db.get_material(self.wall_material).get("specific_heat")
+        areal_cap = rho_w * c_w * self.wall_thickness
+        q_rad = self.emissivity * SIGMA * (self.Tw**4 - atm.T**4)
+        self.Tw = self.Tw + dt * (self.heat_flux - q_rad) / areal_cap

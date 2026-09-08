@@ -2,12 +2,40 @@ import numpy as np
 from CoolProp.CoolProp import PropsSI
 
 R = 287.05
+MANGLER_TURB = 3**0.2
 
-def get_nose_heating() -> np.ndarray:
-    return
+def get_nose_stag(atm, R_n: float) -> float:
+    K = 1.7415e-4
+    v = atm.Ma * atm.a
+    return K * np.sqrt(atm.rho / R_n) * v**3
 
-def get_body_heating(x: np.ndarray, Tw: np.ndarray) -> np.ndarray:
-    T2, p2, M2, v2 = get_post_shock()
+def get_nose_heating(atm, R_n: float, radius: np.ndarray, dx: float, Tw: np.ndarray) -> np.ndarray:
+    dr = np.diff(radius, prepend=radius[0])
+    s = np.cumsum(np.sqrt(dx**2 + dr**2))
+
+    q_stag = get_nose_stag(atm, R_n)
+    theta = s / R_n
+    q_cap = q_stag * np.cos(np.minimum(theta, np.pi / 2))
+
+    delta = np.arctan(radius[-1] / s[-1])
+    T2, p2, M2, v2 = get_post_shock(atm, delta)
+    mu = get_mu(T2, p2)
+    cp = get_cp(T2, p2)
+    k = get_k(T2, p2)
+    Pr = get_Pr(mu, cp, k)
+    gamma = get_gamma(T2, p2)
+    T_ref, mu_ref, rho_ref, Pr_ref = get_ref_props(T2, Tw, p2, M2, gamma, Pr)
+    Re = get_Re(rho_ref, v2, s, mu_ref)
+    Hr = cp * T2 * (1 + get_recov_factor(Pr) * (0.5 * (gamma - 1)) * M2**2)
+    Hw = cp * Tw
+    St = MANGLER_TURB * get_St(get_Cf(Re), Pr_ref)
+    q_flank = rho_ref * v2 * St * (Hr - Hw)
+
+    s_tan = R_n * (np.pi / 2 - delta)
+    return np.where(s <= s_tan, q_cap, q_flank)
+
+def get_body_heating(x: np.ndarray, Tw: np.ndarray, atm, theta: float) -> np.ndarray:
+    T2, p2, M2, v2 = get_post_shock(atm, theta)
     mu = get_mu(T2, p2)
     cp = get_cp(T2, p2)
     k = get_k(T2, p2)
@@ -17,12 +45,31 @@ def get_body_heating(x: np.ndarray, Tw: np.ndarray) -> np.ndarray:
     Re = get_Re(rho_ref, v2, x, mu_ref)
     Cf = get_Cf(Re)
     St = get_St(Cf, Pr_ref)
-    Hr = 
+    Hr = cp * T2 * (1 + get_recov_factor(Pr) * (0.5 * (gamma - 1)) * M2**2)
     Hw = cp * Tw
     return rho_ref * v2 * St * (Hr - Hw)
 
-def get_post_shock():
+def get_post_shock(atm, theta: float):
+    gamma = get_gamma(atm.T, atm.p)
+    M1 = atm.Ma
+    beta = get_oblique_beta(M1, theta, gamma)
+    Mn1 = M1 * np.sin(beta)
+    p_ratio = 1 + 2 * gamma / (gamma + 1) * (Mn1**2 - 1)
+    p2 = atm.p * p_ratio
+    T2 = atm.T * p_ratio * ((gamma - 1) * Mn1**2 + 2) / ((gamma + 1) * Mn1**2)
+    Mn2 = np.sqrt((1 + 0.5 * (gamma - 1) * Mn1**2) / (gamma * Mn1**2 - 0.5 * (gamma - 1)))
+    M2 = Mn2 / np.sin(beta - theta)
+    v2 = M2 * np.sqrt(gamma * R * T2)
     return T2, p2, M2, v2
+
+def get_oblique_beta(M: float, theta: float, gamma: float) -> float:
+    mu = np.arcsin(1 / M)
+    beta = np.linspace(mu, np.pi / 2, 500)
+    num = M**2 * np.sin(beta)**2 - 1
+    den = M**2 * (gamma + np.cos(2 * beta)) + 2
+    theta_b = np.arctan(2 / np.tan(beta) * num / den)
+    i = np.argmax(theta_b)
+    return np.interp(theta, theta_b[:i + 1], beta[:i + 1])
 
 def get_ref_props(T, Tw, p, M, gamma, Pr):
     T_ref = get_ref_temp(T, Tw, M, gamma, Pr)
