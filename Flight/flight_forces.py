@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import csv
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
+import h5py
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
@@ -12,8 +12,6 @@ from .types import AeroOut, AtmosState, KinematicsState
 
 class Aero:
     """Tabular drag model interpolated in Mach and angle of attack."""
-
-    columns = {"mach", "aoa_deg", "cd_engine_on", "cd_engine_off"}
 
     def __init__(self, cfg: Dict[str, Any]) -> None:
         self.reference_area = float(cfg["reference_area"])
@@ -28,7 +26,9 @@ class Aero:
         self.schedule_time = schedule[:, 0]
         self.schedule_alpha = np.deg2rad(schedule[:, 1])
 
-        mach, alpha, cd_on, cd_off = self._load_deck(Path(cfg["cd_table"]))
+        mach, alpha, cd_on, cd_off = self._load_deck(
+            Path(cfg["cd_table"]), str(cfg["stratum"])
+        )
         self.mach = mach
         self.alpha = alpha
         self._cd = {
@@ -40,55 +40,55 @@ class Aero:
             ),
         }
 
-    @classmethod
-    def _load_deck(cls, path: Path):
-        with path.open(newline="") as stream:
-            reader = csv.DictReader(stream)
-            if reader.fieldnames is None or not cls.columns.issubset(reader.fieldnames):
+    @staticmethod
+    def _load_deck(
+        path: Path, stratum: str
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Load one vehicle design from an aerodynamic HDF5 stratum."""
+
+        with h5py.File(path, "r") as deck:
+            required = ("mach", "alpha", "strata")
+            if any(name not in deck for name in required):
+                raise ValueError(f"Aerodynamic deck requires datasets {required}")
+            if stratum not in deck["strata"]:
+                raise ValueError(f"Aerodynamic stratum {stratum!r} does not exist")
+
+            group = deck["strata"][stratum]
+            required_coefficients = ("cd_on", "cd_wind")
+            if any(name not in group for name in required_coefficients):
                 raise ValueError(
-                    f"Aerodynamic deck requires columns {sorted(cls.columns)}"
+                    f"Aerodynamic stratum requires datasets {required_coefficients}"
                 )
-            rows = list(reader)
-        if not rows:
-            raise ValueError("Aerodynamic deck cannot be empty")
 
-        points = {}
-        for row in rows:
-            try:
-                values = tuple(float(row[name]) for name in cls.columns)
-            except (TypeError, ValueError) as error:
-                raise ValueError("Aerodynamic deck values must be numeric") from error
-            if not np.all(np.isfinite(values)):
-                raise ValueError("Aerodynamic deck values must be finite")
+            mach = np.asarray(deck["mach"], dtype=float)
+            alpha_deg = np.asarray(deck["alpha"], dtype=float)
+            cd_on = np.asarray(group["cd_on"], dtype=float)
+            cd_off = np.asarray(group["cd_wind"], dtype=float)
 
-            mach = float(row["mach"])
-            alpha = np.deg2rad(float(row["aoa_deg"]))
-            cd_on = float(row["cd_engine_on"])
-            cd_off = float(row["cd_engine_off"])
-            if mach < 0.0 or cd_on < 0.0 or cd_off < 0.0:
-                raise ValueError("Mach and drag coefficients cannot be negative")
-            if (mach, alpha) in points:
-                raise ValueError("Aerodynamic deck contains duplicate Mach/AoA rows")
-            points[mach, alpha] = (cd_on, cd_off)
+        if mach.ndim != 1 or alpha_deg.ndim != 1:
+            raise ValueError("Aerodynamic Mach and alpha axes must be one-dimensional")
+        if len(mach) < 2 or len(alpha_deg) < 2:
+            raise ValueError("Aerodynamic deck requires at least two Mach and alpha values")
+        if not np.all(np.isfinite(mach)) or not np.all(np.isfinite(alpha_deg)):
+            raise ValueError("Aerodynamic axes must be finite")
+        if np.any(mach < 0.0) or np.any(np.diff(mach) <= 0.0):
+            raise ValueError("Aerodynamic Mach values must be nonnegative and increasing")
+        if np.any(np.diff(alpha_deg) <= 0.0):
+            raise ValueError("Aerodynamic alpha values must be strictly increasing")
 
-        mach_axis = np.array(sorted({point[0] for point in points}))
-        alpha_axis = np.array(sorted({point[1] for point in points}))
-        if len(mach_axis) < 2 or len(alpha_axis) < 2:
-            raise ValueError("Aerodynamic deck requires at least two Mach and AoA values")
-        if len(points) != len(mach_axis) * len(alpha_axis):
-            raise ValueError("Aerodynamic deck must contain a complete Mach/AoA grid")
+        expected = (1, len(mach), len(alpha_deg))
+        if cd_on.shape != expected or cd_off.shape != expected:
+            raise ValueError(
+                f"Aerodynamic coefficient tables must have shape {expected}"
+            )
+        cd_on = cd_on[0]
+        cd_off = cd_off[0]
+        if not np.all(np.isfinite(cd_on)) or not np.all(np.isfinite(cd_off)):
+            raise ValueError("Aerodynamic coefficients must be finite")
+        if np.any(cd_on < 0.0) or np.any(cd_off < 0.0):
+            raise ValueError("Aerodynamic coefficients cannot be negative")
 
-        cd_on = np.empty((len(mach_axis), len(alpha_axis)))
-        cd_off = np.empty_like(cd_on)
-        for i, mach in enumerate(mach_axis):
-            for j, alpha in enumerate(alpha_axis):
-                try:
-                    cd_on[i, j], cd_off[i, j] = points[mach, alpha]
-                except KeyError as error:
-                    raise ValueError(
-                        "Aerodynamic deck must contain a complete Mach/AoA grid"
-                    ) from error
-        return mach_axis, alpha_axis, cd_on, cd_off
+        return mach, np.deg2rad(alpha_deg), cd_on, cd_off
 
     def aoa(self, time: float) -> float:
         """Return scheduled angle of attack in radians."""

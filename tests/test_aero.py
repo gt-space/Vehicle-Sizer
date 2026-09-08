@@ -2,29 +2,28 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import h5py
 import numpy as np
 
 from Flight.flight_forces import Aero
 from Flight.types import AtmosState, KinematicsState
 
 
-DECK = """mach,aoa_deg,cd_engine_on,cd_engine_off
-0.0,0.0,0.20,0.30
-0.0,10.0,0.30,0.40
-1.0,0.0,0.40,0.50
-1.0,10.0,0.50,0.60
-"""
-
-
 class AeroTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
-        self.deck = Path(self.directory.name) / "cd.csv"
-        self.deck.write_text(DECK)
+        self.deck = Path(self.directory.name) / "cd.h5"
+        with h5py.File(self.deck, "w") as deck:
+            deck["mach"] = [0.0, 1.0]
+            deck["alpha"] = [0.0, 10.0]
+            stratum = deck.create_group("strata").create_group("test_20um")
+            stratum["cd_on"] = [[[0.20, 0.30], [0.40, 0.50]]]
+            stratum["cd_wind"] = [[[0.30, 0.40], [0.50, 0.60]]]
         self.aero = Aero(
             {
                 "reference_area": 2.0,
                 "cd_table": self.deck,
+                "stratum": "test_20um",
                 "aoa_schedule": [[0.0, 0.0], [10.0, 10.0]],
             }
         )
@@ -73,15 +72,32 @@ class AeroTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.aero.aoa(11.0)
 
-    def test_rejects_incomplete_deck(self):
-        incomplete = Path(self.directory.name) / "incomplete.csv"
-        incomplete.write_text("\n".join(DECK.splitlines()[:-1]))
+    def test_rejects_missing_stratum(self):
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            Aero(
+                {
+                    "reference_area": 2.0,
+                    "cd_table": self.deck,
+                    "stratum": "missing",
+                    "aoa_schedule": [[0.0, 0.0], [10.0, 10.0]],
+                }
+            )
 
-        with self.assertRaisesRegex(ValueError, "complete Mach/AoA grid"):
+    def test_rejects_incorrect_coefficient_shape(self):
+        incomplete = Path(self.directory.name) / "incomplete.h5"
+        with h5py.File(incomplete, "w") as deck:
+            deck["mach"] = [0.0, 1.0]
+            deck["alpha"] = [0.0, 10.0]
+            stratum = deck.create_group("strata").create_group("test_20um")
+            stratum["cd_on"] = [[0.20, 0.30], [0.40, 0.50]]
+            stratum["cd_wind"] = [[0.30, 0.40], [0.50, 0.60]]
+
+        with self.assertRaisesRegex(ValueError, "must have shape"):
             Aero(
                 {
                     "reference_area": 2.0,
                     "cd_table": incomplete,
+                    "stratum": "test_20um",
                     "aoa_schedule": [[0.0, 0.0], [10.0, 10.0]],
                 }
             )
