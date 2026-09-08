@@ -1,11 +1,13 @@
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from CoolProp.CoolProp import PropsSI
 
 from Flight.PropSystem import PropSystem
+from FluidProperties.PropertyModels import TableCombustionPropertySource
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,7 @@ class PropSystemSizingTests(unittest.TestCase):
                 },
             },
             "engine": {
+                "property_source": "cea",
                 "oxidizer": "LOX",
                 "fuel": "RP-1",
                 "cstar_efficiency": 1.0,
@@ -148,7 +151,7 @@ class PropSystemSizingTests(unittest.TestCase):
         tanks = {"ox_tank": ox_tank, "fuel_tank": fuel_tank}
         if press_tank is not None:
             tanks["press_tank"] = press_tank
-        with patch("Flight.PropSystem.CEA_Obj", return_value=FakeCEA()):
+        with patch("Flight.PropSystem._make_cea", return_value=FakeCEA()):
             return PropSystem(config, tanks)
 
     def test_blowdown_does_not_require_a_pressure_tank(self):
@@ -163,7 +166,7 @@ class PropSystemSizingTests(unittest.TestCase):
         self.assertNotIn("press_tank", system.network.node_definitions)
         self.assertFalse(
             any(
-                branch["type"] == "bang_bang"
+                branch.get("component") == "bang_bang_valve"
                 for branch in system.network.branches.values()
             )
         )
@@ -190,7 +193,7 @@ class PropSystemSizingTests(unittest.TestCase):
         }
         branches = {
             branch_id: {
-                "type": "liquid_loss",
+                "model": "incompressible_loss",
                 "circuit": "fuel",
                 "from": tank_id,
                 "to": "manifold",
@@ -237,7 +240,10 @@ class PropSystemSizingTests(unittest.TestCase):
             0.0,
         )
         self.assertFalse(hasattr(system, "press_tank_eol_pressure"))
-        self.assertEqual(system.network.branches["OX_BANGBANG"]["type"], "bang_bang")
+        self.assertEqual(
+            system.network.branches["OX_BANGBANG"]["component"],
+            "bang_bang_valve",
+        )
         self.assertNotIn("displaced_fluid", system.network.branches["OX_BANGBANG"])
         self.assertEqual(system.network.branches["NOZZLE"]["At"], system.throat_area)
         self.assertNotIn(
@@ -245,6 +251,38 @@ class PropSystemSizingTests(unittest.TestCase):
             system.network.node_definitions["thrust_chamber"],
         )
         self.assertEqual(system.network.branches["NOZZLE"]["Cd"], 1.0)
+
+    def test_table_engine_source_does_not_construct_cea(self):
+        config = self._config()
+        root = Path(__file__).resolve().parents[1]
+        config["engine"].update(
+            {
+                "property_source": "table",
+                "lookup_file": str(
+                    root / "FluidProperties" / "sizer_lookups.h5"
+                ),
+                "nfz": 1,
+            }
+        )
+        ox_tank, fuel_tank, press_tank = self._tanks()
+        tanks = {
+            "ox_tank": ox_tank,
+            "fuel_tank": fuel_tank,
+            "press_tank": press_tank,
+        }
+
+        with patch(
+            "Flight.PropSystem._make_cea",
+            side_effect=AssertionError("CEA should not be constructed"),
+        ):
+            system = PropSystem(config, tanks)
+
+        self.assertIsInstance(
+            system.combustion_properties, TableCombustionPropertySource
+        )
+        self.assertGreater(system.expansion_ratio, 1.0)
+        self.assertGreater(system.cstar, 0.0)
+        self.assertGreater(system.Cf_design, 0.0)
 
     def test_pressure_fed_update_returns_thrust(self):
         config = self._config()
@@ -326,6 +364,8 @@ class PropSystemSizingTests(unittest.TestCase):
             heat_flux={},
         )
 
+        self.assertEqual(result.propulsion.mode, "combusting")
+        self.assertIsNone(result.propulsion.shutdown_reason)
         self.assertAlmostEqual(result.propulsion.MR, 3.0, places=3)
         self.assertAlmostEqual(result.propulsion.thrust, 12_000.0, delta=20.0)
         self.assertAlmostEqual(

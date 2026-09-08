@@ -42,6 +42,8 @@ class ThermalOut:
 
 @dataclass
 class PropulsionOut:
+    mode: str
+    shutdown_reason: Optional[str]
     thrust: float
     Pc: float
     MR: float

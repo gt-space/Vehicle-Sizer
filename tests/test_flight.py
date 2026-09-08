@@ -58,6 +58,8 @@ class FakePropSystem:
             td_state={"tank": {}, "copv": {}},
             mdot={},
             propulsion=PropulsionOut(
+                mode="combusting",
+                shutdown_reason=None,
                 thrust=300.0,
                 Pc=2.0e6,
                 MR=2.0,

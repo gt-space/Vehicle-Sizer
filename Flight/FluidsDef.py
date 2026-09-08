@@ -136,6 +136,30 @@ class FluidsDef:
         return float(P_upstream * flow_function / np.sqrt(gas_constant * T_upstream))
 
     @staticmethod
+    def isentropic_velocity(
+        P_stagnation: float,
+        P_exit: float,
+        T_stagnation: float,
+        gas_constant: float,
+        gamma: float,
+    ) -> float:
+        """Ideal-gas velocity after isentropic expansion to the exit pressure."""
+
+        if P_stagnation <= P_exit:
+            return 0.0
+        pressure_ratio = P_exit / P_stagnation
+        return float(
+            np.sqrt(
+                2.0
+                * gamma
+                / (gamma - 1.0)
+                * gas_constant
+                * T_stagnation
+                * (1.0 - pressure_ratio ** ((gamma - 1.0) / gamma))
+            )
+        )
+
+    @staticmethod
     def incompressible_mdot(CdA: float, density: float, pressure_drop: float) -> float:
         """Mass flow through an incompressible restriction."""
 
@@ -211,6 +235,7 @@ class FluidsDef:
         liquid_fluid: str,
         gas_fluid: str,
         pressure_guess: float,
+        fluid_properties: Any,
     ) -> Dict[str, Any]:
         """Solve liquid and ullage volumes at their common tank pressure."""
 
@@ -219,12 +244,12 @@ class FluidsDef:
 
         def volume_error(log_pressure: float) -> float:
             pressure = float(np.exp(log_pressure))
-            rho_gas = cls.coolprop_state_pu(
+            rho_gas = fluid_properties.state_pu(
                 gas_fluid, pressure, u_gas, "gas"
-            )["rho"]
-            rho_liquid = cls.coolprop_state_pu(
+            ).rho
+            rho_liquid = fluid_properties.state_pu(
                 liquid_fluid, pressure, u_liquid, "liquid"
-            )["rho"]
+            ).rho
             return m_gas / rho_gas + m_liquid / rho_liquid - tank_volume
 
         solution = root_scalar(
@@ -237,16 +262,16 @@ class FluidsDef:
             raise RuntimeError("Tank pressure compatibility solve failed")
 
         pressure = float(np.exp(solution.root))
-        gas = cls.coolprop_state_pu(gas_fluid, pressure, u_gas, "gas")
-        liquid = cls.coolprop_state_pu(
+        gas = fluid_properties.state_pu(gas_fluid, pressure, u_gas, "gas")
+        liquid = fluid_properties.state_pu(
             liquid_fluid, pressure, u_liquid, "liquid"
         )
-        V_gas = m_gas / gas["rho"]
-        V_liquid = m_liquid / liquid["rho"]
+        V_gas = m_gas / gas.rho
+        V_liquid = m_liquid / liquid.rho
         return {
             "P": pressure,
-            "gas": {**gas, "V": V_gas},
-            "liquid": {**liquid, "V": V_liquid},
+            "gas": {**gas.as_dict(), "V": V_gas},
+            "liquid": {**liquid.as_dict(), "V": V_liquid},
         }
 
     @staticmethod
@@ -287,9 +312,4 @@ class FluidsDef:
                 mixture_ratio,
                 expansion_ratio,
             )[0],
-            "h": cea.get_Chamber_H(
-                chamber_pressure,
-                mixture_ratio,
-                expansion_ratio,
-            ),
         }
