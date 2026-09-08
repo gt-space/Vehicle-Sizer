@@ -63,11 +63,11 @@ class Section(ABC):
     @abstractmethod
     def get_CNa(self, M: float, alpha: float) -> np.ndarray:
         pass
-    
+
     @abstractmethod
     def get_heat_flux() -> np.ndarray:
         pass
-    
+
     @abstractmethod
     def get_temp() -> np.ndarray:
         pass

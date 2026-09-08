@@ -5,6 +5,7 @@ from .Section import Section
 from ..utils import distribute as dist
 from ..utils import aero
 from ..utils import geometry as geo
+from ..utils import heating
 
 class AviBay(Section):
 
@@ -14,6 +15,9 @@ class AviBay(Section):
         self.OMLD = cfg["vehicle"]["OMLD"]
         self.length = cfg["avi_bay"]["length"]
         self.n = int(np.ceil(self.length / self.dx))
+        self.wall_thickness = cfg["avi_bay"]["clamshell_thickness"]
+        self.wall_material = cfg["avi_bay"]["clamshell_material"]
+        self.emissivity = 0.85
 
         L_total = self.OMLD * cfg["nosecone"]["fineness_ratio"]
         L_nosecone = L_total - self.length
@@ -94,3 +98,6 @@ class AviBay(Section):
             r_nose = geo.power_series_profile(x_nose, L_total, R, n_ps)
         lat_area_total = np.sum(2 * r_nose * self.dx) + np.sum(self.lat_area)
         self.CNa = aero.nosecone_CNa(M) * self.lat_area / lat_area_total
+
+    def get_heat_flux(self, atm, theta: float):
+        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)

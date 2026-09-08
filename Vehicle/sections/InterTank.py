@@ -16,6 +16,9 @@ class InterTank(Section):
         self.n = int(np.ceil(self.length / self.dx))
         self.ax_load = ax_load
         self.bending_moment = bending_moment
+        self.wall_thickness = cfg["inter_tank"]["clamshell_wall_thickness"]
+        self.wall_material = cfg["inter_tank"]["clamshell_material"]
+        self.emissivity = 0.85
 
     def get_mass(self):
         feed_system_mass = self.cfg["inter_tank"]["feed_system_mass"]
@@ -91,5 +94,5 @@ class InterTank(Section):
         A_plan = self.cfg["vehicle"]["OMLD"] * self.length
         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
-    def get_heat_flux(self, ):
-        self.heat_flux = heating.get_body_heating()
+    def get_heat_flux(self, atm, theta: float):
+        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)
