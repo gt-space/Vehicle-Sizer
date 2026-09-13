@@ -4,12 +4,29 @@ from pathlib import Path
 import pytest
 
 from Flight.FluidNetwork import FluidNetwork
-from Flight.FluidNode import CombustorComponent, FlowConn
+from Flight.FluidNode import CombustorComponent
+from Flight.FluidState import BranchState, FluidState
 from FluidProperties.PropertyModels import (
     CombustionProperties,
     PureFluidProperties,
     TableCombustionPropertySource,
+    TablePureFluidPropertySource,
 )
+
+
+def branch_flow(branch_id, incidence, state):
+    del branch_id
+    return incidence, BranchState(
+        enabled=state["enabled"],
+        flows={
+            name: {
+                "mdot": values["mdot"],
+                "direction": 1,
+                "fluid": FluidState.from_dict(name, values),
+            }
+            for name, values in state["components"].items()
+        },
+    )
 
 
 @dataclass(frozen=True)
@@ -26,14 +43,14 @@ class FixedFluidProperties:
     def __init__(self):
         self.calls = 0
 
-    def state_rho_u(self, fluid, density, internal_energy):
+    def state_pt(self, fluid, pressure, temperature):
         self.calls += 1
         return PureFluidProperties(
-            P=200_000.0,
-            T=300.0,
-            rho=density,
-            h=internal_energy + 200_000.0 / density,
-            u=internal_energy,
+            P=pressure,
+            T=temperature,
+            rho=2.0,
+            h=400_000.0,
+            u=300_000.0,
             R=296.8,
             gamma=1.4,
         )
@@ -62,7 +79,12 @@ def test_gas_node_accepts_an_injected_property_source():
                 "component": "pressurant_tank",
                 "fluid": "test_gas",
                 "geometry": GasGeometry(volume=1.0),
-                "state0": {"m": 2.0, "U": 600_000.0},
+                "state0": {
+                    "P": 200_000.0,
+                    "T": 300.0,
+                    "m": 2.0,
+                    "U": 600_000.0,
+                },
             }
         },
         branches={},
@@ -93,7 +115,7 @@ def test_combustion_node_accepts_an_injected_property_source():
     )
     node.combustion_properties = properties
     adjacent = [
-        FlowConn(
+        branch_flow(
             "ox",
             1.0,
             {
@@ -101,7 +123,7 @@ def test_combustion_node_accepts_an_injected_property_source():
                 "enabled": True,
             },
         ),
-        FlowConn(
+        branch_flow(
             "fuel",
             1.0,
             {
@@ -143,3 +165,27 @@ def test_table_combustion_source_sizes_and_evaluates_engine():
     assert properties.R > 0.0
     assert properties.gamma > 1.0
     assert properties.T > 0.0
+
+
+def test_table_fluid_source_evaluates_pt_without_inversion():
+    root = Path(__file__).resolve().parents[1]
+    source = TablePureFluidPropertySource(
+        root / "FluidProperties" / "sizer_lookups.h5",
+        {
+            "Nitrogen": {
+                "pt": "nitrogen_pt",
+                "saturation": "nitrogen_saturation",
+            },
+            "Oxygen": "oxygen_pt",
+            "n-Dodecane": "ndodecane_pt",
+        },
+    )
+
+    pt = source.state_pt("Nitrogen", 30.0e6, 300.0)
+    assert pt.P == pytest.approx(30.0e6)
+    assert pt.T == pytest.approx(300.0)
+    assert pt.rho > 0.0
+    assert pt.gamma > 0.0
+    saturation = source.saturation_at_p("Nitrogen", 500_000.0)
+    assert saturation.liquid.rho > saturation.vapor.rho
+    assert source.saturation_bounds("Nitrogen")[0] < 500_000.0

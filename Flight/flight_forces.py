@@ -117,6 +117,8 @@ class Aero:
             heat_bc={},
         )
 
+
+#move these elsewhere? 
 def drag(Cd:float, q: float, A_ref: float) -> float:
     return Cd * q * A_ref
 

@@ -12,7 +12,7 @@ class FinCan(Section):
     def __init__(self, cfg: dict, engine: Engine):
 
         super().__init__(cfg)
-        self.length = cfg["engine"]["length"]
+        self.length = engine.length
         self.n = int(np.ceil(self.length / self.dx))
         self.engine = engine
         self.wall_thickness = cfg["fin_can"]["boattail_wall_thickness"]
@@ -21,8 +21,12 @@ class FinCan(Section):
 
     def get_mass(self):
         motor_mass = 2
-        const_mass = dist.uniform(self._get_fin_mass() + self.engine.mass + motor_mass, self.n)
-        self.mass = const_mass + self._get_boattail_mass_vector()
+        hardware_mass = dist.uniform(self._get_fin_mass() + motor_mass, self.n)
+        self.mass = (
+            hardware_mass
+            + self.engine.axial_mass(self.n)
+            + self._get_boattail_mass_vector()
+        )
 
     def _get_fin_mass(self) -> float:
         A = self.cfg["fin_can"]["fin_area"]
@@ -70,8 +74,7 @@ class FinCan(Section):
         r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
         t = self.cfg["fin_can"]["boattail_wall_thickness"]
 
-        Ae = 0.025
-        r_f_i = np.sqrt(Ae / np.pi)
+        r_f_i = np.sqrt(self.engine.exit_area / np.pi)
         r_f_o = r_f_i + t
 
         x_local = np.arange(self.n) * self.dx
@@ -120,7 +123,7 @@ class FinCan(Section):
     def get_MOI(self):
         r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
         t = self.cfg["fin_can"]["boattail_wall_thickness"]
-        r_f_o = np.sqrt(0.025 / np.pi) + t
+        r_f_o = np.sqrt(self.engine.exit_area / np.pi) + t
         x_local = np.arange(self.n) * self.dx
         r = r_s_o + (x_local / self.length) * (r_f_o - r_s_o)
         self.cg = np.sum(self.mass * self.station) / np.sum(self.mass)

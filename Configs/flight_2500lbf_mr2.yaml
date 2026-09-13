@@ -1,0 +1,204 @@
+# Complete 2500 lbf pressure-fed LOX/n-dodecane vehicle definition.
+# SI units are used throughout unless a field explicitly states otherwise.
+
+simulation:
+  dt: 1.0                          # s
+  t_end: 90.0                     # s; must extend beyond expected apogee
+  output: outputs/flight_2500lbf_mr2.csv
+  plot: outputs/flight_2500lbf_mr2.png
+
+# Manufacturing limits and numerical controls normally left unchanged.
+advanced:
+  t_wall_min: 0.001                # m, minimum manufacturable prop-tank gauge
+  flight:
+    corrector_tolerance: 1.0e-8
+    corrector_max_iterations: 10
+  fluid_network:
+    residual_tolerance: 1.0e-7
+    event_time_tolerance: 1.0e-5   # s
+    flow_direction_tolerance: 1.0e-10 # kg/s
+
+launch:
+  altitude: 0.0                    # m above sea level
+  velocity: 0.0                    # m/s
+  rail_height: 15.0                 # m above the launch point
+
+environment:
+  max_altitude: 150000.0           # m
+  altitude_step: 100.0             # m
+
+thermal:
+  model: adiabatic                 # adiabatic until thermal coupling is implemented
+
+aero:
+  cd_table: AeroTables/debug_vehicle.h5
+  stratum: vonkarman_20um
+  reference_area: 0.03242927866    # m^2; 8 in diameter reference area
+  aoa_schedule:                    # [time (s), angle of attack (deg)]
+    - [5.0, 5.0]
+    - [90.0, 0.0]
+
+property_models:
+  pure_fluid:
+    source: table                   # coolprop | table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      fluids:
+        Nitrogen:
+          pt: nitrogen_pt
+          saturation: nitrogen_saturation
+        Oxygen: oxygen_pt
+        n-Dodecane: ndodecane_pt
+  combustion:
+    source: table                   # cea | table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      nfz: 1
+
+engine:
+  oxidizer: LOX                     # RocketCEA name
+  fuel: RP-1                        # RocketCEA name
+  cstar_efficiency: 0.85
+  cf_efficiency: 0.95
+  exit_pressure: 75842.330225           # Pa, 11 psia nozzle design exit pressure
+  mass: 30.0                        # kg, dry engine system
+  length: 0.5588                    # m
+
+prop_system:
+  feed_type: pressure_fed           # pressure_fed | pump_fed
+  pressurization: bang_bang         # bang_bang | blowdown
+  Pc_target: 1827110.682690            # Pa, 265 psia
+  MR_target: 2.0                    # oxidizer/fuel mass ratio
+  thrust_target: 11120.554          # N, 2500 lbf
+  ox_inj_stiffness: 0.20
+  fuel_inj_stiffness: 0.20
+  ox_tank_inj_dp: 268895.534434        # Pa, 39 psi pressure drop
+  fuel_tank_inj_dp: 1068687.380441     # Pa, 155 psi pressure drop
+  nozzle_cd: 1.0
+
+  bang_bang:
+    OX_BANGBANG:
+      tank_id: ox_tank
+      duty_cycle: 0.50
+      collapse_factor: 1.20
+      min_temperature: 220.0        # K
+      pressure_band: 34473.786466   # Pa, ±5 psi about design tank pressure
+      initially_open: true
+    FUEL_BANGBANG:
+      tank_id: fuel_tank
+      duty_cycle: 0.50
+      collapse_factor: 1.20
+      min_temperature: 220.0        # K
+      pressure_band: 34473.786466   # Pa, ±5 psi about design tank pressure
+      initially_open: true
+
+  # Only independent physical initial conditions belong here. PropSystem
+  # calculates stored masses and energies from these states and tank geometry.
+  state0:
+    press_tank:
+      fluid: Nitrogen
+      P: 29647456.360622           # Pa, 4300 psia
+      T: 300.0                      # K
+    ox_tank:
+      fluid: Oxygen                 # CoolProp name
+      gas_fluid: Nitrogen
+      P: 2.6e6                      # Pa
+      T: 95.0                       # K, liquid
+      gas_T: 293.0                  # K, ullage
+    fuel_tank:
+      fluid: n-Dodecane             # CoolProp name
+      gas_fluid: Nitrogen
+      P: 2.6e6                      # Pa
+      T: 293.0                      # K, liquid
+      gas_T: 293.0                  # K, ullage
+
+vehicle:
+  OMLD: 0.2032                      # m, 8 in
+  dx: 0.01                          # m, axial structural discretization
+
+  # Ordered nose-to-aft. Component-specific dimensions are included here so
+  # vehicle assembly does not contain hidden section lengths or design loads.
+  sections:
+    - type: nosecone
+    - type: avi_bay
+    - type: press_tank
+      tank_id: press_tank
+    - type: inter_tank
+      length: 0.12
+      area_moment_of_inertia: 3.60e-5 # m^4, carried by stringers
+    - type: prop_tank
+      tank_id: ox_tank
+    - type: inter_tank
+      length: 0.15
+      area_moment_of_inertia: 3.60e-5
+    - type: prop_tank
+      tank_id: fuel_tank
+    - type: inter_tank
+      length: 0.461453343486       # m; sets assembled vehicle length to 23 ft
+      area_moment_of_inertia: 3.60e-5
+    - type: fin_can
+
+# Tank geometry is defined once and referenced by both the vehicle section and
+# the fluid-network state through tank_id.
+tanks:
+  press_tank:
+    type: pressurant
+    volume_liters: 20.0             # L, physical internal capacity
+    outer_diameter: 0.22            # m
+    wall_thickness: 0.0032          # m
+    ellipse_ratio: 1.75
+    mass: 18.2                      # kg, dry COPV
+
+  ox_tank:
+    type: propellant
+    propellant_mass: 78.6049         # kg; gives 77 L total at state0
+    ullage_factor: 1.10               # total volume / initial liquid volume
+    ellipse_ratio: 1.75
+    passthrough_diameter: 0.0         # m
+    passthrough_wall_thickness: 0.00254 # m; unused when diameter is zero
+    material: aluminum_6061_t6
+
+  fuel_tank:
+    type: propellant
+    propellant_mass: 34.151          # kg; gives 50 L total at state0
+    ullage_factor: 1.10               # total volume / initial liquid volume
+    ellipse_ratio: 1.75
+    passthrough_diameter: 0.0         # m
+    passthrough_wall_thickness: 0.00254 # m; unused when diameter is zero
+    material: aluminum_6061_t6
+
+nosecone:
+  profile: von_karman
+  fineness_ratio: 5.0
+  reco_mass: 5.0                     # kg
+  material: carbon_fiber_standard
+  tip_radius: 0.01                   # m
+
+avi_bay:
+  length: 0.30                       # m
+  avi_mass: 2.0                      # kg
+  clamshell_thickness: 0.003175      # m
+  clamshell_material: fiberglass_standard
+  bulkhead_material: carbon_fiber_standard
+  ring_material: aluminum_6061_t6
+
+press_tank:
+  airframe_wall_thickness: 0.00318   # m
+  airframe_material: carbon_fiber_standard
+  mount_thickness: 0.00318           # m
+  mount_material: aluminum_7075_t6
+
+inter_tank:
+  clamshell_wall_thickness: 0.00318  # m
+  clamshell_material: carbon_fiber_standard
+  stringer_material: aluminum_7075_t6
+  stringer_count: 4
+  feed_system_mass: 5.0              # kg per intertank section
+  avi_mass: 2.0                      # kg per intertank section
+
+fin_can:
+  fin_area: 0.065                    # m^2 total planform area
+  fin_thickness: 0.006604            # m
+  fin_count: 4
+  boattail_wall_thickness: 0.00318   # m
+  material: carbon_fiber_standard

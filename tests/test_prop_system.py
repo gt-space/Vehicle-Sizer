@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from CoolProp.CoolProp import PropsSI
 
+from Flight.FluidBranch import BangBangValveComponent
 from Flight.PropSystem import PropSystem
 from FluidProperties.PropertyModels import TableCombustionPropertySource
 
@@ -39,8 +40,10 @@ class TankGeometry:
 
 
 class GeometrySource:
-    def __init__(self, geometry):
+    def __init__(self, geometry, prop_mass=None):
         self.geometry = geometry
+        if prop_mass is not None:
+            self.prop_mass = prop_mass
 
     def get_fluid_geometry(self):
         return self.geometry
@@ -91,6 +94,8 @@ class PropSystemSizingTests(unittest.TestCase):
                         "duty_cycle": 0.5,
                         "collapse_factor": 1.2,
                         "min_temperature": 220.0,
+                        "pressure_band": 68_947.6,
+                        "initially_open": True,
                     }
                     for branch_id in ("OX_BANGBANG", "FUEL_BANGBANG")
                 },
@@ -107,6 +112,7 @@ class PropSystemSizingTests(unittest.TestCase):
                         "gas_fluid": "Nitrogen",
                         "P": 2.6e6,
                         "T": 100.0,
+                        "gas_T": 300.0,
                         "m_liq": 90.0,
                         "U_liq": 1.0e7,
                         "m_ull": 0.1,
@@ -117,6 +123,7 @@ class PropSystemSizingTests(unittest.TestCase):
                         "gas_fluid": "Nitrogen",
                         "P": 2.6e6,
                         "T": 300.0,
+                        "gas_T": 300.0,
                         "m_liq": 30.0,
                         "U_liq": 1.0e7,
                         "m_ull": 0.1,
@@ -163,13 +170,37 @@ class PropSystemSizingTests(unittest.TestCase):
 
         system = self._make_system(config, ox_tank, fuel_tank)
 
-        self.assertNotIn("press_tank", system.network.node_definitions)
+        self.assertNotIn("press_tank", system.network.nodes)
         self.assertFalse(
             any(
-                branch.get("component") == "bang_bang_valve"
+                isinstance(branch, BangBangValveComponent)
                 for branch in system.network.branches.values()
             )
         )
+
+    def test_pump_feed_can_use_ullage_blowdown_without_press_tank(self):
+        config = self._config()
+        prop = config["prop_system"]
+        del prop["press_model"]
+        prop["feed_type"] = "pump_fed"
+        prop["pressurization"] = "blowdown"
+        del prop["bang_bang"]
+        del prop["state0"]["press_tank"]
+        prop.update(
+            fuel_pump_head=1.0e6,
+            ox_pump_head=1.0e6,
+            fuel_inj_pumpout_dp=2.0e5,
+            ox_inj_pumpout_dp=2.0e5,
+            fuel_pumpin_tank_dp=2.0e5,
+            ox_pumpin_tank_dp=2.0e5,
+        )
+        ox_tank, fuel_tank, _ = self._tanks()
+
+        system = self._make_system(config, ox_tank, fuel_tank)
+
+        self.assertEqual(system.feed_type, "pump_fed")
+        self.assertNotIn("press_tank", system.network.nodes)
+        self.assertIn("OX_PUMP", system.network.branches)
 
     def test_pressure_fed_requires_its_template_pressure_tank(self):
         ox_tank, fuel_tank, _ = self._tanks()
@@ -209,48 +240,80 @@ class PropSystemSizingTests(unittest.TestCase):
         system = self._make_system(self._config(), *self._tanks())
 
         self.assertAlmostEqual(system.throat_area, 0.004)
+        self.assertAlmostEqual(
+            system.exit_area,
+            system.throat_area * system.expansion_ratio,
+        )
         self.assertAlmostEqual(system.mdot_total, 16.0 / 3.0)
         self.assertAlmostEqual(system.mdot_ox, 4.0)
         self.assertAlmostEqual(system.mdot_fuel, 4.0 / 3.0)
         self.assertFalse(hasattr(system, "fluid_circuits"))
-        self.assertEqual(system.network.node_definitions["ox_inj_in"]["P0"], 2.4e6)
+        self.assertEqual(system.network.nodes["ox_inj_in"].definition["P0"], 2.4e6)
         self.assertFalse(hasattr(system.network, "circuits"))
         self.assertEqual(
-            system.network.node_definitions["ox_ullage"]["liquid_fluid"],
+            system.network.nodes["ox_ullage"].definition["liquid_fluid"],
             "Oxygen",
         )
         self.assertEqual(
-            system.network.node_definitions["ox_ullage"]["gas_fluid"],
+            system.network.nodes["ox_ullage"].definition["gas_fluid"],
             "Nitrogen",
         )
-        self.assertNotIn("circuit", system.network.node_definitions["ox_ullage"])
+        self.assertNotIn("circuit", system.network.nodes["ox_ullage"].definition)
         self.assertNotIn(
             "liquid_circuit",
-            system.network.node_definitions["ox_ullage"],
+            system.network.nodes["ox_ullage"].definition,
         )
-        self.assertEqual(system.network.branches["OX_INJ"]["circuit"], "oxidizer")
-        self.assertNotIn("state0", system.network.branches["OX_INJ"])
-        self.assertEqual(system.network.branch_objects["OX_INJ"].state["mdot"], 0.0)
-        self.assertEqual(system.network.branches["OX_INJ"]["fluid"], "Oxygen")
-        self.assertGreater(system.network.branches["OX_INJ"]["CdA"], 0.0)
-        self.assertGreater(system.network.branches["OX_BANGBANG"]["CdA"], 0.0)
-        self.assertGreater(system.network.branches["OX_BANGBANG"]["eol_pressure"], 0.0)
+        self.assertEqual(system.network.branches["OX_INJ"].parameters["circuit"], "oxidizer")
+        self.assertNotIn("state0", system.network.branches["OX_INJ"].parameters)
+        self.assertEqual(system.network.branches["OX_INJ"].state["mdot"], 0.0)
+        self.assertEqual(system.network.branches["OX_INJ"].fluid, "Oxygen")
+        self.assertGreater(system.network.branches["OX_INJ"].parameters["CdA"], 0.0)
+        self.assertGreater(system.network.branches["OX_BANGBANG"].parameters["CdA"], 0.0)
+        self.assertEqual(
+            system.network.branches["OX_BANGBANG"].parameters["target_pressure"],
+            system.target_ladder["Pox_tank"],
+        )
+        self.assertGreater(system.network.branches["OX_BANGBANG"].parameters["eol_pressure"], 0.0)
         self.assertGreater(
-            system.network.branches["FUEL_BANGBANG"]["eol_pressure"],
+            system.network.branches["FUEL_BANGBANG"].parameters["eol_pressure"],
             0.0,
         )
         self.assertFalse(hasattr(system, "press_tank_eol_pressure"))
         self.assertEqual(
-            system.network.branches["OX_BANGBANG"]["component"],
+            system.network.branches["OX_BANGBANG"].parameters["component"],
             "bang_bang_valve",
         )
-        self.assertNotIn("displaced_fluid", system.network.branches["OX_BANGBANG"])
-        self.assertEqual(system.network.branches["NOZZLE"]["At"], system.throat_area)
+        self.assertNotIn("displaced_fluid", system.network.branches["OX_BANGBANG"].parameters)
+        self.assertEqual(system.network.branches["NOZZLE"].parameters["At"], system.throat_area)
         self.assertNotIn(
             "design_state",
-            system.network.node_definitions["thrust_chamber"],
+            system.network.nodes["thrust_chamber"].definition,
         )
-        self.assertEqual(system.network.branches["NOZZLE"]["Cd"], 1.0)
+        self.assertEqual(system.network.branches["NOZZLE"].parameters["Cd"], 1.0)
+
+    def test_initializes_conserved_tank_states_from_configured_pt(self):
+        config = self._config()
+        press = config["prop_system"]["state0"]["press_tank"]
+        ox = config["prop_system"]["state0"]["ox_tank"]
+        fuel = config["prop_system"]["state0"]["fuel_tank"]
+        for name in ("m", "U"):
+            del press[name]
+        for state in (ox, fuel):
+            for name in ("m_liq", "U_liq", "m_ull", "U_ull"):
+                del state[name]
+            state["gas_T"] = 290.0
+
+        ox_tank, fuel_tank, press_tank = self._tanks()
+        ox_tank.prop_mass = 90.0
+        fuel_tank.prop_mass = 30.0
+        system = self._make_system(config, ox_tank, fuel_tank, press_tank)
+
+        states = system.cfg["state0"]
+        self.assertAlmostEqual(states["ox_tank"]["m_liq"], 90.0)
+        self.assertAlmostEqual(states["fuel_tank"]["m_liq"], 30.0)
+        self.assertGreater(states["press_tank"]["m"], 0.0)
+        self.assertGreater(states["ox_tank"]["m_ull"], 0.0)
+        self.assertGreater(states["fuel_tank"]["m_ull"], 0.0)
 
     def test_table_engine_source_does_not_construct_cea(self):
         config = self._config()
@@ -335,6 +398,7 @@ class PropSystemSizingTests(unittest.TestCase):
                 "gas_fluid": "Nitrogen",
                 "P": tank_pressure,
                 "T": 100.0,
+                "gas_T": gas_temperature,
                 "m_liq": ox_mass,
                 "U_liq": ox_energy,
                 "m_ull": ox_gas_mass,
@@ -345,6 +409,7 @@ class PropSystemSizingTests(unittest.TestCase):
                 "gas_fluid": "Nitrogen",
                 "P": tank_pressure,
                 "T": 300.0,
+                "gas_T": gas_temperature,
                 "m_liq": fuel_mass,
                 "U_liq": fuel_energy,
                 "m_ull": fuel_gas_mass,

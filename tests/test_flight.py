@@ -24,7 +24,7 @@ class FakeEnvironment:
 class FakeAero:
     @staticmethod
     def aoa(time):
-        return 0.0
+        return 0.1 + 0.01 * time
 
     @staticmethod
     def evaluate(kinematics, atmosphere, engine_on):
@@ -35,9 +35,17 @@ class FakePropSystem:
     def __init__(self):
         self.calls = []
 
-    def update(self, dt, atm, heat_flux, commit=True):
+    def update(
+        self, dt, atm, heat_flux, commit=True, axial_specific_force=0.0
+    ):
         self.calls.append(
-            {"dt": dt, "atm": atm, "heat_flux": heat_flux, "commit": commit}
+            {
+                "dt": dt,
+                "atm": atm,
+                "heat_flux": heat_flux,
+                "commit": commit,
+                "axial_specific_force": axial_specific_force,
+            }
         )
         liquid_mass = 5.0 if dt is None else 4.9
         return FluidOut(
@@ -97,7 +105,7 @@ class FlightSkeletonTests(unittest.TestCase):
         self.flight = FlightSim(
             cfg={
                 "simulation": {"dt": 0.1, "t_end": 0.1},
-                "launch": {"altitude": 0.0, "rail_length": 5.0},
+                "launch": {"altitude": 0.0, "rail_height": 5.0},
             },
             env=FakeEnvironment(),
             aero=FakeAero(),
@@ -113,6 +121,13 @@ class FlightSkeletonTests(unittest.TestCase):
         self.assertFalse(self.prop_system.calls[0]["commit"])
         self.assertEqual(self.prop_system.calls[1]["dt"], 0.1)
         self.assertTrue(self.prop_system.calls[1]["commit"])
+        self.assertAlmostEqual(
+            self.prop_system.calls[0]["axial_specific_force"],
+            gravity(10.0, 0.0) / 10.0,
+        )
+        self.assertAlmostEqual(
+            self.prop_system.calls[1]["axial_specific_force"], 300.0 / 16.0
+        )
         self.assertAlmostEqual(history[0]["kinematics"].m, 15.9)
         start_acceleration = (300.0 - gravity(16.0, 0.0)) / 16.0
         end_acceleration = history[0]["forces"]["acceleration"]
@@ -136,6 +151,44 @@ class FlightSkeletonTests(unittest.TestCase):
             result["plant"].fluids.node["tank"]["mass"],
             4.9,
         )
+        self.assertTrue(result["on_rail"])
+        self.assertEqual(kin.alpha, 0.0)
+
+    def test_scheduled_aoa_begins_at_rail_exit(self):
+        launch_altitude = self.flight.cfg["launch"]["altitude"]
+        rail_height = self.flight.cfg["launch"]["rail_height"]
+        rail_end = launch_altitude + rail_height
+
+        self.assertEqual(self.flight.angle_of_attack(5.0, rail_end - 0.01), 0.0)
+        self.assertAlmostEqual(
+            self.flight.angle_of_attack(5.0, rail_end),
+            FakeAero.aoa(5.0),
+        )
+
+    def test_endpoint_uses_scheduled_aoa_after_crossing_rail_end(self):
+        self.flight.cfg["launch"]["rail_height"] = 0.001
+
+        result = self.flight.run()[0]
+
+        self.assertFalse(result["on_rail"])
+        self.assertAlmostEqual(
+            result["kinematics"].alpha,
+            FakeAero.aoa(result["kinematics"].t),
+        )
+
+    def test_engine_on_uses_combustion_mode_not_residual_thrust(self):
+        propulsion = self.prop_system.update(
+            dt=None,
+            atm=FakeEnvironment.atmosphere(0.0, 0.0),
+            heat_flux={},
+            commit=False,
+        ).propulsion
+        self.assertTrue(self.flight.engine_on(propulsion))
+
+        propulsion.mode = "shutdown"
+        propulsion.thrust = 50.0
+
+        self.assertFalse(self.flight.engine_on(propulsion))
 
     def test_history_records_end_forces_and_mass_distribution(self):
         result = self.flight.run()[0]
@@ -162,10 +215,12 @@ class FlightSkeletonTests(unittest.TestCase):
             atmosphere,
             thermal_out=thermal,
             commit=False,
+            axial_specific_force=12.0,
         )
 
         self.assertEqual(self.prop_system.calls[-1]["heat_flux"], {"tank": 25.0})
         self.assertFalse(self.prop_system.calls[-1]["commit"])
+        self.assertEqual(self.prop_system.calls[-1]["axial_specific_force"], 12.0)
 
 
 if __name__ == "__main__":

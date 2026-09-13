@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
-from itertools import product
+from functools import lru_cache
 from pathlib import Path
+import sys
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 import h5py
 import numpy as np
+
+
+class LookupBoundsError(ValueError):
+    """A table query lies outside its declared coordinate axes."""
 
 
 def _json_attribute(attributes: h5py.AttributeManager, name: str) -> Any:
@@ -40,13 +45,28 @@ class LookupTable:
         self.name = name
         self.axis_order = axis_order
         self.axes = dict(axes)
-        self.outputs = dict(outputs)
+        self.output_names = tuple(outputs)
+        self.output_index = {
+            name: index for index, name in enumerate(self.output_names)
+        }
+        self._values = np.stack(
+            [outputs[name] for name in self.output_names], axis=-1
+        )
+        self.outputs = {
+            name: self._values[..., index]
+            for name, index in self.output_index.items()
+        }
         self.axis_units = dict(axis_units)
         self.output_units = dict(output_units)
         self.metadata = dict(metadata)
         self.constants = dict(constants)
         self.status = dict(status)
         self.discrete_axes = frozenset(discrete_axes)
+        self._warned_bounds = set()
+        dimensions = len(self.axis_order)
+        self._corner_bits = np.indices(
+            (2,) * dimensions, dtype=np.intp
+        ).reshape(dimensions, -1).T
 
     @classmethod
     def from_hdf5(
@@ -141,53 +161,101 @@ class LookupTable:
                 )
         return point
 
+    def _location(self, point: Tuple[float, ...]):
+        lower = np.empty(len(point), dtype=np.intp)
+        upper = np.empty(len(point), dtype=np.intp)
+        fractions = np.empty(len(point), dtype=float)
+        for dimension, (axis_name, coordinate) in enumerate(
+            zip(self.axis_order, point)
+        ):
+            axis = self.axes[axis_name]
+            if coordinate < axis[0] or coordinate > axis[-1]:
+                key = (axis_name, "low" if coordinate < axis[0] else "high")
+                if key not in self._warned_bounds:
+                    print(
+                        f"WARNING: rejected query outside table '{self.name}': "
+                        f"{axis_name}={coordinate:.12g}, valid range="
+                        f"[{axis[0]:.12g}, {axis[-1]:.12g}]. No extrapolation.",
+                        file=sys.stderr,
+                    )
+                    self._warned_bounds.add(key)
+                raise LookupBoundsError(
+                    f"Coordinate '{axis_name}'={coordinate} is outside table "
+                    f"'{self.name}' bounds [{axis[0]}, {axis[-1]}]"
+                )
+            upper_index = int(np.searchsorted(axis, coordinate))
+            if upper_index < len(axis) and axis[upper_index] == coordinate:
+                lower[dimension] = upper_index
+                upper[dimension] = upper_index
+                fractions[dimension] = 0.0
+                continue
+            lower_index = upper_index - 1
+            lower[dimension] = lower_index
+            upper[dimension] = upper_index
+            fractions[dimension] = (
+                (coordinate - axis[lower_index])
+                / (axis[upper_index] - axis[lower_index])
+            )
+        return lower, upper, fractions
+
+    @lru_cache(maxsize=128)
+    def _columns(self, names: Tuple[str, ...]) -> Tuple[int, ...]:
+        missing = set(names).difference(self.output_index)
+        if missing:
+            name = sorted(missing)[0]
+            raise KeyError(f"Table '{self.name}' has no output '{name}'")
+        return tuple(self.output_index[name] for name in names)
+
+    @lru_cache(maxsize=8192)
+    def _interpolate(
+        self,
+        point: Tuple[float, ...],
+        columns: Tuple[int, ...],
+    ) -> Tuple[float, ...]:
+        """Interpolate selected packed outputs at one validated point."""
+
+        lower, upper, fractions = self._location(point)
+        indices = np.where(self._corner_bits, upper, lower)
+        weights = np.prod(
+            np.where(self._corner_bits, fractions, 1.0 - fractions), axis=1
+        )
+        active = weights > 0.0
+        indices = indices[active]
+        weights = weights[active]
+        index = tuple(indices[:, dimension] for dimension in range(len(point)))
+        coordinates = dict(zip(self.axis_order, point))
+
+        if "success" in self.status and not np.all(self.status["success"][index]):
+            raise ValueError(
+                f"Table '{self.name}' contains an unsuccessful state at "
+                f"{coordinates}"
+            )
+
+        corner_values = np.take(self._values[index], columns, axis=-1)
+        if not np.all(np.isfinite(corner_values)):
+            invalid_column = int(np.argwhere(~np.isfinite(corner_values))[0, 1])
+            invalid = self.output_names[columns[invalid_column]]
+            raise ValueError(
+                f"Table '{self.name}' returned a non-finite '{invalid}' at "
+                f"{coordinates}"
+            )
+        values = weights @ corner_values
+        return tuple(float(value) for value in values)
+
     def get(self, output_name: str, **coordinates: float) -> float:
         """Linearly interpolate one output without extrapolation."""
 
-        if output_name not in self.outputs:
-            raise KeyError(f"Table '{self.name}' has no output '{output_name}'")
-        point = self._point(coordinates)
-        brackets = []
-        for axis_name, coordinate in zip(self.axis_order, point):
-            axis = self.axes[axis_name]
-            if coordinate < axis[0] or coordinate > axis[-1]:
-                raise ValueError(
-                    f"Coordinates are outside table '{self.name}': {coordinates}"
-                )
-            exact = np.flatnonzero(axis == coordinate)
-            if len(exact):
-                brackets.append(((int(exact[0]), 1.0),))
-                continue
-            upper = int(np.searchsorted(axis, coordinate))
-            lower = upper - 1
-            fraction = (coordinate - axis[lower]) / (axis[upper] - axis[lower])
-            brackets.append(((lower, 1.0 - fraction), (upper, fraction)))
-
-        value = 0.0
-        for corner in product(*brackets):
-            index = tuple(item[0] for item in corner)
-            weight = float(np.prod([item[1] for item in corner]))
-            if "success" in self.status and not bool(self.status["success"][index]):
-                raise ValueError(
-                    f"Table '{self.name}' contains an unsuccessful state at "
-                    f"{coordinates}"
-                )
-            corner_value = self.outputs[output_name][index]
-            if not np.isfinite(corner_value):
-                raise ValueError(
-                    f"Table '{self.name}' returned a non-finite '{output_name}' at "
-                    f"{coordinates}"
-                )
-            value += weight * float(corner_value)
-        return value
+        return self.evaluate((output_name,), **coordinates)[output_name]
 
     def evaluate(
         self,
         output_names: Optional[Iterable[str]] = None,
         **coordinates: float,
     ) -> Dict[str, float]:
-        names = tuple(self.outputs) if output_names is None else tuple(output_names)
-        return {name: self.get(name, **coordinates) for name in names}
+        names = self.output_names if output_names is None else tuple(output_names)
+        point = self._point(coordinates)
+        columns = self._columns(names)
+        return dict(zip(names, self._interpolate(point, columns)))
 
 
 class LookupTables:

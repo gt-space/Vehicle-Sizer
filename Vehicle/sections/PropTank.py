@@ -1,9 +1,10 @@
 import numpy as np
-import matproplib as mp
+import warnings
 from dataclasses import dataclass
+from typing import Optional
 from functools import cached_property
-from CoolProp.CoolProp import PropsSI
 from .Section import Section
+from ..Material import MaterialProperties
 from ..utils import distribute as dist
 from ..utils import aero
 from ..utils import geometry as geo
@@ -99,6 +100,12 @@ class PropTankGeometry:
             "ullage_contact_area": total_area - liquid_area,
         }
 
+    @property
+    def internal_area(self) -> float:
+        """Total wetted wall area available for gas-volume heat transfer."""
+
+        return float(self._profile["area"][-1])
+
     def axial_mass(
         self,
         liquid_volume: float,
@@ -137,22 +144,51 @@ class PropTankGeometry:
 
 class PropTank(Section):
 
-    def __init__(self, cfg: dict, medium: str, prop_mass: float, material: str, passthrough_diameter: float, ellipse_ratio: float, ullage_factor: float, P_liq0: float, T_liq0: float, tank_id: str):
+    def __init__(
+        self,
+        cfg: dict,
+        prop_mass: float,
+        liquid_density: float,
+        material: MaterialProperties,
+        wall_thickness: Optional[float],
+        max_pressure: float,
+        t_wall_min: float,
+        passthrough_diameter: float,
+        passthrough_wall_thickness: float,
+        ellipse_ratio: float,
+        ullage_factor: float,
+        tank_id: str,
+    ):
 
         super().__init__(cfg)
         self.tank_id = tank_id
-        self.passthrough_diameter = passthrough_diameter
-        self.ellipse_ratio = ellipse_ratio
-        self.ullage_factor = ullage_factor
-        self.OMLD = cfg["vehicle"]["OMLD"]
-        self.prop_mass = prop_mass
+        self.passthrough_diameter = float(passthrough_diameter)
+        self.ellipse_ratio = float(ellipse_ratio)
+        self.ullage_factor = float(ullage_factor)
+        self.OMLD = float(cfg["vehicle"]["OMLD"])
+        self.prop_mass = float(prop_mass)
         self.material = material
-        self.wall_material = material
+        self.wall_material = material.name
+        self.max_pressure = float(max_pressure)
+        self.t_wall_min = float(t_wall_min)
+        self.wall_thickness = self.get_thickness(wall_thickness)
+        self.passthrough_wall_thickness = float(passthrough_wall_thickness)
         self.emissivity = 0.85
-        self.medium = medium
-        self.P_liq0 = P_liq0
-        self.T_liq0 = T_liq0
-        self.gas = cfg["press_tank"]["pressurant"]
+        self.liquid_density = float(liquid_density)
+
+        if self.prop_mass <= 0.0:
+            raise ValueError("Propellant mass must be positive")
+        if self.max_pressure <= 0.0 or self.t_wall_min <= 0.0:
+            raise ValueError("Tank pressure and minimum wall gauge must be positive")
+        if self.passthrough_diameter > 0.0 and self.passthrough_wall_thickness <= 0.0:
+            raise ValueError("Passthrough wall thickness must be positive")
+        if self.liquid_density <= 0.0:
+            raise ValueError("Initial propellant density must be positive")
+        if self.ullage_factor <= 1.0:
+            raise ValueError("Ullage factor must be greater than one")
+        if self.ellipse_ratio <= 1.0:
+            raise ValueError("Tank ellipse ratio must be greater than one")
+
         self.TankVolume = self._tank_volume()
         self._get_length()
         self.n = int(np.ceil(self.length / self.dx))
@@ -165,11 +201,10 @@ class PropTank(Section):
     def _get_dry_mass(self) -> float:
         D = self.OMLD
         D_pass = self.passthrough_diameter
-        self._get_length()
         t = self.wall_thickness
-        t_pass = 0.00254
+        t_pass = self.passthrough_wall_thickness
         e = self.ellipse_ratio
-        rho = mp.db.get_material(self.material).get("density")
+        rho = self.material.density
 
         k = (
             2 * e
@@ -179,24 +214,48 @@ class PropTank(Section):
 
         V_end = ((1/4) * np.pi * (D - 2*t) * t * k) / (2 * e)
         V_cyl = geo.annulus_volume(D * 0.5, D * 0.5 - t, self.cyl_length)
-        V_pass = geo.annulus_volume(D_pass * 0.5, D_pass * 0.5 - t_pass, self.cyl_length)
+        if D_pass > 0.0 and t_pass >= 0.5 * D_pass:
+            raise ValueError("Passthrough wall consumes its internal diameter")
+        V_pass = (
+            geo.annulus_volume(
+                D_pass * 0.5,
+                D_pass * 0.5 - t_pass,
+                self.cyl_length,
+            )
+            if D_pass > 0.0
+            else 0.0
+        )
 
         return rho * (V_end + V_cyl + V_pass)
 
-    def _get_pressure(self):
-        return 1e6
+    def get_thickness(self, supplied: Optional[float] = None) -> float:
+        """Return supplied gauge or pressure-size it from the fixed OML diameter."""
+
+        allowable = self.material.require("yield_strength")
+        ratio = 1.5 * self.max_pressure / allowable
+        required = max(
+            ratio * (0.5 * self.OMLD) / (1.0 + ratio),
+            self.t_wall_min,
+        )
+        if supplied is None:
+            return required
+        supplied = float(supplied)
+        if supplied <= 0.0:
+            raise ValueError("Tank wall thickness must be positive")
+        if supplied < required:
+            warnings.warn(
+                f"Tank '{self.tank_id}' wall thickness {supplied:.6g} m is below "
+                f"the required {required:.6g} m",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return supplied
 
     def _tank_volume(self) -> float:
         return self._liquid_capacity() * self.ullage_factor
 
     def _liquid_capacity(self) -> float:
-        return self.prop_mass / self.get_liquid_density(self.T_liq0, self.P_liq0)
-
-    def get_ullage_volume(self, T_liq: float, P_liq: float, mOX: float) -> float:
-        return self.TankVolume - (mOX / self.get_liquid_density(T_liq, P_liq))
-
-    def get_liquid_density(self, T_liq: float, P_liq: float) -> float:
-        return PropsSI("D", "T", T_liq, "P", P_liq, self.medium)
+        return self.prop_mass / self.liquid_density
 
     def get_fluid_geometry(self) -> PropTankGeometry:
         """Export immutable geometry for the fluid-network tank node."""
@@ -223,38 +282,36 @@ class PropTank(Section):
         self.mass = self.dry_mass + axial_mass
         self.get_MOI()
 
-    def _get_wall_thickness(self):
-        sigma = mp.db.get_material(self.material).get("yield_strength", 400.0)
-        self.pressure = self._get_pressure()
-        t = 1.4 * (self.pressure * self.OMLD) / (2 * sigma)
-        return max(t, 1/16 * 0.0254)
-
     def _get_length(self):
-        D = self.OMLD
-        D_pass = self.passthrough_diameter
+        inner_diameter = self.OMLD - 2.0 * self.wall_thickness
+        if inner_diameter <= 0.0:
+            raise ValueError("Tank wall thickness leaves no internal diameter")
+        if not 0.0 <= self.passthrough_diameter < inner_diameter:
+            raise ValueError("Passthrough diameter must be smaller than tank ID")
+
         self.volume = self._tank_volume()
-        self.wall_thickness = self._get_wall_thickness()
+        radius = 0.5 * inner_diameter
+        pass_radius = 0.5 * self.passthrough_diameter
+        head_depth = radius / self.ellipse_ratio
+        beta = np.sqrt(1.0 - (pass_radius / radius) ** 2)
 
-        V_end = (np.pi / (12 * self.ellipse_ratio)) * (D - (2 * self.wall_thickness))**3
-
-        numerator = (
-            self.volume
-            - 2 * V_end
-            + (4 * np.pi / self.ellipse_ratio) * D_pass**2 * D
+        # Usable volume in both ellipsoidal heads, excluding the axial
+        # passthrough tube. The remaining volume is carried by the cylinder.
+        head_volume = (
+            (4.0 / 3.0) * np.pi * radius**2 * head_depth * beta**3
         )
-
-        denominator = (
-            (np.pi / 4)
-            * ((D - 2*self.wall_thickness)**2 - D_pass**2)
-        )
-
-        self.cyl_length = numerator / denominator
-        self.length = self.cyl_length + (D / self.ellipse_ratio)
+        cylinder_area = np.pi * (radius**2 - pass_radius**2)
+        self.cyl_length = (self.volume - head_volume) / cylinder_area
+        if self.cyl_length <= 0.0:
+            raise ValueError(
+                "Requested tank volume is smaller than its endcap volume"
+            )
+        self.length = self.cyl_length + 2.0 * head_depth
 
     def get_EI(self):
         r_o = self.OMLD * 0.5
-        r_i = r_o - self._get_wall_thickness()
-        E = mp.db.get_material(self.material).get("elastic_modulus", 300.0)
+        r_i = r_o - self.wall_thickness
+        E = self.material.require("elastic_modulus")
         self.EI = dist.uniform_full(E * geo.annulus_second_moment(r_o, r_i), self.n)
 
     def get_area(self):

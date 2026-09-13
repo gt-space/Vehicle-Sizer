@@ -1,25 +1,41 @@
 import unittest
+from copy import deepcopy
 from dataclasses import dataclass
 
 from CoolProp.CoolProp import PropsSI
 
 from Flight.FluidBranch import (
+    BangBangValveComponent,
     CompressibleLossModel,
     FluidBranch,
     IncompressibleLossModel,
     TwinPathNozzleModel,
-    ValveComponent,
 )
-from Flight.FluidNetwork import FluidNetwork
+from Flight.FluidNetwork import FluidNetwork, NetworkState
 from Flight.FluidNode import (
     CombustionModel,
     CombustorComponent,
-    FlowConn,
     FluidNode,
     JunctionModel,
     TwinPathJunctionModel,
 )
+from Flight.FluidState import BranchState, FluidState, NodeState
 from FluidProperties.PropertyModels import CEAPropertySource, CoolPropPropertySource
+
+
+def branch_flow(branch_id, incidence, state):
+    del branch_id
+    return incidence, BranchState(
+        enabled=state["enabled"],
+        flows={
+            name: {
+                "mdot": values["mdot"],
+                "direction": 1,
+                "fluid": FluidState.from_dict(name, values),
+            }
+            for name, values in state["components"].items()
+        },
+    )
 
 
 @dataclass(frozen=True)
@@ -101,6 +117,9 @@ class FluidNetworkTests(unittest.TestCase):
                 "fluid": "gas",
                 "CdA": 1.0,
                 "duty_cycle": 0.5,
+                "pressure_band": 10_000.0,
+                "target_pressure": 200_000.0,
+                "initially_open": True,
             },
         )
 
@@ -110,7 +129,7 @@ class FluidNetworkTests(unittest.TestCase):
         self.assertIsInstance(combustor.model, CombustionModel)
         self.assertIs(type(loss), FluidBranch)
         self.assertIsInstance(loss.model, CompressibleLossModel)
-        self.assertIsInstance(valve, ValveComponent)
+        self.assertIsInstance(valve, BangBangValveComponent)
         self.assertIsInstance(valve.model, CompressibleLossModel)
 
     def test_runtime_network_does_not_require_design_circuits(self):
@@ -131,9 +150,9 @@ class FluidNetworkTests(unittest.TestCase):
         )
 
         self.assertFalse(hasattr(network, "circuits"))
-        self.assertEqual(network.branches["feed"]["fluid"], "Water")
+        self.assertEqual(network.branches["feed"].fluid, "Water")
 
-    def test_bang_bang_alone_applies_duty_cycle(self):
+    def test_bang_bang_uses_full_sized_area_when_open(self):
         gas_orifice = FluidNetwork._make_branch(
             "gas",
             {
@@ -150,11 +169,40 @@ class FluidNetworkTests(unittest.TestCase):
                 "fluid": "gas",
                 "CdA": 2.0,
                 "duty_cycle": 0.25,
+                "pressure_band": 10_000.0,
+                "target_pressure": 200_000.0,
+                "initially_open": True,
             },
         )
 
         self.assertEqual(gas_orifice.effective_cda(), 2.0)
-        self.assertEqual(bang_bang.effective_cda(), 0.5)
+        self.assertEqual(bang_bang.effective_cda(), 2.0)
+
+    def test_bang_bang_retains_state_inside_pressure_band(self):
+        valve = FluidNetwork._make_branch(
+            "bang",
+            {
+                "component": "bang_bang_valve",
+                "fluid": "gas",
+                "CdA": 2.0,
+                "duty_cycle": 0.25,
+                "pressure_band": 10_000.0,
+                "target_pressure": 200_000.0,
+                "initially_open": True,
+            },
+        )
+
+        self.assertFalse(valve.update_control(205_000.0))
+        self.assertTrue(valve.is_open)
+        valve.state["mdot"] = 0.4
+        self.assertTrue(valve.update_control(210_000.0))
+        self.assertFalse(valve.is_open)
+        self.assertEqual(valve.solver_state(), {})
+        self.assertFalse(valve.update_control(195_000.0))
+        self.assertFalse(valve.is_open)
+        self.assertTrue(valve.update_control(190_000.0))
+        self.assertTrue(valve.is_open)
+        self.assertEqual(valve.state["mdot"], 0.4)
 
     def test_combustion_node_recomputes_cea_during_network_update(self):
         cea = FakeCEA()
@@ -332,7 +380,12 @@ class FluidNetworkTests(unittest.TestCase):
                     "fluid": "Nitrogen",
                     "steady": False,
                     "geometry": GasGeometry(1.0, 2.0),
-                    "state0": {"m": initial_mass, "U": initial_energy},
+                    "state0": {
+                        "P": 200_000.0,
+                        "T": 300.0,
+                        "m": initial_mass,
+                        "U": initial_energy,
+                    },
                 },
                 "ambient": {"model": "boundary"},
             },
@@ -357,6 +410,158 @@ class FluidNetworkTests(unittest.TestCase):
         self.assertGreater(result["mdot"]["vent"], 0.0)
         self.assertIn("Nitrogen", result["node"]["tank"]["fluids"])
 
+    def test_noncommitted_solve_does_not_change_network_state(self):
+        pressure = 200_000.0
+        temperature = 300.0
+        properties = CoolPropPropertySource()
+        gas = properties.state_pt("Nitrogen", pressure, temperature)
+        network = FluidNetwork(
+            nodes={
+                "tank": {
+                    "component": "pressurant_tank",
+                    "fluid": "Nitrogen",
+                    "geometry": GasGeometry(1.0, 2.0),
+                    "state0": {
+                        "P": pressure,
+                        "T": temperature,
+                        "m": gas.rho,
+                        "U": gas.rho * gas.u,
+                    },
+                },
+                "ambient": {"model": "boundary"},
+            },
+            branches={
+                "vent": {
+                    "model": "compressible_loss",
+                    "fluid": "Nitrogen",
+                    "from": "tank",
+                    "to": "ambient",
+                    "CdA": 1.0e-5,
+                }
+            },
+            fluid_properties=properties,
+        )
+        boundaries = {"ambient": {"P": 100_000.0}}
+        network.update(bcs=boundaries, commit=True)
+        stored_node = deepcopy(network.nodes["tank"].state)
+        stored_branch = deepcopy(network.branches["vent"].state)
+        stored_output = deepcopy(network.state)
+
+        candidate = network.update(dt=0.1, bcs=boundaries, commit=False)
+
+        self.assertLess(candidate["td_state"]["tank"]["m"], stored_node["m"])
+        self.assertEqual(network.nodes["tank"].state, stored_node)
+        self.assertEqual(network.branches["vent"].state, stored_branch)
+        self.assertEqual(network.state.nodes, stored_output.nodes)
+
+    def test_event_step_handles_simultaneous_and_sequential_events(self):
+        fired = []
+
+        class TimedEvent:
+            def __init__(self, event_id, event_time):
+                self.id = event_id
+                self.event_time = event_time
+                self.active = True
+
+            def event_values(self, node_state):
+                if not self.active:
+                    return {}
+                return {"switch": self.event_time - node_state["clock"]["t"]}
+
+            def apply_event(self, name):
+                self.active = False
+                fired.append(self.id)
+                return True
+
+        network = FluidNetwork.__new__(FluidNetwork)
+        network.nodes = {}
+        network.branches = {
+            "first": TimedEvent("first", 0.25),
+            "same_time": TimedEvent("same_time", 0.25),
+            "later": TimedEvent("later", 0.75),
+        }
+        network.state = NetworkState(nodes={"clock": NodeState({"t": 0.0})})
+
+        def solve(dt, bcs, heat_flux, commit=False):
+            time = network.state.node["clock"]["t"] + (dt or 0.0)
+            candidate = NetworkState(nodes={"clock": NodeState({"t": time})})
+            return {
+                "success": True,
+                "message": "test candidate",
+                "state": candidate,
+                "node": {"clock": {"t": time}},
+                "branch": {},
+                "td_state": {},
+                "mdot": {},
+            }
+
+        def commit(candidate, bcs):
+            network.state = candidate
+
+        network._solve = solve
+        network._commit_candidate = commit
+
+        result = network.update(dt=1.0)
+
+        self.assertEqual(fired, ["first", "same_time", "later"])
+        self.assertAlmostEqual(result["node"]["clock"]["t"], 1.0)
+
+    def test_single_species_volume_switches_to_saturated_two_phase(self):
+        properties = CoolPropPropertySource()
+        pressure = 500_000.0
+        saturation = properties.saturation_at_p("Nitrogen", pressure)
+        temperature = saturation.T + 0.1
+        gas = properties.state_pt("Nitrogen", pressure, temperature)
+        mass = gas.rho
+        network = FluidNetwork(
+            nodes={
+                "tank": {
+                    "component": "pressurant_tank",
+                    "fluid": "Nitrogen",
+                    "geometry": GasGeometry(1.0, 2.0),
+                    "state0": {
+                        "P": pressure,
+                        "T": temperature,
+                        "m": mass,
+                        "U": mass * gas.u,
+                    },
+                }
+            },
+            branches={},
+            fluid_properties=properties,
+        )
+        network.update(commit=True)
+        tank = network.nodes["tank"]
+        target_quality = 0.4
+        specific_volume = (
+            (1.0 - target_quality) / saturation.liquid.rho
+            + target_quality / saturation.vapor.rho
+        )
+        mass = 1.0 / specific_volume
+        specific_energy = (
+            (1.0 - target_quality) * saturation.liquid.u
+            + target_quality * saturation.vapor.u
+        )
+        tank.state.update(
+            {
+                "T": saturation.T,
+                "m": mass,
+                "U": mass * specific_energy,
+            }
+        )
+        network.state.node["tank"].update(tank.state)
+
+        self.assertTrue(network._apply_transitions())
+        result = network.update(dt=0.01)
+
+        self.assertIn("quality", result["td_state"]["tank"])
+        self.assertAlmostEqual(
+            result["td_state"]["tank"]["quality"], target_quality
+        )
+        self.assertEqual(
+            result["node"]["tank"]["fluids"]["Nitrogen"]["phase"], "gas"
+        )
+
     def test_propellant_tank_updates_liquid_state(self):
         m_liq, U_liq = stored_state("Water", 200_000.0, 300.0, 1.0)
         m_ull, U_ull = stored_state("Nitrogen", 200_000.0, 300.0, 0.1)
@@ -368,6 +573,9 @@ class FluidNetworkTests(unittest.TestCase):
                     "geometry": TankGeometry(1.1),
                     "P0": 200_000.0,
                     "state0": {
+                        "P": 200_000.0,
+                        "T": 300.0,
+                        "gas_T": 300.0,
                         "m_liq": m_liq,
                         "U_liq": U_liq,
                         "m_ull": m_ull,
@@ -393,12 +601,28 @@ class FluidNetworkTests(unittest.TestCase):
         result = network.update(
             dt=0.01,
             bcs={"ambient": {"P": 100_000.0}},
+            axial_specific_force=20.0,
         )
 
         self.assertLess(result["td_state"]["tank"]["m_liq"], m_liq)
         self.assertAlmostEqual(result["td_state"]["tank"]["m_ull"], m_ull)
         self.assertEqual(
             set(result["node"]["tank"]["fluids"]), {"Water", "Nitrogen"}
+        )
+        tank = result["node"]["tank"]
+        expected_outlet_pressure = (
+            tank["P"]
+            + tank["fluids"]["Water"]["rho"]
+            * 20.0
+            * tank["fill_height"]
+        )
+        self.assertAlmostEqual(
+            tank["port_pressure"]["liquid"], expected_outlet_pressure
+        )
+        self.assertAlmostEqual(tank["port_pressure"]["ullage"], tank["P"])
+        self.assertAlmostEqual(
+            result["branch"]["out"]["dP"],
+            expected_outlet_pressure - 100_000.0,
         )
 
     def test_propellant_tank_splits_node_heat_flux_using_current_fill(self):
@@ -415,6 +639,9 @@ class FluidNetworkTests(unittest.TestCase):
                     "geometry": TankGeometry(1.1),
                     "P0": 200_000.0,
                     "state0": {
+                        "P": 200_000.0,
+                        "T": 300.0,
+                        "gas_T": 300.0,
                         "m_liq": m_liq,
                         "U_liq": initial_liquid_energy,
                         "m_ull": m_ull,
@@ -464,6 +691,9 @@ class FluidNetworkTests(unittest.TestCase):
                     "geometry": TankGeometry(liquid_volume + ullage_volume),
                     "P0": pressure,
                     "state0": {
+                        "P": pressure,
+                        "T": 300.0,
+                        "gas_T": 300.0,
                         "m_liq": m_liq,
                         "U_liq": U_liq,
                         "m_ull": m_ull,
@@ -535,21 +765,24 @@ class FluidNetworkTests(unittest.TestCase):
             "ambient": {"P": 100_000.0},
         }
 
-        network.update(bcs=boundaries, commit=False)
+        network.update(bcs=boundaries, commit=True)
         tank = network.nodes["ox_tank"]
         tank.state["m_liq"] = tank.dry_mass
+        network.state.node["ox_tank"]["m_liq"] = tank.dry_mass
 
         self.assertTrue(network._apply_transitions())
         self.assertEqual(tank.mode, "gas")
-        self.assertEqual(set(tank.state), {"m", "U"})
+        self.assertEqual(set(tank.state), {"P", "T", "m", "U"})
         self.assertAlmostEqual(tank.state["m"], m_ull)
+        network.update(bcs=boundaries, commit=True)
+        self.assertTrue(network._apply_transitions())
         self.assertIsInstance(
             network.nodes["chamber"].model, TwinPathJunctionModel
         )
         self.assertIsInstance(
-            network.branch_objects["nozzle"].model, TwinPathNozzleModel
+            network.branches["nozzle"].model, TwinPathNozzleModel
         )
-        self.assertTrue(all(branch.enabled for branch in network.branch_objects.values()))
+        self.assertTrue(all(branch.enabled for branch in network.branches.values()))
 
     def test_loss_component_propagates_tank_fluid_and_switches_phase_model(self):
         pressure = 300_000.0
@@ -564,6 +797,9 @@ class FluidNetworkTests(unittest.TestCase):
                     "geometry": TankGeometry(liquid_volume + ullage_volume),
                     "P0": pressure,
                     "state0": {
+                        "P": pressure,
+                        "T": 300.0,
+                        "gas_T": 300.0,
                         "m_liq": m_liq,
                         "U_liq": U_liq,
                         "m_ull": m_ull,
@@ -587,20 +823,23 @@ class FluidNetworkTests(unittest.TestCase):
         )
         boundaries = {"ambient": {"P": 100_000.0}}
 
-        liquid_result = network.update(bcs=boundaries, commit=False)
-        outlet = network.branch_objects["outlet"]
+        liquid_result = network.update(bcs=boundaries, commit=True)
+        outlet = network.branches["outlet"]
         self.assertIsInstance(outlet.model, IncompressibleLossModel)
-        self.assertEqual(liquid_result["branch"]["outlet"]["fluid"], "Water")
-        self.assertEqual(liquid_result["branch"]["outlet"]["phase"], "liquid")
+        liquid_flow = liquid_result["branch"]["outlet"]["flows"]["main"]
+        self.assertEqual(liquid_flow["fluid_name"], "Water")
+        self.assertEqual(liquid_flow["fluid"]["phase"], "liquid")
 
         tank = network.nodes["tank"]
         tank.state["m_liq"] = tank.dry_mass
+        network.state.node["tank"]["m_liq"] = tank.dry_mass
         self.assertTrue(network._apply_transitions())
         gas_result = network.update(bcs=boundaries, commit=False)
 
         self.assertIsInstance(outlet.model, CompressibleLossModel)
-        self.assertEqual(gas_result["branch"]["outlet"]["fluid"], "Nitrogen")
-        self.assertEqual(gas_result["branch"]["outlet"]["phase"], "gas")
+        gas_flow = gas_result["branch"]["outlet"]["flows"]["main"]
+        self.assertEqual(gas_flow["fluid_name"], "Nitrogen")
+        self.assertEqual(gas_flow["fluid"]["phase"], "gas")
         self.assertTrue(outlet.enabled)
 
     def test_fixed_head_pump_is_an_algebraic_branch(self):
@@ -702,7 +941,7 @@ class FluidNetworkTests(unittest.TestCase):
         )
         chamber = network.nodes["chamber"]
         inflows = [
-            FlowConn(
+            branch_flow(
                 "gas_feed",
                 1.0,
                 {
@@ -710,7 +949,7 @@ class FluidNetworkTests(unittest.TestCase):
                     "enabled": True,
                 },
             ),
-            FlowConn(
+            branch_flow(
                 "liquid_feed",
                 1.0,
                 {
@@ -720,7 +959,7 @@ class FluidNetworkTests(unittest.TestCase):
             ),
         ]
         self.assertTrue(chamber.update_mode(inflows))
-        network.branch_objects["nozzle"].set_mode(False, chamber.model.phases)
+        network.branches["nozzle"].set_mode(False, chamber.model.phases)
 
         result = network.update(
             bcs={
@@ -734,16 +973,26 @@ class FluidNetworkTests(unittest.TestCase):
         nozzle = result["branch"]["nozzle"]
         self.assertIsInstance(chamber.model, TwinPathJunctionModel)
         self.assertIsInstance(
-            network.branch_objects["nozzle"].model, TwinPathNozzleModel
+            network.branches["nozzle"].model, TwinPathNozzleModel
         )
-        self.assertGreater(nozzle["mdot_gas"], 0.0)
-        self.assertGreater(nozzle["mdot_liquid"], 0.0)
-        self.assertAlmostEqual(
-            result["mdot"]["gas_feed"], nozzle["mdot_gas"], places=7
+        self.assertGreater(
+            sum(flow["mdot"] for flow in nozzle["flows"].values() if flow["fluid"]["phase"] == "gas"),
+            0.0,
         )
-        self.assertAlmostEqual(
-            result["mdot"]["liquid_feed"], nozzle["mdot_liquid"], places=7
+        self.assertGreater(
+            sum(flow["mdot"] for flow in nozzle["flows"].values() if flow["fluid"]["phase"] == "liquid"),
+            0.0,
         )
+        gas_mdot = sum(
+            flow["mdot"] for flow in nozzle["flows"].values()
+            if flow["fluid"]["phase"] == "gas"
+        )
+        liquid_mdot = sum(
+            flow["mdot"] for flow in nozzle["flows"].values()
+            if flow["fluid"]["phase"] == "liquid"
+        )
+        self.assertAlmostEqual(result["mdot"]["gas_feed"], gas_mdot, places=7)
+        self.assertAlmostEqual(result["mdot"]["liquid_feed"], liquid_mdot, places=7)
         self.assertGreater(nozzle["gas_area_fraction"], 0.0)
         self.assertLess(nozzle["gas_area_fraction"], 1.0)
         self.assertGreater(nozzle["thrust"], 0.0)

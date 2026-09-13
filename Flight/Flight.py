@@ -6,7 +6,15 @@ from typing import Any, Dict, List, Optional
 
 from .PropSystem import PropSystem
 from .flight_forces import gravity
-from .types import AeroOut, AtmosState, FluidOut, KinematicsState, PlantOut, ThermalOut
+from .types import (
+    AeroOut,
+    AtmosState,
+    FluidOut,
+    KinematicsState,
+    PlantOut,
+    PropulsionOut,
+    ThermalOut,
+)
 
 
 class FlightSim:
@@ -46,6 +54,7 @@ class FlightSim:
         atm: AtmosState,
         thermal_out: Optional[ThermalOut] = None,
         commit: bool = True,
+        axial_specific_force: float = 0.0,
     ) -> FluidOut:
         """Advance the fluid network once using the supplied boundary state."""
 
@@ -57,6 +66,7 @@ class FlightSim:
             atm=atm,
             heat_flux=heat_flux,
             commit=commit,
+            axial_specific_force=axial_specific_force,
         )
 
     def predict_kinematics(
@@ -144,13 +154,14 @@ class FlightSim:
         """Run the 1D trajectory with an explicit-implicit predictor-corrector."""
 
         if self.vehicle.total_mass is None:
-            self.vehicle.build()
+            raise RuntimeError("Vehicle must be built before starting FlightSim")
 
         simulation = self.cfg["simulation"]
         dt = float(simulation["dt"])
         t_end = float(simulation["t_end"])
-        corrector_tolerance = float(simulation.get("corrector_tolerance", 1.0e-8))
-        corrector_max_iterations = int(simulation.get("corrector_max_iterations", 10))
+        advanced = self.cfg.get("advanced", {}).get("flight", simulation)
+        corrector_tolerance = float(advanced.get("corrector_tolerance", 1.0e-8))
+        corrector_max_iterations = int(advanced.get("corrector_max_iterations", 10))
 
         atmosphere = self.env.atmosphere(h0, v0)
         fluid_state = self.prop_system.update(
@@ -158,6 +169,10 @@ class FlightSim:
             atm=atmosphere,
             heat_flux={},
             commit=False,
+            axial_specific_force=(
+                gravity(float(self.vehicle.total_mass), h0)
+                / float(self.vehicle.total_mass)
+            ),
         )
         self.vehicle.update_mass_distribution(fluid_state.node)
         kin = KinematicsState(
@@ -178,12 +193,12 @@ class FlightSim:
             kin = replace(
                 kin,
                 dt=min(dt, t_end - kin.t),
-                alpha=self.aero.aoa(kin.t),
+                alpha=self.angle_of_attack(kin.t, kin.h),
                 m=float(self.vehicle.total_mass),
                 Ixx=float(self.vehicle.Ixx),
             )
             atmosphere = self.env.atmosphere(kin.h, kin.v)
-            engine_on = self.powered(fluid_state.propulsion.thrust)
+            engine_on = self.engine_on(fluid_state.propulsion)
             aero_out = self.aero.evaluate(kin, atmosphere, engine_on)
             thermal_out = self.step_thermal(kin, atmosphere, aero_out)
             start_plant = PlantOut(
@@ -206,7 +221,7 @@ class FlightSim:
             # for the single implicit fluid-network propagation.
             predicted_kin = replace(
                 predicted_kin,
-                alpha=self.aero.aoa(predicted_kin.t),
+                alpha=self.angle_of_attack(predicted_kin.t, predicted_kin.h),
             )
             predicted_atmosphere = self.env.atmosphere(
                 predicted_kin.h,
@@ -222,17 +237,27 @@ class FlightSim:
                 predicted_atmosphere,
                 predicted_aero,
             )
-            fluid_state = self.step_fluids(
-                predicted_kin.dt,
-                predicted_atmosphere,
-                predicted_thermal,
-            )
+            try:
+                fluid_state = self.step_fluids(
+                    predicted_kin.dt,
+                    predicted_atmosphere,
+                    predicted_thermal,
+                    axial_specific_force=(
+                        start_forces["thrust"] - start_forces["drag"]
+                    )
+                    / float(self.vehicle.total_mass),
+                )
+            except RuntimeError as error:
+                raise RuntimeError(
+                    f"Fluid solve failed from t={kin.t:.6g} s to "
+                    f"t={predicted_kin.t:.6g} s"
+                ) from error
             self.vehicle.update_mass_distribution(fluid_state.node)
 
             # Iterate the implicit trapezoidal corrector. Propulsion and mass
             # are fixed at their solved endpoint values; atmosphere and drag
             # are updated with each corrected kinematic state.
-            end_engine_on = self.powered(fluid_state.propulsion.thrust)
+            end_engine_on = self.engine_on(fluid_state.propulsion)
             next_kin = replace(
                 predicted_kin,
                 m=float(self.vehicle.total_mass),
@@ -264,7 +289,10 @@ class FlightSim:
                 )
                 corrected_kin = replace(
                     corrected_kin,
-                    alpha=self.aero.aoa(corrected_kin.t),
+                    alpha=self.angle_of_attack(
+                        corrected_kin.t,
+                        corrected_kin.h,
+                    ),
                 )
                 error = max(
                     abs(corrected_kin.h - next_kin.h)
@@ -302,6 +330,7 @@ class FlightSim:
                     ),
                     "mass_properties": self.mass_properties(),
                     "engine_on": end_engine_on,
+                    "on_rail": self.on_rail(next_kin.h),
                 }
             )
             kin = next_kin
@@ -310,8 +339,16 @@ class FlightSim:
 
     def on_rail(self, altitude: float) -> bool:
         launch = self.cfg["launch"]
-        return altitude < float(launch["altitude"]) + float(launch["rail_length"])
+        rail_end = float(launch["altitude"]) + float(launch["rail_height"])
+        return altitude < rail_end
+
+    def angle_of_attack(self, time: float, altitude: float) -> float:
+        """Return zero on the rail and the scheduled AoA after rail exit."""
+
+        return 0.0 if self.on_rail(altitude) else self.aero.aoa(time)
 
     @staticmethod
-    def powered(thrust: float) -> bool:
-        return thrust > 0.0
+    def engine_on(propulsion: PropulsionOut) -> bool:
+        """Return whether combustion is active for aerodynamic deck selection."""
+
+        return propulsion.mode == "combusting"

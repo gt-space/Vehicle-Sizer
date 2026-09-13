@@ -1,14 +1,25 @@
 import numpy as np
+
+from .COPV import COPV
 from .Engine import Engine
+from .Material import MaterialProperties
+from .sections.AviBay import AviBay
+from .sections.FinCan import FinCan
+from .sections.InterTank import InterTank
+from .sections.Nosecone import Nosecone
+from .sections.PressTank import PressTank
+from .sections.PropTank import PropTank
 
 class Vehicle:
 
-    def __init__(self, cfg: dict, engine: Engine, sections: list):
+    def __init__(self, cfg: dict, fluid_properties=None):
 
         self.cfg: dict = cfg
-        self.engine = engine
-        self.sections: list = sections
-        self.dx: float = cfg["vehicle"]["dx"]
+        self.fluid_properties = fluid_properties
+        self.engine = None
+        self.dx: float = float(cfg["vehicle"]["dx"])
+        self.tanks = self._build_tanks()
+        self.sections: list = []
         self.n: int = None
 
         self.station: np.ndarray = None
@@ -25,11 +36,123 @@ class Vehicle:
         self.Ixx: float = None
         self.Iyy: float = None
 
-    def build(self):
-        self.engine.build()
+    def build(self, engine: Engine):
+        """Build the configured nose-to-aft section stack."""
+
+        self.engine = engine
+        self.sections = self._build_sections()
         self._stack_sections()
         self._assemble_vectors()
         self.get_mass_properties()
+
+    def _build_tanks(self) -> dict:
+        """Create each tank section once for structural and fluid use."""
+
+        tanks = {}
+        state0 = self.cfg["prop_system"]["state0"]
+        for tank_id, definition in self.cfg["tanks"].items():
+            tank_type = definition["type"]
+            if tank_type == "propellant":
+                if self.fluid_properties is None:
+                    raise ValueError(
+                        "Vehicle requires a fluid-property source to size propellant tanks"
+                    )
+                initial = state0[tank_id]
+                liquid = self.fluid_properties.state_pt(
+                    initial["fluid"],
+                    float(initial["P"]),
+                    float(initial["T"]),
+                )
+                tanks[tank_id] = PropTank(
+                    self.cfg,
+                    prop_mass=definition["propellant_mass"],
+                    liquid_density=liquid.rho,
+                    material=MaterialProperties.from_name(definition["material"]),
+                    wall_thickness=definition.get("wall_thickness"),
+                    max_pressure=self._max_tank_pressure(tank_id),
+                    t_wall_min=float(self.cfg["advanced"]["t_wall_min"]),
+                    passthrough_diameter=definition["passthrough_diameter"],
+                    passthrough_wall_thickness=definition[
+                        "passthrough_wall_thickness"
+                    ],
+                    ellipse_ratio=definition["ellipse_ratio"],
+                    ullage_factor=definition["ullage_factor"],
+                    tank_id=tank_id,
+                )
+            elif tank_type == "pressurant":
+                copv = COPV(
+                    volume=float(definition["volume_liters"]) * 1.0e-3,
+                    mass=float(definition["mass"]),
+                    diameter=float(definition["outer_diameter"]),
+                    wall_thickness=float(definition["wall_thickness"]),
+                    ellipse_ratio=float(definition["ellipse_ratio"]),
+                )
+                tanks[tank_id] = PressTank(self.cfg, copv, tank_id=tank_id)
+            else:
+                raise ValueError(
+                    f"Unknown tank type {tank_type!r} for tank {tank_id!r}"
+                )
+        return tanks
+
+    def _max_tank_pressure(self, tank_id: str) -> float:
+        """Return the absolute pressure used to size a propellant tank wall."""
+
+        nominal = float(self.cfg["prop_system"]["state0"][tank_id]["P"])
+        prop_system = self.cfg["prop_system"]
+        legacy = prop_system.get("press_model")
+        pressurization = prop_system.get(
+            "pressurization",
+            "blowdown" if legacy == "blowdown" else "bang_bang",
+        )
+        controls = [
+            definition
+            for definition in prop_system.get("bang_bang", {}).values()
+            if definition.get("tank_id") == tank_id
+        ] if pressurization == "bang_bang" else []
+        if len(controls) > 1:
+            raise ValueError(f"Tank {tank_id!r} has multiple bang-bang controllers")
+        return nominal + float(controls[0]["pressure_band"]) if controls else 1.1 * nominal
+
+    def _build_sections(self) -> list:
+        sections = []
+        used_tanks = set()
+        for definition in self.cfg["vehicle"]["sections"]:
+            section_type = definition["type"]
+            if section_type == "nosecone":
+                section = Nosecone(self.cfg)
+            elif section_type == "avi_bay":
+                section = AviBay(self.cfg)
+            elif section_type in ("press_tank", "prop_tank"):
+                tank_id = definition["tank_id"]
+                if tank_id in used_tanks:
+                    raise ValueError(f"Tank {tank_id!r} appears more than once")
+                try:
+                    section = self.tanks[tank_id]
+                except KeyError as exc:
+                    raise ValueError(f"Unknown vehicle tank {tank_id!r}") from exc
+                expected = PressTank if section_type == "press_tank" else PropTank
+                if not isinstance(section, expected):
+                    raise ValueError(
+                        f"Section type {section_type!r} does not match tank "
+                        f"{tank_id!r}"
+                    )
+                used_tanks.add(tank_id)
+            elif section_type == "inter_tank":
+                section = InterTank(
+                    self.cfg,
+                    length=definition["length"],
+                    area_moment_of_inertia=definition["area_moment_of_inertia"],
+                )
+            elif section_type == "fin_can":
+                section = FinCan(self.cfg, self.engine)
+            else:
+                raise ValueError(f"Unknown vehicle section type {section_type!r}")
+            sections.append(section)
+
+        missing = set(self.tanks) - used_tanks
+        if missing:
+            raise ValueError(f"Configured tanks missing from vehicle stack: {sorted(missing)}")
+        return sections
 
     def _stack_sections(self):
 

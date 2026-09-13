@@ -1,6 +1,4 @@
 import unittest
-from types import SimpleNamespace
-
 import numpy as np
 
 from Vehicle.Vehicle import Vehicle
@@ -29,10 +27,13 @@ class VehicleMassDistributionTests(unittest.TestCase):
         forward_tank = FakeTankSection("ox_tank", [0.0, 1.0], [1.0, 1.0])
         aft_tank = FakeTankSection("fuel_tank", [2.0, 3.0], [1.0, 1.0])
         vehicle = Vehicle(
-            cfg={"vehicle": {"dx": 1.0}},
-            engine=SimpleNamespace(),
-            sections=[forward_tank, aft_tank],
+            cfg={
+                "vehicle": {"dx": 1.0},
+                "prop_system": {"state0": {}},
+                "tanks": {},
+            }
         )
+        vehicle.sections = [forward_tank, aft_tank]
         vehicle._assemble_vectors()
         vehicle.get_mass_properties()
         dry_cg = vehicle.cg

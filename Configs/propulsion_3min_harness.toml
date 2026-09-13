@@ -21,11 +21,15 @@ nozzle_cd = 1.0
 duty_cycle = 0.50
 collapse_factor = 1.20
 min_temperature = 220.0
+pressure_band = 68947.6
+initially_open = true
 
 [prop_system.bang_bang.FUEL_BANGBANG]
 duty_cycle = 0.50
 collapse_factor = 1.20
 min_temperature = 220.0
+pressure_band = 68947.6
+initially_open = true
 
 [prop_system.state0.press_tank]
 fluid = "Nitrogen"

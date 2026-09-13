@@ -67,7 +67,3 @@ class Section(ABC):
     @abstractmethod
     def get_heat_flux() -> np.ndarray:
         pass
-
-    @abstractmethod
-    def get_temp() -> np.ndarray:
-        pass

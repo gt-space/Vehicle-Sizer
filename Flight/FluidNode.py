@@ -1,61 +1,33 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .FluidsDef import FluidsDef
 from FluidProperties.PropertyModels import (
     CombustionPropertySource,
     PureFluidPropertySource,
 )
+from .FluidState import BranchState, FluidState, NodeState
 
 
-@dataclass(frozen=True)
-class FlowConn:
-    """Runtime flow and constituent states at one node/branch connection."""
+Adjacent = List[Tuple[float, BranchState]]
 
-    id: str
-    sign: float
-    state: Dict[str, Any]
 
-    @property
-    def components(self) -> Dict[str, Dict[str, Any]]:
-        return self.state["components"]
+def iter_flows(adjacent: Adjacent):
+    for incidence, branch in adjacent:
+        if branch.enabled:
+            for flow in branch.flows.values():
+                yield incidence, flow
 
-    @property
-    def enabled(self) -> bool:
-        return bool(self.state["enabled"])
 
-    @property
-    def fluid(self) -> str:
-        if len(self.components) != 1:
-            raise ValueError(f"Flow connection '{self.id}' contains multiple fluids")
-        return next(iter(self.components))
-
-    @property
-    def phase(self) -> str:
-        return str(self.components[self.fluid]["phase"])
-
-    @property
-    def mdot(self) -> float:
-        return sum(float(item["mdot"]) for item in self.components.values())
-
-    @property
-    def h(self) -> float:
-        return float(self.components[self.fluid]["h"])
-
-    def mdot_of(self, fluid: str) -> float:
-        item = self.components.get(fluid)
-        return 0.0 if item is None else float(item["mdot"])
-
-    def phase_mdot(self, phase: str) -> float:
-        return sum(
-            float(item["mdot"])
-            for item in self.components.values()
-            if item["phase"] == phase
-        )
+def net_mdot(adjacent: Adjacent, fluid: Optional[str] = None, phase: Optional[str] = None):
+    return sum(
+        incidence * float(flow["mdot"])
+        for incidence, flow in iter_flows(adjacent)
+        if (fluid is None or flow["fluid"].fluid == fluid)
+        and (phase is None or flow["fluid"].phase == phase)
+    )
 
 
 class NodeModel:
@@ -68,8 +40,22 @@ class NodeModel:
     def initial_state(self, node) -> Dict[str, Any]:
         return {}
 
-    def state_variables(self, node, dt, prescribed) -> Dict[str, float]:
+    def state(self, node, dt, prescribed) -> Dict[str, float]:
         return {}
+
+    def scales(self, node, state) -> Dict[str, float]:
+        return {
+            name: max(abs(float(value)), 1.0)
+            for name, value in state.items()
+        }
+
+    def committed_state(self, node, state, evaluated) -> Dict[str, float]:
+        return dict(state)
+
+    def output_state(self, node, evaluated) -> Dict[str, Any]:
+        """Enrich one converged node state for external consumers."""
+
+        return dict(evaluated)
 
     def trial_state(self, node, state, adjacent, node_states) -> Dict[str, Any]:
         return dict(state)
@@ -79,15 +65,14 @@ class NodeModel:
     ) -> np.ndarray:
         return np.empty(0)
 
-    def outlet_state(
-        self, node, evaluated, adjacent, preferred_fluid=None
-    ) -> Dict[str, Dict[str, Any]]:
+    def outlet(self, node, evaluated, adjacent, port=None) -> Dict[str, FluidState]:
         fluids = evaluated.get("fluids", {})
-        if preferred_fluid in fluids:
-            fluids = {preferred_fluid: fluids[preferred_fluid]}
+        selected = node.fluid_for_port(port)
+        if selected in fluids:
+            fluids = {selected: fluids[selected]}
         if len(fluids) != 1:
             raise ValueError(f"Node '{node.id}' does not expose one fluid stream")
-        return {fluid: dict(state) for fluid, state in fluids.items()}
+        return {name: fluid if isinstance(fluid, FluidState) else FluidState.from_dict(name, fluid) for name, fluid in fluids.items()}
 
 
 class SteadyModel(NodeModel):
@@ -96,8 +81,15 @@ class SteadyModel(NodeModel):
     def initial_state(self, node) -> Dict[str, float]:
         return {"P": float(node.definition["P0"])}
 
-    def state_variables(self, node, dt, prescribed) -> Dict[str, float]:
+    def state(self, node, dt, prescribed) -> Dict[str, float]:
         return {} if prescribed is not None else {"P": float(node.state["P"])}
+
+    def scales(self, node, variables) -> Dict[str, float]:
+        return {"P": max(abs(float(node.definition["P0"])), 1.0)}
+
+    @staticmethod
+    def continuity_scale(adjacent: Adjacent) -> float:
+        return max(sum(abs(float(flow["mdot"])) for _, flow in iter_flows(adjacent)), 1.0)
 
 
 class JunctionModel(SteadyModel):
@@ -109,25 +101,25 @@ class JunctionModel(SteadyModel):
         self, node, trial, previous, evaluated, adjacent, dt, heat_flux
     ) -> np.ndarray:
         return np.array(
-            [sum(item.sign * item.mdot for item in adjacent if item.enabled)],
+            [
+                net_mdot(adjacent)
+                / self.continuity_scale(adjacent)
+            ],
             dtype=float,
         )
 
-    def outlet_state(
-        self, node, evaluated, adjacent, preferred_fluid=None
-    ) -> Dict[str, Dict[str, Any]]:
-        components = {
-            fluid: state
-            for item in adjacent
-            if item.enabled and item.sign * item.mdot >= 0.0
-            for fluid, state in item.components.items()
+    def outlet(self, node, evaluated, adjacent, port=None) -> Dict[str, FluidState]:
+        fluids = {
+            flow["fluid"].fluid: flow["fluid"]
+            for incidence, flow in iter_flows(adjacent)
+            if incidence * int(flow["direction"]) > 0
         }
-        if len(components) != 1:
+        if len(fluids) != 1:
             raise ValueError(
                 f"Junction '{node.id}' requires one incoming fluid, got "
-                f"{sorted(components)}"
+                f"{sorted(fluids)}"
             )
-        return {fluid: dict(state) for fluid, state in components.items()}
+        return fluids
 
 
 class BoundaryModel(NodeModel):
@@ -145,55 +137,162 @@ class BoundaryModel(NodeModel):
 class DynamicModel(NodeModel):
     is_dynamic = True
 
-    def state_variables(self, node, dt, prescribed) -> Dict[str, float]:
-        if dt is None or prescribed is not None:
-            return {}
-        return dict(node.state)
-
     @staticmethod
     def fluxes(
-        adjacent: List[FlowConn], fluid: Optional[str] = None
+        adjacent: Adjacent, fluid: Optional[str] = None
     ) -> Tuple[float, float]:
         mdot = 0.0
         hdot = 0.0
-        for item in adjacent:
-            if not item.enabled:
+        for incidence, flow in iter_flows(adjacent):
+            state = flow["fluid"]
+            if fluid is not None and state.fluid != fluid:
                 continue
-            for name, component in item.components.items():
-                if fluid is not None and name != fluid:
-                    continue
-                signed_mdot = item.sign * float(component["mdot"])
-                mdot += signed_mdot
-                hdot += signed_mdot * float(component["h"])
+            signed_mdot = incidence * float(flow["mdot"])
+            mdot += signed_mdot
+            hdot += signed_mdot * float(state["h"])
         return mdot, hdot
 
 
 class VolumeModel(DynamicModel):
-    """Finite-capacitance single-phase volume."""
+    """Finite volume supporting single-phase and saturated pure-fluid states."""
 
     def initial_state(self, node) -> Dict[str, float]:
         state0 = node.definition["state0"]
-        return {"m": float(state0["m"]), "U": float(state0["U"])}
+        return {
+            name: float(state0[name])
+            for name in ("P", "T", "m", "U")
+        }
+
+    def state(self, node, dt, prescribed) -> Dict[str, float]:
+        if dt is None or prescribed is not None:
+            return {}
+        if "quality" in node.state:
+            return {
+                name: float(node.state[name])
+                for name in ("P", "quality", "m")
+            }
+        return {name: float(node.state[name]) for name in ("P", "T")}
+
+    def scales(self, node, variables) -> Dict[str, float]:
+        state0 = node.definition["state0"]
+        if "quality" in variables:
+            return {
+                "P": max(abs(float(state0.get("P", node.state["P"]))), 1.0),
+                "quality": 1.0,
+                "m": max(abs(float(state0.get("m", node.state["m"]))), 1.0e-6),
+            }
+        return {
+            "P": max(abs(float(state0.get("P", node.state["P"]))), 1.0),
+            "T": max(abs(float(state0.get("T", node.state["T"]))), 1.0),
+        }
 
     def trial_state(self, node, state, adjacent, node_states) -> Dict[str, Any]:
         geometry = node.definition["geometry"]
         fluid = node.definition["fluid"]
-        properties = node.require_fluid_properties().state_rho_u(
-            fluid,
-            state["m"] / geometry.volume,
-            state["U"] / state["m"],
-        ).as_dict()
-        properties["V"] = geometry.volume
-        properties["phase"] = node.fluid_phase(fluid)
+        if "quality" in state:
+            lower, upper = node.require_fluid_properties().saturation_bounds(fluid)
+            saturation = node.require_fluid_properties().saturation_at_p(
+                fluid, min(max(state["P"], lower), upper)
+            )
+            quality = float(state["quality"])
+            mass = float(state["m"])
+            specific_volume = (
+                (1.0 - quality) / saturation.liquid.rho
+                + quality / saturation.vapor.rho
+            )
+            specific_energy = (
+                (1.0 - quality) * saturation.liquid.u
+                + quality * saturation.vapor.u
+            )
+            properties = saturation.vapor.as_dict()
+            properties.update(
+                {
+                    "V": quality * mass / saturation.vapor.rho,
+                    "phase": "gas",
+                }
+            )
+            energy = mass * specific_energy
+            occupied_volume = mass * specific_volume
+            temperature = saturation.T
+        elif (
+            not getattr(node, "_condensation_armed", True)
+            and node.evaluated is not None
+            and fluid in node.evaluated.fluids
+        ):
+            reference = node.evaluated.fluids[fluid]
+            temperature = float(state["T"])
+            pressure = float(state["P"])
+            cv = reference["R"] / (reference["gamma"] - 1.0)
+            cp = cv + reference["R"]
+            properties = {
+                "P": pressure,
+                "T": temperature,
+                "rho": reference["rho"]
+                * pressure / reference["P"]
+                * reference["T"] / temperature,
+                "h": reference["h"] + cp * (temperature - reference["T"]),
+                "u": reference["u"] + cv * (temperature - reference["T"]),
+                "R": reference["R"],
+                "gamma": reference["gamma"],
+                "V": geometry.volume,
+                "phase": "gas",
+            }
+            mass = properties["rho"] * geometry.volume
+            energy = mass * properties["u"]
+            occupied_volume = geometry.volume
+        else:
+            properties = node.require_fluid_properties().state_pt(
+                fluid,
+                state["P"],
+                state["T"],
+            ).as_dict()
+            properties["V"] = geometry.volume
+            properties["phase"] = node.fluid_phase(fluid)
+            mass = properties["rho"] * geometry.volume
+            energy = mass * properties["u"]
+            occupied_volume = geometry.volume
+            temperature = properties["T"]
         return {
             **state,
-            "mass": state["m"],
-            "tank_id": node.definition.get("tank_id"),
-            "axial_mass": node.axial_mass(state["m"]),
-            "P": properties["P"],
-            **node.volume_metadata(),
+            "T": temperature,
+            "m": mass,
+            "U": energy,
+            "quality": state.get("quality"),
+            "occupied_volume": occupied_volume,
+            "P": state["P"],
             "fluids": {fluid: properties},
         }
+
+    def output_state(self, node, evaluated) -> Dict[str, Any]:
+        fluid = node.definition["fluid"]
+        output = {
+            **evaluated,
+            "mass": evaluated["m"],
+            "tank_id": node.definition.get("tank_id"),
+            "axial_mass": node.axial_mass(evaluated["m"]),
+            **node.volume_metadata(),
+        }
+        if evaluated.get("quality") is None:
+            properties = evaluated["fluids"][fluid]
+            output["phase_states"] = {properties["phase"]: dict(properties)}
+        else:
+            lower, upper = node.require_fluid_properties().saturation_bounds(fluid)
+            saturation = node.require_fluid_properties().saturation_at_p(
+                fluid, min(max(evaluated["P"], lower), upper)
+            )
+            output["phase_states"] = {
+                "liquid": saturation.liquid.as_dict(),
+                "gas": saturation.vapor.as_dict(),
+            }
+        return output
+
+    def committed_state(self, node, state, evaluated) -> Dict[str, float]:
+        names = (
+            ("P", "T", "quality", "m", "U")
+            if evaluated.get("quality") is not None
+            else ("P", "T", "m", "U")
+        )
+        return {name: float(evaluated[name]) for name in names}
 
     def residual(
         self, node, trial, previous, evaluated, adjacent, dt, heat_flux
@@ -206,77 +305,158 @@ class VolumeModel(DynamicModel):
         )
         mass_scale = max(abs(previous["m"]), 1.0)
         energy_scale = max(abs(previous["U"]), 1.0)
-        return np.array(
-            [
-                (trial["m"] - previous["m"] - dt * mdot) / mass_scale,
-                (trial["U"] - previous["U"] - dt * (hdot + qdot))
-                / energy_scale,
-            ],
-            dtype=float,
-        )
+        equations = [
+            (evaluated["m"] - previous["m"] - dt * mdot) / mass_scale,
+            (evaluated["U"] - previous["U"] - dt * (hdot + qdot))
+            / energy_scale,
+        ]
+        if "quality" in trial:
+            equations.append(
+                (
+                    evaluated["occupied_volume"]
+                    - node.definition["geometry"].volume
+                )
+                / node.definition["geometry"].volume
+            )
+        return np.asarray(equations, dtype=float)
+
+    def condense(self, node) -> bool:
+        """Enter saturated equilibrium when a gas volume reaches its dew line."""
+
+        if (
+            "quality" in node.state
+            or node.fluid_phase(node.definition["fluid"]) != "gas"
+        ):
+            return False
+        fluid = node.definition["fluid"]
+        if not node.require_fluid_properties().supports_saturation(fluid):
+            return False
+        pressure = float(node.state["P"])
+        lower, upper = node.require_fluid_properties().saturation_bounds(fluid)
+        if not lower <= pressure <= upper:
+            return False
+        saturation = node.require_fluid_properties().saturation_at_p(fluid, pressure)
+        if float(node.state["T"]) > saturation.T:
+            return False
+        volume = node.definition["geometry"].volume
+        specific_volume = volume / float(node.state["m"])
+        quality = (
+            specific_volume - 1.0 / saturation.liquid.rho
+        ) / (1.0 / saturation.vapor.rho - 1.0 / saturation.liquid.rho)
+        if quality > 1.01:
+            return False
+        node.state = {
+            "P": pressure,
+            "T": saturation.T,
+            "quality": min(max(quality, 0.0), 1.0),
+            "m": float(node.state["m"]),
+            "U": float(node.state["U"]),
+        }
+        return True
 
 
-class TwoPhaseVolumeModel(DynamicModel):
+class TwoSpeciesModel(DynamicModel):
     """Finite-capacitance liquid inventory with a gas ullage."""
 
-    names = ("m_liq", "U_liq", "m_ull", "U_ull")
+    names = ("P", "T_liq", "T_ull", "m_liq", "m_ull")
 
     def initial_state(self, node) -> Dict[str, float]:
         state0 = node.definition["state0"]
-        return {name: float(state0[name]) for name in self.names}
+        return {
+            "P": float(state0["P"]),
+            "T_liq": float(state0["T"]),
+            "T_ull": float(state0["gas_T"]),
+            "m_liq": float(state0["m_liq"]),
+            "U_liq": float(state0["U_liq"]),
+            "m_ull": float(state0["m_ull"]),
+            "U_ull": float(state0["U_ull"]),
+        }
+
+    def state(self, node, dt, prescribed) -> Dict[str, float]:
+        if dt is None or prescribed is not None:
+            return {}
+        return {name: float(node.state[name]) for name in self.names}
+
+    def scales(self, node, variables) -> Dict[str, float]:
+        state0 = node.definition["state0"]
+        return {
+            "P": max(abs(float(state0["P"])), 1.0),
+            "T_liq": max(abs(float(state0["T"])), 1.0),
+            "T_ull": max(abs(float(state0["gas_T"])), 1.0),
+            "m_liq": max(abs(float(state0["m_liq"])), 1.0),
+            "m_ull": max(abs(float(state0["m_ull"])), 1.0e-6),
+        }
 
     def trial_state(self, node, state, adjacent, node_states) -> Dict[str, Any]:
         definition = node.definition
         geometry = definition["geometry"]
         liquid_fluid = definition["liquid_fluid"]
         gas_fluid = definition["gas_fluid"]
-        try:
-            tank = FluidsDef.tank_compatibility(
-                m_liquid=state["m_liq"],
-                U_liquid=state["U_liq"],
-                m_gas=state["m_ull"],
-                U_gas=state["U_ull"],
-                tank_volume=geometry.volume,
-                liquid_fluid=liquid_fluid,
-                gas_fluid=gas_fluid,
-                pressure_guess=definition["P0"],
-                fluid_properties=node.require_fluid_properties(),
-            )
-        except (ValueError, RuntimeError, ZeroDivisionError):
-            if node.evaluated is None:
-                raise
-            return {
-                **node.evaluated,
-                **state,
-                "mass": state["m_liq"] + state["m_ull"],
-                "_trial_valid": False,
-            }
-        fill = geometry.fill_state(tank["liquid"]["V"])
+        pressure = state["P"]
+        liquid = node.require_fluid_properties().state_pt(
+            liquid_fluid, pressure, state["T_liq"]
+        ).as_dict()
+        gas = node.require_fluid_properties().state_pt(
+            gas_fluid, pressure, state["T_ull"]
+        ).as_dict()
+        liquid["V"] = state["m_liq"] / liquid["rho"]
+        gas["V"] = state["m_ull"] / gas["rho"]
+        liquid_energy = state["m_liq"] * liquid["u"]
+        gas_energy = state["m_ull"] * gas["u"]
+        fill = geometry.fill_state(liquid["V"])
+        liquid_outlet_pressure = (
+            pressure
+            + liquid["rho"]
+            * node.axial_specific_force
+            * fill["fill_height"]
+        )
         return {
             **state,
-            "mass": state["m_liq"] + state["m_ull"],
-            "tank_id": definition.get("tank_id"),
-            "mode": node.mode,
-            "axial_mass": geometry.axial_mass(
-                liquid_volume=tank["liquid"]["V"],
-                liquid_mass=state["m_liq"],
-                ullage_mass=state["m_ull"],
-            ),
-            "P": tank["P"],
-            "_trial_valid": True,
-            **fill,
+            "U_liq": liquid_energy,
+            "U_ull": gas_energy,
+            "P": pressure,
+            "port_pressure": {
+                "liquid": liquid_outlet_pressure,
+                liquid_fluid: liquid_outlet_pressure,
+                "ullage": pressure,
+                "gas": pressure,
+                gas_fluid: pressure,
+            },
             "fluids": {
                 liquid_fluid: {
-                    **tank["liquid"],
+                    **liquid,
                     "phase": "liquid",
                     "contact_area": fill["liquid_contact_area"],
                 },
                 gas_fluid: {
-                    **tank["gas"],
+                    **gas,
                     "phase": "gas",
                     "contact_area": fill["ullage_contact_area"],
                 },
             },
+        }
+
+    def output_state(self, node, evaluated) -> Dict[str, Any]:
+        definition = node.definition
+        geometry = definition["geometry"]
+        liquid_volume = evaluated["fluids"][definition["liquid_fluid"]]["V"]
+        return {
+            **evaluated,
+            "mass": evaluated["m_liq"] + evaluated["m_ull"],
+            "tank_id": definition.get("tank_id"),
+            "mode": node.mode,
+            "axial_mass": geometry.axial_mass(
+                liquid_volume=liquid_volume,
+                liquid_mass=evaluated["m_liq"],
+                ullage_mass=evaluated["m_ull"],
+            ),
+            **geometry.fill_state(liquid_volume),
+        }
+
+    def committed_state(self, node, state, evaluated) -> Dict[str, float]:
+        return {
+            name: float(evaluated[name])
+            for name in (*self.names, "U_liq", "U_ull")
         }
 
     def residual(
@@ -308,24 +488,30 @@ class TwoPhaseVolumeModel(DynamicModel):
         gas_energy_scale = max(abs(previous["U_ull"]), 1.0)
         return np.array(
             [
-                (trial["m_liq"] - previous["m_liq"] - dt * mdot_liq)
+                (evaluated["m_liq"] - previous["m_liq"] - dt * mdot_liq)
                 / liquid_mass_scale,
                 (
-                    trial["U_liq"]
+                    evaluated["U_liq"]
                     - previous["U_liq"]
                     - dt * (hdot_liq + qdot_liq)
                     + pressure * dV_liq
                 )
                 / liquid_energy_scale,
-                (trial["m_ull"] - previous["m_ull"] - dt * mdot_gas)
+                (evaluated["m_ull"] - previous["m_ull"] - dt * mdot_gas)
                 / gas_mass_scale,
                 (
-                    trial["U_ull"]
+                    evaluated["U_ull"]
                     - previous["U_ull"]
                     - dt * (hdot_gas + qdot_gas)
                     + pressure * dV_gas
                 )
                 / gas_energy_scale,
+                (
+                    evaluated["fluids"][liquid]["V"]
+                    + evaluated["fluids"][gas]["V"]
+                    - node.definition["geometry"].volume
+                )
+                / node.definition["geometry"].volume,
             ],
             dtype=float,
         )
@@ -340,11 +526,7 @@ class CombustionModel(SteadyModel):
         definition = node.definition
 
         def inflow(fluid: str) -> float:
-            return sum(
-                item.sign * item.mdot_of(fluid)
-                for item in adjacent
-                if item.enabled
-            )
+            return net_mdot(adjacent, fluid=fluid)
 
         mdot_ox = inflow(definition["oxidizer_fluid"])
         mdot_fuel = inflow(definition["fuel_fluid"])
@@ -364,6 +546,18 @@ class CombustionModel(SteadyModel):
                 name: 0.0 for name in ("cstar", "Cf", "R", "gamma", "T")
             }
         combustion_fluid = definition["combustion_fluid"]
+        prior = (
+            node.evaluated.fluids.get(combustion_fluid)
+            if node.evaluated is not None
+            else None
+        )
+        transport = product if flowing else (
+            prior.as_dict() if prior is not None else {"R": 300.0, "gamma": 1.2, "T": 300.0}
+        )
+        enthalpy = (
+            transport["gamma"] * transport["R"] * transport["T"]
+            / (transport["gamma"] - 1.0)
+        )
         return {
             **state,
             "cstar": product["cstar"],
@@ -371,21 +565,30 @@ class CombustionModel(SteadyModel):
             "MR": mixture_ratio,
             "mdot_oxidizer": mdot_ox,
             "mdot_fuel": mdot_fuel,
-            "mode": node.mode,
-            "shutdown_reason": node.shutdown_reason,
             "fluids": {
                 combustion_fluid: {
-                    **{name: product[name] for name in ("R", "gamma", "T")},
+                    **{name: transport[name] for name in ("R", "gamma", "T")},
+                    "h": enthalpy,
                     "phase": "gas",
                 }
             },
+        }
+
+    def output_state(self, node, evaluated) -> Dict[str, Any]:
+        return {
+            **evaluated,
+            "mode": node.mode,
+            "shutdown_reason": node.shutdown_reason,
         }
 
     def residual(
         self, node, trial, previous, evaluated, adjacent, dt, heat_flux
     ) -> np.ndarray:
         return np.array(
-            [sum(item.sign * item.mdot for item in adjacent if item.enabled)],
+            [
+                net_mdot(adjacent)
+                / self.continuity_scale(adjacent)
+            ],
             dtype=float,
         )
 
@@ -398,8 +601,8 @@ class TwinPathJunctionModel(SteadyModel):
     def __init__(self, phases):
         self.phases = tuple(phases)
 
-    def state_variables(self, node, dt, prescribed) -> Dict[str, float]:
-        return super().state_variables(node, dt, prescribed) if self.phases else {}
+    def state(self, node, dt, prescribed) -> Dict[str, float]:
+        return super().state(node, dt, prescribed) if self.phases else {}
 
     def trial_state(self, node, state, adjacent, node_states) -> Dict[str, Any]:
         if not self.phases:
@@ -407,38 +610,32 @@ class TwinPathJunctionModel(SteadyModel):
                 **state,
                 "P": node_states[node.definition["ambient_node"]]["P"],
             }
-        sources: Dict[str, Dict[str, Any]] = {}
-        for item in adjacent:
-            if not item.enabled or item.sign <= 0.0:
-                continue
-            for fluid, component in item.components.items():
-                if component["phase"] in self.phases:
-                    sources[fluid] = component
+        sources = {
+            flow["fluid"].fluid: flow["fluid"]
+            for incidence, flow in iter_flows(adjacent)
+            if incidence * int(flow["direction"]) > 0
+            and flow["fluid"].phase in self.phases
+        }
 
         fluids = {}
         for fluid, source in sources.items():
-            props = dict(source)
-            if "T" in source:
-                props = node.require_fluid_properties().state_pt(
-                    fluid, float(state["P"]), float(source["T"])
-                ).as_dict()
-            fluids[fluid] = {
-                **props,
-                "phase": source["phase"],
-                "mdot": sum(
-                    item.sign * item.mdot_of(fluid)
-                    for item in adjacent
-                    if item.enabled and item.sign > 0.0
-                ),
-            }
+            fluids[fluid] = FluidState.from_dict(
+                fluid,
+                {**source, "mdot": net_mdot(adjacent, fluid=fluid)},
+            )
         return {
             **state,
             "cstar": 0.0,
             "Cf": 0.0,
             "MR": 0.0,
+            "fluids": fluids,
+        }
+
+    def output_state(self, node, evaluated) -> Dict[str, Any]:
+        return {
+            **evaluated,
             "mode": node.mode,
             "shutdown_reason": node.shutdown_reason,
-            "fluids": fluids,
         }
 
     def residual(
@@ -446,23 +643,24 @@ class TwinPathJunctionModel(SteadyModel):
     ) -> np.ndarray:
         return np.array(
             [
-                sum(
-                    item.sign * item.phase_mdot(phase)
-                    for item in adjacent
-                    if item.enabled
-                )
+                net_mdot(adjacent, phase=phase)
+                / self.continuity_scale(adjacent)
                 for phase in self.phases
             ],
             dtype=float,
         )
 
-    def outlet_state(
-        self, node, evaluated, adjacent, preferred_fluid=None
-    ) -> Dict[str, Dict[str, Any]]:
+    def outlet(self, node, evaluated, adjacent, port=None) -> Dict[str, FluidState]:
         fluids = evaluated.get("fluids", {})
+        selected = node.fluid_for_port(port)
+        if selected in fluids:
+            fluids = {selected: fluids[selected]}
         if not fluids and self.phases:
             raise ValueError(f"Twin-path junction '{node.id}' has no inlet streams")
-        return {fluid: dict(state) for fluid, state in fluids.items()}
+        return {
+            name: fluid if isinstance(fluid, FluidState) else FluidState.from_dict(name, fluid)
+            for name, fluid in fluids.items()
+        }
 
 
 class FluidNode:
@@ -474,8 +672,9 @@ class FluidNode:
         self.model = model
         self.incoming: List[str] = []
         self.outgoing: List[str] = []
-        self.state: Dict[str, Any] = self.model.initial_state(self)
-        self.evaluated: Optional[Dict[str, Any]] = None
+        self.state = NodeState.from_dict(self.model.initial_state(self))
+        self.evaluated: Optional[NodeState] = None
+        self.axial_specific_force = 0.0
         self.fluid_properties: Optional[PureFluidPropertySource] = None
         self.combustion_properties: Optional[CombustionPropertySource] = None
 
@@ -485,13 +684,25 @@ class FluidNode:
 
     def switch_model(self, model: NodeModel, state: Dict[str, Any]) -> None:
         self.model = model
-        self.state = dict(state)
+        self.state = state if isinstance(state, NodeState) else NodeState.from_dict(state)
 
-    def state_variables(self, dt, prescribed) -> Dict[str, float]:
-        return self.model.state_variables(self, dt, prescribed)
+    def solver_state(self, dt, prescribed) -> Dict[str, float]:
+        return self.model.state(self, dt, prescribed)
+
+    def scales(self, state) -> Dict[str, float]:
+        return self.model.scales(self, state)
 
     def trial_state(self, state, adjacent, node_states) -> Dict[str, Any]:
-        return self.model.trial_state(self, state, adjacent, node_states)
+        return NodeState.from_dict(self.model.trial_state(self, state, adjacent, node_states))
+
+    def output_state(self, evaluated) -> Dict[str, Any]:
+        return NodeState.from_dict(self.model.output_state(self, evaluated))
+
+    def event_values(self, evaluated) -> Dict[str, float]:
+        return {}
+
+    def apply_event(self, name: str) -> bool:
+        raise ValueError(f"Node '{self.id}' has no event {name!r}")
 
     def residual(
         self, trial, previous, evaluated, adjacent, dt, heat_flux
@@ -505,9 +716,35 @@ class FluidNode:
         state: Dict[str, Any],
         evaluated: Optional[Dict[str, Any]] = None,
     ) -> None:
-        self.state = dict(state)
+        committed = (
+            self.model.committed_state(self, state, evaluated)
+            if evaluated is not None
+            else dict(state)
+        )
+        self.state = committed if isinstance(committed, NodeState) else NodeState.from_dict(committed)
+        if "quality" in self.state:
+            quality = float(self.state["quality"])
+            if not -1.0e-6 <= quality <= 1.01:
+                raise ValueError(
+                    f"Node '{self.id}' converged to invalid vapor quality {quality}"
+                )
+            self.state["quality"] = min(max(quality, 0.0), 1.0)
         if evaluated is not None:
-            self.evaluated = dict(evaluated)
+            self.evaluated = evaluated if isinstance(evaluated, NodeState) else NodeState.from_dict(evaluated)
+
+    def fluid_for_port(self, port: Optional[str]) -> Optional[str]:
+        if port == "liquid":
+            return self.definition.get("liquid_fluid", self.definition.get("fluid"))
+        if port in ("ullage", "gas"):
+            return self.definition.get("gas_fluid", self.definition.get("fluid"))
+        if port == "oxidizer":
+            return self.definition.get("oxidizer_fluid")
+        if port == "fuel":
+            return self.definition.get("fuel_fluid")
+        return port
+
+    def outlet(self, evaluated, adjacent, port=None):
+        return self.model.outlet(self, evaluated, adjacent, port)
 
     def axial_mass(self, mass: float):
         return self.definition["geometry"].axial_mass(mass)
@@ -534,7 +771,67 @@ class FluidNode:
         return self.combustion_properties
 
 
-class PressurantTankComponent(FluidNode):
+class VolumeComponent(FluidNode):
+    """Component wrapper owning pure-fluid volume regime transitions."""
+
+    def __init__(self, node_id: str, definition: Dict[str, Any], model: NodeModel):
+        self._condensation_armed = True
+        super().__init__(node_id, definition, model)
+
+    def event_values(self, evaluated) -> Dict[str, float]:
+        if not isinstance(self.model, VolumeModel):
+            return {}
+        if "quality" in self.state:
+            return {"evaporate": 1.0 - float(evaluated["quality"])}
+        fluid = self.definition["fluid"]
+        if self.fluid_phase(fluid) != "gas":
+            return {}
+        properties = self.require_fluid_properties()
+        if not properties.supports_saturation(fluid):
+            return {}
+        pressure = float(evaluated["P"])
+        lower, upper = properties.saturation_bounds(fluid)
+        if not lower <= pressure <= upper:
+            return {}
+        saturation = properties.saturation_at_p(fluid, pressure)
+        if not self._condensation_armed:
+            if float(evaluated["T"]) > saturation.T + 1.0e-6:
+                self._condensation_armed = True
+            else:
+                return {}
+        return {"condense": float(evaluated["T"]) - saturation.T}
+
+    def apply_event(self, name: str) -> bool:
+        if name == "condense":
+            return self.condense()
+        if name == "evaporate":
+            return self.evaporate()
+        return super().apply_event(name)
+
+    def condense(self) -> bool:
+        return isinstance(self.model, VolumeModel) and self.model.condense(self)
+
+    def evaporate(self) -> bool:
+        if "quality" not in self.state or self.state["quality"] < 1.0 - 1.0e-5:
+            return False
+        fluid = self.definition["fluid"]
+        lower, upper = self.require_fluid_properties().saturation_bounds(fluid)
+        saturation = self.require_fluid_properties().saturation_at_p(
+            fluid, min(max(self.state["P"], lower), upper)
+        )
+        self.state = NodeState.from_dict(
+            {
+                "P": self.state["P"],
+                "T": saturation.T,
+                "m": self.state["m"],
+                "U": self.state["U"],
+            }
+        )
+        self._condensation_armed = False
+        return True
+
+
+class PressurantTankComponent(VolumeComponent):
     def __init__(self, node_id: str, definition: Dict[str, Any]):
         super().__init__(node_id, definition, VolumeModel())
 
@@ -542,7 +839,7 @@ class PressurantTankComponent(FluidNode):
         return "gas"
 
 
-class PropellantTankComponent(FluidNode):
+class PropellantTankComponent(VolumeComponent):
     dry_fraction = 1.0e-4
     max_dry_mass = 1.0e-4
 
@@ -553,22 +850,19 @@ class PropellantTankComponent(FluidNode):
             min(initial_liquid_mass * self.dry_fraction, self.max_dry_mass),
             1.0e-12,
         )
-        super().__init__(node_id, definition, TwoPhaseVolumeModel())
+        super().__init__(node_id, definition, TwoSpeciesModel())
         if initial_liquid_mass <= 0.0:
             self.dry_out()
 
-    def time_to_dry(self, adjacent: List[FlowConn]) -> Optional[float]:
-        if self.mode != "two_phase":
-            return None
-        liquid = self.definition["liquid_fluid"]
-        mdot = sum(
-            item.sign * item.mdot_of(liquid)
-            for item in adjacent
-            if item.enabled
-        )
-        if mdot >= 0.0:
-            return None
-        return max((self.state["m_liq"] - self.dry_mass) / -mdot, 0.0)
+    def event_values(self, evaluated) -> Dict[str, float]:
+        if self.mode == "two_phase":
+            return {"dryout": float(evaluated["m_liq"]) - self.dry_mass}
+        return super().event_values(evaluated)
+
+    def apply_event(self, name: str) -> bool:
+        if name != "dryout":
+            return super().apply_event(name)
+        return self.dry_out()
 
     def dry_out(self) -> bool:
         if self.mode != "two_phase":
@@ -579,7 +873,12 @@ class PropellantTankComponent(FluidNode):
         self.definition["fluid"] = self.definition["gas_fluid"]
         self.switch_model(
             VolumeModel(),
-            {"m": self.state["m_ull"], "U": self.state["U_ull"]},
+            {
+                "P": self.state["P"],
+                "T": self.state["T_ull"],
+                "m": self.state["m_ull"],
+                "U": self.state["U_ull"],
+            },
         )
         return True
 
@@ -603,14 +902,13 @@ class CombustorComponent(FluidNode):
         self.shutdown_reason: Optional[str] = None
         super().__init__(node_id, definition, CombustionModel())
 
-    def update_mode(self, inflows: List[FlowConn]) -> bool:
+    def update_mode(self, inflows: Adjacent) -> bool:
         phases = tuple(
             sorted(
                 {
-                    component["phase"]
-                    for item in inflows
-                    if item.enabled and item.sign > 0.0
-                    for component in item.components.values()
+                    flow["fluid"].phase
+                    for incidence, flow in iter_flows(inflows)
+                    if incidence * int(flow["direction"]) > 0
                 }
             )
         )
@@ -619,15 +917,8 @@ class CombustorComponent(FluidNode):
                 return False
             self.switch_model(TwinPathJunctionModel(phases), self.state)
             return True
-        flow = {
-            fluid: sum(
-                item.sign * item.mdot_of(fluid)
-                for item in inflows
-                if item.enabled and item.sign > 0.0
-            )
-            for item in inflows
-            for fluid in item.components
-        }
+        fluid_names = {flow["fluid"].fluid for _, flow in iter_flows(inflows)}
+        flow = {fluid: net_mdot(inflows, fluid=fluid) for fluid in fluid_names}
         missing_ox = flow.get(self.definition["oxidizer_fluid"], 0.0) <= 0.0
         missing_fuel = flow.get(self.definition["fuel_fluid"], 0.0) <= 0.0
         if not (missing_ox or missing_fuel):

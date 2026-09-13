@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Protocol
+from typing import Any, Dict, Mapping, Protocol
 
 from scipy.optimize import root_scalar
 
@@ -31,6 +31,16 @@ class PureFluidProperties:
 
 
 @dataclass(frozen=True)
+class SaturationProperties:
+    """Coexisting liquid and vapor states for one pure fluid."""
+
+    P: float
+    T: float
+    liquid: PureFluidProperties
+    vapor: PureFluidProperties
+
+
+@dataclass(frozen=True)
 class CombustionProperties:
     """Combustion and nozzle properties required by the propulsion model."""
 
@@ -49,26 +59,19 @@ class CombustionProperties:
 
 
 class PureFluidPropertySource(Protocol):
-    """Interface shared by CoolProp and future tabular fluid properties."""
+    """Direct pressure-temperature property interface."""
 
     def state_pt(
         self, fluid: str, pressure: float, temperature: float
     ) -> PureFluidProperties: ...
 
-    def state_pu(
-        self,
-        fluid: str,
-        pressure: float,
-        internal_energy: float,
-        phase: str,
-    ) -> PureFluidProperties: ...
+    def saturation_bounds(self, fluid: str) -> tuple[float, float]: ...
 
-    def state_rho_u(
-        self,
-        fluid: str,
-        density: float,
-        internal_energy: float,
-    ) -> PureFluidProperties: ...
+    def supports_saturation(self, fluid: str) -> bool: ...
+
+    def saturation_at_p(
+        self, fluid: str, pressure: float
+    ) -> SaturationProperties: ...
 
 
 class CombustionPropertySource(Protocol):
@@ -101,28 +104,155 @@ class CoolPropPropertySource:
         )
 
     @staticmethod
-    def state_pu(
-        fluid: str,
-        pressure: float,
-        internal_energy: float,
-        phase: str,
-    ) -> PureFluidProperties:
-        return PureFluidProperties.from_dict(
-            FluidsDef.coolprop_state_pu(
-                fluid, pressure, internal_energy, phase
-            )
-        )
+    def saturation_bounds(fluid: str) -> tuple[float, float]:
+        from CoolProp.CoolProp import PropsSI
+
+        return float(PropsSI("PTRIPLE", fluid)), float(PropsSI("PCRIT", fluid))
 
     @staticmethod
-    def state_rho_u(
-        fluid: str,
-        density: float,
-        internal_energy: float,
+    def supports_saturation(fluid: str) -> bool:
+        return True
+
+    @staticmethod
+    def saturation_at_p(fluid: str, pressure: float) -> SaturationProperties:
+        liquid = PureFluidProperties.from_dict(
+            FluidsDef.coolprop_state(fluid, "P", pressure, "Q", 0.0)
+        )
+        vapor = PureFluidProperties.from_dict(
+            FluidsDef.coolprop_state(fluid, "P", pressure, "Q", 1.0)
+        )
+        return SaturationProperties(pressure, vapor.T, liquid, vapor)
+
+
+class TablePureFluidPropertySource:
+    """Pure-fluid properties directly interpolated from pressure-temperature maps."""
+
+    outputs = (
+        "density",
+        "enthalpy",
+        "internal_energy",
+        "specific_heat_ratio",
+    )
+
+    def __init__(
+        self,
+        lookup_file: str | Path,
+        fluid_tables: Mapping[str, str | Mapping[str, str]],
+    ) -> None:
+        if not fluid_tables:
+            raise ValueError("Table fluid source requires fluid-to-table mappings")
+        self.fluid_tables = {
+            fluid: table if isinstance(table, str) else table["pt"]
+            for fluid, table in fluid_tables.items()
+        }
+        self.saturation_tables = {
+            fluid: table["saturation"]
+            for fluid, table in fluid_tables.items()
+            if not isinstance(table, str) and "saturation" in table
+        }
+        table_names = (*self.fluid_tables.values(), *self.saturation_tables.values())
+        self.tables = LookupTables(
+            lookup_file,
+            table_names=tuple(dict.fromkeys(table_names)),
+        )
+
+    def _table(self, fluid: str):
+        try:
+            return self.tables[self.fluid_tables[fluid]]
+        except KeyError as error:
+            raise KeyError(
+                f"No property table configured for fluid {fluid!r}"
+            ) from error
+
+    def state_pt(
+        self, fluid: str, pressure: float, temperature: float
     ) -> PureFluidProperties:
-        return PureFluidProperties.from_dict(
-            FluidsDef.coolprop_state(
-                fluid, "Dmass", density, "Umass", internal_energy
+        table = self._table(fluid)
+        if table.axis_order != ("pressure", "temperature"):
+            raise ValueError(
+                f"Fluid table '{table.name}' must use pressure and temperature axes"
             )
+        missing = set(self.outputs).difference(table.outputs)
+        if missing:
+            raise ValueError(
+                f"Fluid table '{table.name}' is missing outputs {sorted(missing)}"
+            )
+        try:
+            gas_constant = float(table.constants["specific_gas_constant"])
+        except KeyError as error:
+            raise ValueError(
+                f"Fluid table '{table.name}' requires specific_gas_constant"
+            ) from error
+        values = table.evaluate(
+            self.outputs,
+            pressure=float(pressure),
+            temperature=float(temperature),
+        )
+        if values["density"] <= 0.0 or values["specific_heat_ratio"] <= 0.0:
+            raise ValueError(f"Fluid table '{table.name}' returned an invalid state")
+        return PureFluidProperties(
+            P=float(pressure),
+            T=float(temperature),
+            rho=values["density"],
+            h=values["enthalpy"],
+            u=values["internal_energy"],
+            R=gas_constant,
+            gamma=values["specific_heat_ratio"],
+        )
+
+    def _saturation_table(self, fluid: str):
+        try:
+            return self.tables[self.saturation_tables[fluid]]
+        except KeyError as error:
+            raise KeyError(
+                f"No saturation table configured for fluid {fluid!r}"
+            ) from error
+
+    def saturation_bounds(self, fluid: str) -> tuple[float, float]:
+        pressure = self._saturation_table(fluid).axes["pressure"]
+        return float(pressure[0]), float(pressure[-1])
+
+    def supports_saturation(self, fluid: str) -> bool:
+        return fluid in self.saturation_tables
+
+    def saturation_at_p(
+        self, fluid: str, pressure: float
+    ) -> SaturationProperties:
+        table = self._saturation_table(fluid)
+        if table.axis_order != ("pressure",):
+            raise ValueError(
+                f"Saturation table '{table.name}' must use a pressure axis"
+            )
+        names = (
+            "temperature",
+            "liquid_density",
+            "liquid_enthalpy",
+            "liquid_internal_energy",
+            "liquid_specific_heat_ratio",
+            "vapor_density",
+            "vapor_enthalpy",
+            "vapor_internal_energy",
+            "vapor_specific_heat_ratio",
+        )
+        values = table.evaluate(names, pressure=float(pressure))
+        gas_constant = float(table.constants["specific_gas_constant"])
+
+        def phase(prefix: str) -> PureFluidProperties:
+            return PureFluidProperties(
+                P=float(pressure),
+                T=values["temperature"],
+                rho=values[f"{prefix}_density"],
+                h=values[f"{prefix}_enthalpy"],
+                u=values[f"{prefix}_internal_energy"],
+                R=gas_constant,
+                gamma=values[f"{prefix}_specific_heat_ratio"],
+            )
+
+        return SaturationProperties(
+            P=float(pressure),
+            T=values["temperature"],
+            liquid=phase("liquid"),
+            vapor=phase("vapor"),
         )
 
 

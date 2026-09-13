@@ -6,13 +6,11 @@ models.
 
 ## Installation
 
-### ThermoProp
+### CoolProp
 
 ```bash
-pip3 install thermoprop
+pip3 install CoolProp
 ```
-
-[ThermoProp repository](https://github.com/saakethramoju/ThermoProp)
 
 ### FullPlot
 
@@ -32,23 +30,29 @@ pip3 install rocketcea
 
 ## Package roles
 
-- **ThermoProp** calculates nitrogen, helium, oxygen, and RP-1 properties.
-- **FullPlot** supplies map axes and HDF5 writing for the RP-1 and engine maps.
+- **CoolProp** calculates nitrogen, helium, oxygen, and n-dodecane properties.
+- **FullPlot** supplies map axes and HDF5 writing for the engine map.
 - **RocketCEA** calculates LOX/RP-1 chamber and nozzle performance.
 
 ## Lookup overview
 
 | Script | HDF5 group | Purpose |
 | --- | --- | --- |
-| `nitrogen_lookup.py` | `/nitrogen_hp`, `/helium_hp` | Nitrogen and helium COPV properties up to 10,000 psia |
-| `oxygen_lookup.py` | `/oxygen_lookup` | Cryogenic and gaseous oxygen properties |
-| `rp1_lookup.py` | `/rp1_lookup` | Liquid RP-1 properties |
+| `nitrogen_lookup.py` | `/nitrogen_pt`, `/helium_pt`, `/nitrogen_saturation` | Pressurant properties through COPV blowdown |
+| `oxygen_lookup.py` | `/oxygen_pt` | Non-vaporizing liquid-oxygen properties |
+| `rp1_lookup.py` | `/ndodecane_pt` | Liquid n-dodecane fuel properties |
 | `engine_lookup.py` | `/engine_lookup` | LOX/RP-1 chamber and nozzle performance |
 
-The nitrogen and helium maps use pressure and enthalpy as inputs. They contain
-temperature, density, viscosity, conductivity,
+The pure-fluid maps use pressure and temperature as inputs. They contain
+density, enthalpy, internal energy, viscosity, conductivity,
 `specific_heat_at_constant_pressure`, `specific_heat_at_constant_volume`, and
-`specific_heat_ratio`.
+`specific_heat_ratio`. Runtime calls interpolate all requested outputs in one
+batched operation and never invert a table.
+
+The generated bounds are 1 kPa–75 MPa and 63.151–1200 K for nitrogen,
+1 kPa–75 MPa and 10–1200 K for helium, 1 kPa–7 MPa and 55–138 K for
+liquid oxygen, and 1 kPa–7 MPa and 264–600 K for liquid n-dodecane.
+Queries outside these ranges raise `ValueError`; extrapolation is not used.
 
 ## How the generators work
 

@@ -65,7 +65,20 @@ def test_evaluate_returns_selected_or_all_outputs(tmp_path):
     assert set(table.evaluate(pressure=1.0, mode=0.0)) == {"density", "invalid"}
 
 
-def test_invalid_queries_raise(tmp_path):
+def test_repeated_query_uses_interpolation_cache(tmp_path):
+    path = tmp_path / "lookup.h5"
+    make_lookup_file(path)
+    table = LookupTables(path)["sample"]
+    coordinates = {"pressure": 2.0, "mode": 0.5}
+
+    table.get("density", **coordinates)
+    hits = table._interpolate.cache_info().hits
+    table.get("density", **coordinates)
+
+    assert table._interpolate.cache_info().hits == hits + 1
+
+
+def test_invalid_queries_raise_and_warn_without_extrapolating(tmp_path, capsys):
     path = tmp_path / "lookup.h5"
     make_lookup_file(path)
     table = LookupTables(path)["sample"]
@@ -74,6 +87,7 @@ def test_invalid_queries_raise(tmp_path):
         table.get("density", pressure=1.0)
     with pytest.raises(ValueError, match="outside"):
         table.get("density", pressure=4.0, mode=0.0)
+    assert "WARNING: rejected query outside table" in capsys.readouterr().err
     with pytest.raises(KeyError, match="no output"):
         table.get("temperature", pressure=1.0, mode=0.0)
     with pytest.raises(ValueError, match="non-finite"):
