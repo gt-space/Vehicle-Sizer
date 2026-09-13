@@ -1,4 +1,4 @@
-# Complete 2500 lbf pressure-fed LOX/n-dodecane vehicle definition.
+# Vespula dupe
 # SI units are used throughout unless a field explicitly states otherwise.
 
 simulation:
@@ -7,7 +7,6 @@ simulation:
   output: outputs/flight_2500lbf_mr2.csv
   plot: outputs/flight_2500lbf_mr2.png
 
-# Manufacturing limits and numerical controls normally left unchanged.
 advanced:
   t_wall_min: 0.001                # m, minimum manufacturable prop-tank gauge
   flight:
@@ -28,7 +27,7 @@ environment:
   altitude_step: 100.0             # m
 
 thermal:
-  model: adiabatic                 # adiabatic until thermal coupling is implemented
+  model: adiabatic                 # adiabatic 
 
 aero:
   cd_table: AeroTables/debug_vehicle.h5
@@ -40,7 +39,7 @@ aero:
 
 property_models:
   pure_fluid:
-    source: table                   # coolprop | table
+    source: table                   # coolprop / table
     table:
       lookup_file: FluidProperties/sizer_lookups.h5
       fluids:
@@ -50,7 +49,7 @@ property_models:
         Oxygen: oxygen_pt
         n-Dodecane: ndodecane_pt
   combustion:
-    source: table                   # cea | table
+    source: table                   # cea / table
     table:
       lookup_file: FluidProperties/sizer_lookups.h5
       nfz: 1
@@ -65,8 +64,8 @@ engine:
   length: 0.5588                    # m
 
 prop_system:
-  feed_type: pressure_fed           # pressure_fed | pump_fed
-  pressurization: bang_bang         # bang_bang | blowdown
+  feed_type: pressure_fed           # pressure_fed - pump_fed
+  pressurization: bang_bang         # bang_bang - blowdown
   Pc_target: 1827110.682690            # Pa, 265 psia
   MR_target: 2.0                    # oxidizer/fuel mass ratio
   thrust_target: 11120.554          # N, 2500 lbf
@@ -82,18 +81,17 @@ prop_system:
       duty_cycle: 0.50
       collapse_factor: 1.20
       min_temperature: 220.0        # K
-      pressure_band: 34473.786466   # Pa, ±5 psi about design tank pressure
+      pressure_band: 34473.786466   # Pa, +/-5 psi about design tank pressure
       initially_open: true
     FUEL_BANGBANG:
       tank_id: fuel_tank
       duty_cycle: 0.50
       collapse_factor: 1.20
       min_temperature: 220.0        # K
-      pressure_band: 34473.786466   # Pa, ±5 psi about design tank pressure
+      pressure_band: 34473.786466   # Pa, +/-5 psi about design tank pressure
       initially_open: true
 
-  # Only independent physical initial conditions belong here. PropSystem
-  # calculates stored masses and energies from these states and tank geometry.
+ 
   state0:
     press_tank:
       fluid: Nitrogen
@@ -138,8 +136,7 @@ vehicle:
       area_moment_of_inertia: 3.60e-5
     - type: fin_can
 
-# Tank geometry is defined once and referenced by both the vehicle section and
-# the fluid-network state through tank_id.
+
 tanks:
   press_tank:
     type: pressurant
