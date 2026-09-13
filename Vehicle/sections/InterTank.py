@@ -10,7 +10,6 @@ from ..utils import heating
 class InterTank(Section):
 
     def __init__(self, cfg: dict, length: float, ax_load: float, bending_moment: float):
-
         super().__init__(cfg)
         self.length = length
         self.n = int(np.ceil(self.length / self.dx))
@@ -18,7 +17,6 @@ class InterTank(Section):
         self.bending_moment = bending_moment
         self.wall_thickness = cfg["inter_tank"]["clamshell_wall_thickness"]
         self.wall_material = cfg["inter_tank"]["clamshell_material"]
-        self.emissivity = 0.85
 
     def get_mass(self):
         feed_system_mass = self.cfg["inter_tank"]["feed_system_mass"]
@@ -43,10 +41,8 @@ class InterTank(Section):
         return m, a
 
     def _get_stringer_thickness(self, P: float, M: float, sigma: float, E: float) -> float:
-
         r = self.cfg["vehicle"]["OMLD"] * 0.5
         FOS = 1.5
-
         def equations(x):
             a, I = x
             if a <= 0 or I <= 0:
@@ -54,7 +50,6 @@ class InterTank(Section):
             eq1 = (M * np.sqrt(r**2 - 0.25 * a**2)) / (I + (P / (4 * a**2))) - sigma
             eq2 = (2 * a**2) * ((a**2) / 3 + r**2 - r * a) - I
             return [eq1, eq2]
-
         a_guess = 0.0001
         I_guess = (2 * a_guess**2) * ((a_guess**2) / 3 + r**2 - r * a_guess)
         sol = root(equations, [a_guess, I_guess])
@@ -95,4 +90,4 @@ class InterTank(Section):
         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
     def get_heat_flux(self, atm, theta: float):
-        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)
+        self.heat_flux = heating.get_body_heating(self.station, self.wall_temp, atm, theta)

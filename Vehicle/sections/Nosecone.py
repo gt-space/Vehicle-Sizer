@@ -64,7 +64,7 @@ class Nosecone(Section):
 
     def get_heat_flux(self, atm, theta: float):
         R_n = self.cfg["nosecone"].get("tip_radius", 0.01)
-        self.heat_flux = heating.get_nose_heating(atm, R_n, self.radius, self.dx, self.Tw)
+        self.heat_flux = heating.get_nose_heating(atm, R_n, self.radius, self.dx, self.wall_temp)
 
     def _get_profile(self, x: np.ndarray) -> np.ndarray:
         R = self.OMLD * 0.5

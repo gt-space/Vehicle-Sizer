@@ -9,6 +9,19 @@ from ..utils import aero
 from ..utils import geometry as geo
 from ..utils import heating
 
+TANK_STOCK_THICKNESSES_IN = np.array([
+    0.040,
+    0.050,
+    0.063,   # ~1/16"
+    0.080,
+    0.090,
+    0.100,
+    0.125,   # 1/8"
+    0.160,
+    0.190,
+    0.250,   # 1/4"
+])
+TANK_STOCK_THICKNESSES = TANK_STOCK_THICKNESSES_IN * 0.0254
 
 @dataclass(frozen=True)
 class PropTankGeometry:
@@ -226,28 +239,31 @@ class PropTank(Section):
     def _get_wall_thickness(self):
         sigma = mp.db.get_material(self.material).get("yield_strength", 400.0)
         self.pressure = self._get_pressure()
-        t = 1.4 * (self.pressure * self.OMLD) / (2 * sigma)
-        return max(t, 1/16 * 0.0254)
+        t_required = 1.4 * (self.pressure * self.OMLD) / (2 * sigma)
+        index = np.searchsorted(TANK_STOCK_THICKNESSES, t_required, side="left")
+        if index >= len(TANK_STOCK_THICKNESSES):
+            raise ValueError(
+                f"Required tank wall thickness "
+                f"{t_required / 0.0254:.4f} in exceeds largest available "
+                f"stock thickness {TANK_STOCK_THICKNESSES_IN[-1]:.4f} in"
+            )
+        return TANK_STOCK_THICKNESSES[index]
 
     def _get_length(self):
         D = self.OMLD
         D_pass = self.passthrough_diameter
         self.volume = self._tank_volume()
         self.wall_thickness = self._get_wall_thickness()
-
         V_end = (np.pi / (12 * self.ellipse_ratio)) * (D - (2 * self.wall_thickness))**3
-
         numerator = (
             self.volume
             - 2 * V_end
             + (4 * np.pi / self.ellipse_ratio) * D_pass**2 * D
         )
-
         denominator = (
             (np.pi / 4)
             * ((D - 2*self.wall_thickness)**2 - D_pass**2)
         )
-
         self.cyl_length = numerator / denominator
         self.length = self.cyl_length + (D / self.ellipse_ratio)
 
@@ -273,4 +289,4 @@ class PropTank(Section):
         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
     def get_heat_flux(self, atm, theta: float):
-        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)
+        self.heat_flux = heating.get_body_heating(self.station, self.wall_temp, atm, theta)

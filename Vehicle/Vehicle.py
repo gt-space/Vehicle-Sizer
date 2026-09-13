@@ -17,6 +17,8 @@ class Vehicle:
         self.lat_area: np.ndarray = None
         self.surf_area: np.ndarray = None
         self.CNa: np.ndarray = None
+        self.heat_flux: np.ndarray = None
+        self.wall_temp: np.ndarray = None
 
         self.length: float = None
         self.total_mass: float = None
@@ -110,5 +112,3 @@ class Vehicle:
             sec.get_CNa(M, alpha)
         self.CNa = np.concatenate([sec.CNa for sec in self.sections])
         self.cp = np.sum(self.CNa * self.station) / np.sum(self.CNa)
-
-    # def update(self):
