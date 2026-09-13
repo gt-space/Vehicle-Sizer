@@ -22,6 +22,7 @@ class InterTank(Section):
             raise ValueError("Intertank requires at least three stringers")
         self.wall_thickness = cfg["inter_tank"]["clamshell_wall_thickness"]
         self.wall_material = cfg["inter_tank"]["clamshell_material"]
+        self.emissivity = 0.85
 
     def get_mass(self):
         feed_system_mass = self.cfg["inter_tank"]["feed_system_mass"]

@@ -100,4 +100,4 @@ class AviBay(Section):
         self.CNa = aero.nosecone_CNa(M) * self.lat_area / lat_area_total
 
     def get_heat_flux(self, atm, theta: float):
-        self.heat_flux = heating.get_body_heating(self.station, self.wall_temp, atm, theta)
+        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)
