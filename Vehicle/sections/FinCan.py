@@ -10,7 +10,6 @@ from ..utils import heating
 class FinCan(Section):
 
     def __init__(self, cfg: dict, engine: Engine):
-
         super().__init__(cfg)
         self.length = engine.length
         self.n = int(np.ceil(self.length / self.dx))
@@ -142,4 +141,4 @@ class FinCan(Section):
         self.CNa = dist.weighted(fin_CNa, self.lat_area_fins) + dist.weighted(tail_CNa, self.lat_area_body)
 
     def get_heat_flux(self, atm, theta: float):
-        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)
+        self.heat_flux = heating.get_body_heating(self.station, self.wall_temp, atm, theta)

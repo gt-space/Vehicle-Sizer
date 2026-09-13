@@ -10,7 +10,6 @@ from ..utils import aero
 from ..utils import geometry as geo
 from ..utils import heating
 
-
 @dataclass(frozen=True)
 class PropTankGeometry:
     """Immutable internal geometry used to derive fill-dependent properties."""
@@ -330,4 +329,4 @@ class PropTank(Section):
         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
     def get_heat_flux(self, atm, theta: float):
-        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)
+        self.heat_flux = heating.get_body_heating(self.station, self.wall_temp, atm, theta)
