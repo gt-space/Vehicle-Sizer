@@ -1,0 +1,247 @@
+
+simulation:
+  dt: 1.0
+  t_end: 300.0
+  fluid_solve_post_shutdown: false
+  output: outputs/flight_3200lbf_13p25in_28ft_bang_bang.csv
+  plot: outputs/flight_3200lbf_13p25in_28ft_bang_bang.png
+
+constraints:
+  goal_apogee: 150000.0        # m; minimum accepted apogee
+  max_burn_duration: 75.0      # s; maximum accepted burn duration
+
+advanced:
+  t_wall_min: 0.001
+  flight:
+    corrector_tolerance: 1.0e-8
+    corrector_max_iterations: 10
+  heating:
+    convergence_tolerance: 1.0e-3
+    temperature_tolerance: 1.0e-2
+    max_iterations: 20
+  fluid_network:
+    residual_tolerance: 1.0e-7
+    event_time_tolerance: 1.0e-5
+    flow_direction_tolerance: 1.0e-10
+
+launch:
+  altitude: 0.0
+  velocity: 0.0
+  rail_height: 15.0
+
+environment:
+  max_altitude: 150000.0
+  altitude_step: 100.0
+
+thermal:
+  external_heating: false
+  initial_temperature: 288.15
+  sink_temperature: 288.15
+  material_overrides:
+    fiberglass_standard:
+      specific_heat: 800.0
+  nodes:
+    press_tank:
+      insulated: true
+    ox_tank:
+      insulated: false
+    fuel_tank:
+      insulated: false
+
+aero:
+  model: AeroTables/dragmodel.h5
+  nose: vonkarman
+  finish: 20um
+  fins_on_boattail: true
+  aoa_schedule:
+    - [0.0, 5.0]
+    - [300.0, 5.0]
+
+property_models:
+  pure_fluid:
+    source: table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      fluids:
+        Nitrogen:
+          pt: nitrogen_pt
+          saturation: nitrogen_saturation
+        Oxygen: oxygen_pt
+        n-Dodecane: ndodecane_pt
+  combustion:
+    source: table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      nfz: 1
+
+engine:
+  oxidizer: LOX
+  fuel: RP-1
+  cstar_efficiency: 0.85
+  cf_efficiency: 0.95
+  exit_pressure: 75842.3
+  mass: 30.0
+  length: 0.5715                  # 22.5 in 
+
+prop_system:
+  feed_type: pump_fed
+  pressurization: bang_bang
+  Pc_target: 1723689.323292       # Pa, 250 psia
+  MR_target: 2.0
+  thrust_target: 14234.309169     # N, 3,200 lbf
+  ox_inj_stiffness: 0.20
+  fuel_inj_stiffness: 0.20
+  pump_ids: {oxidizer: oxidizer_pump, fuel: fuel_pump}
+  pumps:
+    oxidizer_pump:
+      drive: electric
+      curve: &reference_pump_curve
+        reference_mdot: 2.172
+        # Adjustable Pump Curve.xlsx, C13 corrected to 3.45 MPa.
+        # Rows are [kg/s, Pa]; fit is normalized to the exact design point.
+        points: [[0.0, 3600000], [1.09, 3450000], [1.6, 3160000], [2.172, 2548600], [2.8, 1830000], [3.25, 1250000], [4.2, 0.0]]
+      pressure_rise_pa: 1792636.896224  # Pa, 260 psi; optimizer variable
+      gas_CdA: 0.00024
+      efficiency: 0.70               # Assumed combined pump/motor/controller efficiency
+      max_power_kw: 15.0             # Example per-pump electrical rating; verify hardware
+    fuel_pump:
+      drive: electric
+      curve: *reference_pump_curve
+      pressure_rise_pa: 1792636.896224
+      gas_CdA: 0.00015
+      efficiency: 0.70               # Assumed; verify hardware
+      max_power_kw: 15.0
+  ox_pumpin_tank_dp: 137895.145863   # Pa, 20 psi
+  fuel_pumpin_tank_dp: 137895.145863 # Pa, 20 psi
+  ox_inj_pumpout_dp: 137895.145863   # Pa, 20 psi
+  fuel_inj_pumpout_dp: 137895.145863 # Pa, 20 psi
+  nozzle_cd: 1.0
+
+  bang_bang:
+    OX_BANGBANG:
+      tank_id: ox_tank
+      duty_cycle: 0.50
+      collapse_factor: 1.20
+      min_temperature: 220.0
+      pressure_band: 34473.786466    # Pa, +/-5 psi
+      initially_open: true
+    FUEL_BANGBANG:
+      tank_id: fuel_tank
+      duty_cycle: 0.50
+      collapse_factor: 1.20
+      min_temperature: 220.0
+      pressure_band: 34473.786466    # Pa, +/-5 psi
+      initially_open: true
+  state0:
+    press_tank:
+      fluid: Nitrogen
+      T: 300.0
+    ox_tank:
+      fluid: Oxygen
+      gas_fluid: Nitrogen
+      P: 551580.583453             # Pa, 80 psia
+      T: 95.0
+      gas_T: 293.0
+    fuel_tank:
+      fluid: n-Dodecane
+      gas_fluid: Nitrogen
+      P: 551580.583453             # Pa, 80 psia
+      T: 293.0
+      gas_T: 293.0
+
+vehicle:
+  OMLD: 0.33655                  # m, 13.25 in
+  dx: 0.01
+  sections:
+    - type: nosecone
+    - type: avi_bay
+    - type: press_tank
+      tank_id: press_tank
+    - type: inter_tank
+      feed_system_mass: 5.0  # kg in this section only
+      avi_mass: 2.0          # kg in this section only
+      length: 0.12
+      area_moment_of_inertia: 3.60e-5
+    - type: prop_tank
+      tank_id: ox_tank
+    - type: inter_tank
+      feed_system_mass: 5.0  # kg in this section only
+      avi_mass: 2.0          # kg in this section only
+      length: 0.15
+      area_moment_of_inertia: 3.60e-5
+    - type: prop_tank
+      tank_id: fuel_tank
+    - type: inter_tank
+      feed_system_mass: 5.0  # kg in this section only
+      avi_mass: 2.0          # kg in this section only
+      length: 0.60   # m;
+      area_moment_of_inertia: 3.60e-5
+    - type: fin_can
+
+tanks:
+  press_tank:
+    type: pressurant
+    design_pressure: 1.3684e7    # Pa; design and initial charge pressure
+    volume_liters: 20.0
+    outer_diameter: 0.22
+    wall_thickness: 0.0032
+    ellipse_ratio: 1.75
+    material: 1018_carbon_steel_standard
+    # Omit mass: shell mass grows with the length derived from volume and inner diameter.
+
+  ox_tank:
+    type: propellant
+    propellant_mass: 193.0
+    ullage_factor: 1.10
+    ellipse_ratio: 1.75
+    passthrough_diameter: 0.0
+    passthrough_wall_thickness: 0.00254
+    material: aluminum_6061_t6
+
+  fuel_tank:
+    type: propellant
+    propellant_mass: 100.0
+    ullage_factor: 1.10
+    ellipse_ratio: 1.75
+    passthrough_diameter: 0.1016
+    passthrough_wall_thickness: 0.00254
+    material: aluminum_6061_t6
+
+nosecone:
+  profile: von_karman
+  fineness_ratio: 5.0            
+  reco_mass: 5.0
+  material: carbon_fiber_standard
+  tip_radius: 0.01
+
+avi_bay:
+  length: 0.30
+  avi_mass: 2.0
+  clamshell_thickness: 0.003175
+  clamshell_material: fiberglass_standard
+  bulkhead_material: carbon_fiber_standard
+  ring_material: aluminum_6061_t6
+
+press_tank:
+  airframe_wall_thickness: 0.00318
+  airframe_material: carbon_fiber_standard
+  mount_thickness: 0.00318
+  mount_material: aluminum_7075_t6
+
+inter_tank:
+  clamshell_wall_thickness: 0.00318
+  clamshell_material: carbon_fiber_standard
+  stringer_material: aluminum_7075_t6
+  stringer_count: 4
+
+fin_can:
+  span: 0.1905                    # 7.5 in
+  root_chord: 0.4445              # 17.5 in
+  tip_chord: 0.1524               # 6 in
+  sweep_fraction: 0.75            
+  fin_thickness: 0.009525         # 0.375 in
+  fin_count: 4
+  boattail_aft_diameter: 0.3032125 # 11.9375 in
+  boattail_length: 0.5715          # 22.5 in
+  boattail_wall_thickness: 0.00318
+  material: carbon_fiber_standard

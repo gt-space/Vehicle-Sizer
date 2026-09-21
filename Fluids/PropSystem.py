@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Tuple
+from math import isfinite
+from copy import deepcopy
+from constraints import DesignInfeasible
+from .pump_curve import scaled_pump_curve
+from .design import initial_conditions, pressure_ladder, tank_design_pressure, pump_definition, size_electric_pump
 
 from .FluidNetwork import FluidNetwork
-from .FluidsDef import FluidsDef
+from . import FluidsDef
 from FluidProperties.PropertyModels import (
     CEAPropertySource,
     CombustionPropertySource,
@@ -12,7 +17,7 @@ from FluidProperties.PropertyModels import (
     PureFluidPropertySource,
     TableCombustionPropertySource,
 )
-from .types import FluidOut, PropulsionOut
+from simulation_types import FluidOut, PropulsionOut
 
 
 def _make_cea(engine_cfg: Dict[str, Any]):
@@ -42,7 +47,10 @@ class PropSystem:
         fluid_properties: Optional[PureFluidPropertySource] = None,
         combustion_properties: Optional[CombustionPropertySource] = None,
     ):
-        self.cfg = cfg["prop_system"]
+        self.cfg = deepcopy(cfg["prop_system"])
+        self.tank_definitions = deepcopy(cfg.get("tanks", {}))
+        self.design_config = cfg
+        self.initial_states = initial_conditions(cfg)
         self.engine_cfg = cfg["engine"]
         legacy = self.cfg.get("press_model")
         self.feed_type = self.cfg.get(
@@ -55,7 +63,7 @@ class PropSystem:
         )
         if self.feed_type not in ("pressure_fed", "pump_fed"):
             raise ValueError(f"Unknown feed_type={self.feed_type!r}")
-        if self.pressurization not in ("bang_bang", "blowdown"):
+        if self.pressurization not in ("bang_bang", "regulator", "blowdown"):
             raise ValueError(f"Unknown pressurization={self.pressurization!r}")
         self.fluid_properties = (
             fluid_properties
@@ -78,16 +86,14 @@ class PropSystem:
             "Pc_target": self.Pc_target,
             "MR_target": self.MR_target,
             "thrust_target": self.thrust_target,
-            "fuel_inj_stiffness": self.fuel_inj_stiffness,
-            "ox_inj_stiffness": self.ox_inj_stiffness,
         }
         invalid = [name for name, value in positive.items() if value <= 0.0]
         if invalid:
             raise ValueError(f"PropSystem inputs must be positive: {invalid}")
+        if min(self.fuel_inj_stiffness, self.ox_inj_stiffness) < 0.0:
+            raise ValueError("Injector stiffness values must be nonnegative")
 
         if self.feed_type == "pump_fed":
-            self.fuel_pump_head = float(self.cfg["fuel_pump_head"])
-            self.ox_pump_head = float(self.cfg["ox_pump_head"])
             self.fuel_inj_pumpout_dp = float(self.cfg["fuel_inj_pumpout_dp"])
             self.ox_inj_pumpout_dp = float(self.cfg["ox_inj_pumpout_dp"])
             self.fuel_pumpin_tank_dp = float(self.cfg["fuel_pumpin_tank_dp"])
@@ -100,13 +106,30 @@ class PropSystem:
         self.target_ladder = self._build_pressure_ladder()
 
         circuits, nodes, branches = self._wire_network(tank_geometries)
+        self.pump_sizing = {}
+        self.sizing_constraints = {}
         self._size_branches(circuits, nodes, branches)
+        if set(self.pump_sizing) != set(self.cfg.get("pumps", {})):
+            raise ValueError("Every configured pump must be referenced by exactly one template branch")
+        if any(value < 0 for value in self.sizing_constraints.values()):
+            raise DesignInfeasible(self.sizing_constraints, self.pump_sizing)
+        self.node_definitions = nodes
+        self.branch_definitions = branches
+        self.circuits = circuits
+        self._bind_outputs()
+        self._configure_constraints()
+        post_shutdown = cfg.get("simulation", {}).get("fluid_solve_post_shutdown", True)
+        if not isinstance(post_shutdown, bool):
+            raise ValueError("simulation.fluid_solve_post_shutdown must be boolean")
         self.network = FluidNetwork(
             nodes=nodes,
             branches=branches,
             fluid_properties=self.fluid_properties,
             combustion_properties=self.combustion_properties,
             tolerances=cfg.get("advanced", {}).get("fluid_network"),
+            constraint_monitor=self._constraint_margins,
+            stop_at_shutdown=not post_shutdown,
+            stop_at_triple_point=cfg.get("simulation", {}).get("fluid_stop_at_triple_point", False),
         )
 
     def _initialize_tank_states(
@@ -118,7 +141,7 @@ class PropSystem:
 
         for tank_id, tank in tanks.items():
             try:
-                state = self.cfg["state0"][tank_id]
+                state = self.initial_states[tank_id]
             except KeyError as error:
                 raise ValueError(f"Tank {tank_id!r} requires a state0 entry") from error
             geometry = geometries[tank_id]
@@ -139,8 +162,6 @@ class PropSystem:
                     raise ValueError(
                         f"Tank {tank_id!r} must supply both m and U or neither"
                     )
-                if all(supplied):
-                    continue
                 fluid = self.fluid_properties.state_pt(
                     state["fluid"], pressure, float(state["T"])
                 )
@@ -154,7 +175,9 @@ class PropSystem:
                 raise ValueError(
                     f"Tank {tank_id!r} must supply all conserved states or none"
                 )
-            if all(supplied):
+            if all(supplied) and not hasattr(tank, "prop_mass"):
+                # Compatibility for geometry-only network harnesses. Vehicle
+                # builds always derive inventories from propellant_mass and P/T.
                 continue
             if not hasattr(tank, "prop_mass"):
                 raise ValueError(
@@ -237,37 +260,11 @@ class PropSystem:
         self.mdot_fuel = self.mdot_total / (1.0 + self.MR_target)
         self.nozzle_cd = float(self.cfg["nozzle_cd"])
 
-    #users need to modify BPL function along with templates, need to figure a way around this
     def _build_pressure_ladder(self) -> Dict[str, float]:
-        Pc = self.Pc_target
-        Pox_inj = Pc * (1.0 + self.ox_inj_stiffness)
-        Pfuel_inj = Pc * (1.0 + self.fuel_inj_stiffness)
-        if self.feed_type == "pump_fed":
-            Pox_pump_outlet = Pox_inj + self.ox_inj_pumpout_dp
-            Pox_pump_inlet = Pox_pump_outlet - self.ox_pump_head
-            Pfuel_pump_outlet = Pfuel_inj + self.fuel_inj_pumpout_dp
-            Pfuel_pump_inlet = Pfuel_pump_outlet - self.fuel_pump_head
-            return {
-                "Pc_target": Pc,
-                "Pox_inj": Pox_inj,
-                "Pox_pump_outlet": Pox_pump_outlet,
-                "Pox_pump_inlet": Pox_pump_inlet,
-                "Pox_tank": Pox_pump_inlet + self.ox_pumpin_tank_dp,
-                "Pfuel_inj": Pfuel_inj,
-                "Pfuel_pump_outlet": Pfuel_pump_outlet,
-                "Pfuel_pump_inlet": Pfuel_pump_inlet,
-                "Pfuel_tank": Pfuel_pump_inlet + self.fuel_pumpin_tank_dp,
-            }
-        return {
-            "Pc_target": Pc,
-            "Pox_inj": Pox_inj,
-            "Pox_tank": Pox_inj + self.ox_tank_inj_dp,
-            "Pfuel_inj": Pfuel_inj,
-            "Pfuel_tank": Pfuel_inj + self.fuel_tank_inj_dp,
-        }
+        return pressure_ladder(self.cfg)
 
     def _state0(self, name: str) -> Dict[str, Any]:
-        return dict(self.cfg["state0"][name])
+        return dict(self.initial_states[name])
 
     def _wire_network(
         self,
@@ -277,9 +274,11 @@ class PropSystem:
         Dict[str, Dict[str, Any]],
         Dict[str, Dict[str, Any]],
     ]:
-        if self.feed_type == "pump_fed":
+        if "template" in self.cfg:
+            template = self._configured_template(tank_geometries)
+        elif self.feed_type == "pump_fed":
             template = self._template_pump_fed(tank_geometries)
-        elif self.pressurization == "bang_bang":
+        elif self.pressurization != "blowdown":
             template = self._template_pressure_fed(tank_geometries)
         else:
             template = self._template_blowdown(tank_geometries)
@@ -289,16 +288,80 @@ class PropSystem:
             target = nodes[branch["to"]].get("component")
             circuit = circuits[branch["circuit"]]["prop"]
             if source == "pressurant_tank":
-                branch["from_port"] = "gas"
+                branch.setdefault("from_port", "gas")
             elif source == "propellant_tank":
-                branch["from_port"] = "liquid" if circuit in ("oxidizer", "fuel") else "ullage"
+                branch.setdefault("from_port", "liquid" if circuit in ("oxidizer", "fuel") else "ullage")
             elif source == "combustor":
-                branch["from_port"] = "nozzle"
+                branch.setdefault("from_port", "nozzle")
             if target == "propellant_tank":
-                branch["to_port"] = "ullage"
+                branch.setdefault("to_port", "ullage")
             elif target == "combustor" and circuit in ("oxidizer", "fuel"):
-                branch["to_port"] = circuit
+                branch.setdefault("to_port", circuit)
         return circuits, nodes, branches
+
+    def _configured_template(self, tank_geometries):
+        """Bind a declarative wiring template to sized tank/engine data."""
+        template = deepcopy(self.cfg["template"])
+        circuits, nodes, branches = (template[key] for key in ("circuits", "nodes", "branches"))
+        used = []
+        for node in nodes.values():
+            kind = FluidNetwork._kind(node)
+            node.pop("model", None)
+            node["component"] = kind
+            if kind in ("propellant_tank", "pressurant_tank"):
+                tank_id = node["tank_id"]
+                used.append(tank_id)
+                state = self._state0(tank_id)
+                node.update(geometry=tank_geometries[tank_id], state0=state)
+                if kind == "pressurant_tank":
+                    node["P0"] = state["P"]
+                if "P0" not in node:
+                    node["P0"] = tank_design_pressure(self.design_config, tank_id, fallback=state["P"])
+                if kind == "pressurant_tank":
+                    node["fluid"] = state["fluid"]
+                else:
+                    node.update(liquid_fluid=state["fluid"], gas_fluid=state["gas_fluid"])
+            elif kind == "combustor":
+                node.setdefault("P0", self.Pc_target)
+                node.update(expansion_ratio=self.expansion_ratio,
+                            cstar_efficiency=self.cstar_efficiency, cf_efficiency=self.cf_efficiency)
+            if isinstance(node.get("P0"), str):
+                node["P0"] = self.target_ladder[node["P0"]]
+        if len(used) != len(set(used)) or set(used) != set(tank_geometries):
+            raise ValueError("Template must reference every configured tank exactly once")
+        for circuit in circuits.values():
+            if "tank_id" in circuit:
+                state = self._state0(circuit["tank_id"])
+                circuit.setdefault("fluid", state["fluid"])
+                circuit.setdefault("state0", {"P": state["P"], "T": state["T"]})
+            elif circuit["prop"] == "exhaust":
+                circuit.setdefault("fluid", "combustion_gas")
+                circuit.setdefault("state0", {"P": self.Pc_target, "T": self.combustion_gas["T"]})
+        for branch in branches.values():
+            kind = FluidNetwork._kind(branch)
+            branch.pop("model", None)
+            branch["component"] = kind
+            if branch.get("component") == "nozzle":
+                branch.setdefault("At", self.throat_area)
+                branch.setdefault("Cd", self.nozzle_cd)
+            else:
+                branch.setdefault("CdA", None)
+        return circuits, nodes, branches
+
+    def _pressurant_branches(self):
+        """Both active pressurization options share routing and capacity sizing."""
+        if self.pressurization == "blowdown":
+            return {}
+        regulator = self.pressurization == "regulator"
+        suffix = "REGULATOR" if regulator else "BANGBANG"
+        return {
+            f"{leg}_{suffix}": {
+                "component": "regulator" if regulator else "bang_bang_valve",
+                "circuit": "pressurant", "from": "press_tank", "to": destination,
+                **self.cfg[self.pressurization][f"{leg}_{suffix}"], "CdA": None,
+            }
+            for leg, destination in (("OX", "ox_ullage"), ("FUEL", "fuel_ullage"))
+        }
 
     def _template_pressure_fed(self, tank_geometries: Mapping[str, Any]):
         if "press_tank" not in tank_geometries:
@@ -306,7 +369,6 @@ class PropSystem:
         ox_state0 = self._state0("ox_tank")
         fuel_state0 = self._state0("fuel_tank")
         press_state0 = self._state0("press_tank")
-        bang_bang = self.cfg["bang_bang"]
         ox_fluid = str(ox_state0["fluid"])
         fuel_fluid = str(fuel_state0["fluid"])
         press_fluid = str(press_state0["fluid"])
@@ -340,7 +402,6 @@ class PropSystem:
                 "geometry": tank_geometries["press_tank"],
                 "P0": float(press_state0["P"]),
                 "state0": press_state0,
-                "steady": False,
             },
             "ox_ullage": {
                 "component": "propellant_tank",
@@ -350,12 +411,10 @@ class PropSystem:
                 "geometry": tank_geometries["ox_tank"],
                 "P0": self.target_ladder["Pox_tank"],
                 "state0": ox_state0,
-                "steady": False,
             },
             "ox_inj_in": {
                 "model": "junction",
                 "P0": self.target_ladder["Pox_inj"],
-                "steady": True,
             },
             "fuel_ullage": {
                 "component": "propellant_tank",
@@ -365,12 +424,10 @@ class PropSystem:
                 "geometry": tank_geometries["fuel_tank"],
                 "P0": self.target_ladder["Pfuel_tank"],
                 "state0": fuel_state0,
-                "steady": False,
             },
             "fuel_inj_in": {
                 "model": "junction",
                 "P0": self.target_ladder["Pfuel_inj"],
-                "steady": True,
             },
             "thrust_chamber": {
                 "component": "combustor",
@@ -382,27 +439,11 @@ class PropSystem:
                 "expansion_ratio": self.expansion_ratio,
                 "cstar_efficiency": self.cstar_efficiency,
                 "cf_efficiency": self.cf_efficiency,
-                "steady": True,
             },
-            "ambient": {"model": "boundary", "steady": True},
+            "ambient": {"model": "boundary"},
         }
         branches = {
-            "OX_BANGBANG": {
-                "component": "bang_bang_valve",
-                "circuit": "pressurant",
-                "from": "press_tank",
-                "to": "ox_ullage",
-                **bang_bang["OX_BANGBANG"],
-                "CdA": None,
-            },
-            "FUEL_BANGBANG": {
-                "component": "bang_bang_valve",
-                "circuit": "pressurant",
-                "from": "press_tank",
-                "to": "fuel_ullage",
-                **bang_bang["FUEL_BANGBANG"],
-                "CdA": None,
-            },
+            **self._pressurant_branches(),
             "OX_TANK_INJ": {
                 "component": "loss",
                 "circuit": "oxidizer",
@@ -473,12 +514,10 @@ class PropSystem:
                 "geometry": tank_geometries["ox_tank"],
                 "P0": self.target_ladder["Pox_tank"],
                 "state0": ox_state0,
-                "steady": False,
             },
             "ox_inj_in": {
                 "model": "junction",
                 "P0": self.target_ladder["Pox_inj"],
-                "steady": True,
             },
             "fuel_ullage": {
                 "component": "propellant_tank",
@@ -488,12 +527,10 @@ class PropSystem:
                 "geometry": tank_geometries["fuel_tank"],
                 "P0": self.target_ladder["Pfuel_tank"],
                 "state0": fuel_state0,
-                "steady": False,
             },
             "fuel_inj_in": {
                 "model": "junction",
                 "P0": self.target_ladder["Pfuel_inj"],
-                "steady": True,
             },
             "thrust_chamber": {
                 "component": "combustor",
@@ -505,9 +542,8 @@ class PropSystem:
                 "expansion_ratio": self.expansion_ratio,
                 "cstar_efficiency": self.cstar_efficiency,
                 "cf_efficiency": self.cf_efficiency,
-                "steady": True,
             },
-            "ambient": {"model": "boundary", "steady": True},
+            "ambient": {"model": "boundary"},
         }
         branches = {
             "OX_TANK_INJ": {
@@ -550,13 +586,12 @@ class PropSystem:
         return circuits, nodes, branches
 
     def _template_pump_fed(self, tank_geometries: Mapping[str, Any]):
-        actively_pressurized = self.pressurization == "bang_bang"
+        actively_pressurized = self.pressurization != "blowdown"
         if actively_pressurized and "press_tank" not in tank_geometries:
-            raise ValueError("Bang-bang pressurization requires tank 'press_tank'")
+            raise ValueError("Active pressurization requires tank 'press_tank'")
         ox_state0 = self._state0("ox_tank")
         fuel_state0 = self._state0("fuel_tank")
         press_state0 = self._state0("press_tank") if actively_pressurized else None
-        bang_bang = self.cfg.get("bang_bang", {})
         ox_fluid = str(ox_state0["fluid"])
         fuel_fluid = str(fuel_state0["fluid"])
         press_fluid = str(press_state0["fluid"]) if press_state0 else None
@@ -593,7 +628,6 @@ class PropSystem:
                     "geometry": tank_geometries["press_tank"],
                     "P0": float(press_state0["P"]),
                     "state0": press_state0,
-                    "steady": False,
                 },
             } if actively_pressurized else {}),
             "ox_ullage": {
@@ -604,23 +638,21 @@ class PropSystem:
                 "geometry": tank_geometries["ox_tank"],
                 "P0": self.target_ladder["Pox_tank"],
                 "state0": ox_state0,
-                "steady": False,
             },
             "ox_pump_in": {
                 "model": "junction",
                 "P0": self.target_ladder["Pox_pump_inlet"],
-                "steady": True,
             },
             "ox_pump_out": {
                 "model": "junction",
                 "P0": self.target_ladder["Pox_pump_outlet"],
-                "steady": True,
             },
-            "ox_inj_in": {
-                "model": "junction",
-                "P0": self.target_ladder["Pox_inj"],
-                "steady": True,
-            },
+            **({
+                "ox_inj_in": {
+                    "model": "junction",
+                    "P0": self.target_ladder["Pox_inj"],
+                },
+            } if self.ox_inj_stiffness > 0.0 else {}),
             "fuel_ullage": {
                 "component": "propellant_tank",
                 "tank_id": "fuel_tank",
@@ -629,23 +661,21 @@ class PropSystem:
                 "geometry": tank_geometries["fuel_tank"],
                 "P0": self.target_ladder["Pfuel_tank"],
                 "state0": fuel_state0,
-                "steady": False,
             },
             "fuel_pump_in": {
                 "model": "junction",
                 "P0": self.target_ladder["Pfuel_pump_inlet"],
-                "steady": True,
             },
             "fuel_pump_out": {
                 "model": "junction",
                 "P0": self.target_ladder["Pfuel_pump_outlet"],
-                "steady": True,
             },
-            "fuel_inj_in": {
-                "model": "junction",
-                "P0": self.target_ladder["Pfuel_inj"],
-                "steady": True,
-            },
+            **({
+                "fuel_inj_in": {
+                    "model": "junction",
+                    "P0": self.target_ladder["Pfuel_inj"],
+                },
+            } if self.fuel_inj_stiffness > 0.0 else {}),
             "thrust_chamber": {
                 "component": "combustor",
                 "P0": self.Pc_target,
@@ -656,29 +686,11 @@ class PropSystem:
                 "expansion_ratio": self.expansion_ratio,
                 "cstar_efficiency": self.cstar_efficiency,
                 "cf_efficiency": self.cf_efficiency,
-                "steady": True,
             },
-            "ambient": {"model": "boundary", "steady": True},
+            "ambient": {"model": "boundary"},
         }
         branches = {
-            **({
-                "OX_BANGBANG": {
-                    "component": "bang_bang_valve",
-                    "circuit": "pressurant",
-                    "from": "press_tank",
-                    "to": "ox_ullage",
-                    **bang_bang["OX_BANGBANG"],
-                    "CdA": None,
-                },
-                "FUEL_BANGBANG": {
-                    "component": "bang_bang_valve",
-                    "circuit": "pressurant",
-                    "from": "press_tank",
-                    "to": "fuel_ullage",
-                    **bang_bang["FUEL_BANGBANG"],
-                    "CdA": None,
-                },
-            } if actively_pressurized else {}),
+            **self._pressurant_branches(),
             "OX_TANK_PUMP": {
                 "component": "loss",
                 "circuit": "oxidizer",
@@ -691,23 +703,25 @@ class PropSystem:
                 "circuit": "oxidizer",
                 "from": "ox_pump_in",
                 "to": "ox_pump_out",
-                "dP": self.ox_pump_head,
+                "pump_id": self.cfg["pump_ids"]["oxidizer"],
                 "CdA": None,
             },
             "OX_PUMP_INJ": {
                 "component": "loss",
                 "circuit": "oxidizer",
                 "from": "ox_pump_out",
-                "to": "ox_inj_in",
+                "to": "ox_inj_in" if self.ox_inj_stiffness > 0.0 else "thrust_chamber",
                 "CdA": None,
             },
-            "OX_INJ": {
-                "component": "loss",
-                "circuit": "oxidizer",
-                "from": "ox_inj_in",
-                "to": "thrust_chamber",
-                "CdA": None,
-            },
+            **({
+                "OX_INJ": {
+                    "component": "loss",
+                    "circuit": "oxidizer",
+                    "from": "ox_inj_in",
+                    "to": "thrust_chamber",
+                    "CdA": None,
+                },
+            } if self.ox_inj_stiffness > 0.0 else {}),
             "FUEL_TANK_PUMP": {
                 "component": "loss",
                 "circuit": "fuel",
@@ -720,23 +734,25 @@ class PropSystem:
                 "circuit": "fuel",
                 "from": "fuel_pump_in",
                 "to": "fuel_pump_out",
-                "dP": self.fuel_pump_head,
+                "pump_id": self.cfg["pump_ids"]["fuel"],
                 "CdA": None,
             },
             "FUEL_PUMP_INJ": {
                 "component": "loss",
                 "circuit": "fuel",
                 "from": "fuel_pump_out",
-                "to": "fuel_inj_in",
+                "to": "fuel_inj_in" if self.fuel_inj_stiffness > 0.0 else "thrust_chamber",
                 "CdA": None,
             },
-            "FUEL_INJ": {
-                "component": "loss",
-                "circuit": "fuel",
-                "from": "fuel_inj_in",
-                "to": "thrust_chamber",
-                "CdA": None,
-            },
+            **({
+                "FUEL_INJ": {
+                    "component": "loss",
+                    "circuit": "fuel",
+                    "from": "fuel_inj_in",
+                    "to": "thrust_chamber",
+                    "CdA": None,
+                },
+            } if self.fuel_inj_stiffness > 0.0 else {}),
             "NOZZLE": {
                 "component": "nozzle",
                 "circuit": "combustion_gas",
@@ -788,6 +804,13 @@ class PropSystem:
             "fuel": self.mdot_fuel,
             "exhaust": self.mdot_total,
         }
+        def design_flow(branch):
+            circuit = circuits[branch["circuit"]]
+            flow = branch.get("design_mdot", circuit.get("design_mdot", design_flows.get(circuit["prop"])))
+            if flow is None or not isfinite(float(flow)) or float(flow) <= 0:
+                raise ValueError(f"Branch {branch} requires a finite positive design_mdot")
+            return float(flow)
+
         for branch_id, branch in branches.items():
             circuit_id = branch["circuit"]
             if circuit_id not in circuits:
@@ -797,20 +820,43 @@ class PropSystem:
             branch_type = branch.get("component", branch.get("model"))
             circuit = circuits[circuit_id]
             branch["fluid"] = circuit["fluid"]
-            if circuit["prop"] in design_flows:
-                branch["design_mdot"] = design_flows[circuit["prop"]]
+            if (nodes[branch["from"]].get("component") == "pressurant_tank"
+                    and branch_type in ("compressible_loss", "bang_bang_valve", "regulator")):
+                if branch.get("require_choked", True) is not True:
+                    raise ValueError("Pressurant feeds require choked-flow feasibility checks")
+                branch["require_choked"] = True
+            if circuit["prop"] in design_flows or "design_mdot" in circuit:
+                branch.setdefault("design_mdot", design_flow(branch))
+
+            if branch_type == "pump":
+                pump_id = branch["pump_id"]
+                if pump_id in self.pump_sizing:
+                    raise ValueError(f"Pump {pump_id!r} must refer to one physical branch")
+                if any(key in branch for key in ("dP", "head_model", "gas_CdA")) or branch.get("CdA") is not None:
+                    raise ValueError("Pump head, curve and gas CdA belong in prop_system.pumps; branch overrides/internal losses are not supported")
+                definition = pump_definition(self.cfg, pump_id)
+                inlet_pressure = float(nodes[branch["from"]]["P0"])
+                outlet_pressure = float(nodes[branch["to"]]["P0"])
+                if abs(outlet_pressure - inlet_pressure - float(definition["pressure_rise_pa"])) > 1e-6 * max(outlet_pressure, 1):
+                    raise ValueError(f"Pump {pump_id!r} design node pressures do not match its pressure rise")
+                inlet_temperature = float(circuit["state0"]["T"])
+                liquid = self.fluid_properties.state_pt(circuit["fluid"], inlet_pressure, inlet_temperature)
+                sizing = size_electric_pump(definition, design_flow(branch), liquid.rho)
+                sizing.update(inlet_pressure_pa=inlet_pressure, inlet_temperature_k=inlet_temperature)
+                self.pump_sizing[pump_id] = sizing
+                self.sizing_constraints[f"pump.{pump_id}.max_power"] = sizing["power_margin_kw"]
+                branch.update(dP=sizing["pressure_rise_pa"], gas_CdA=float(definition["gas_CdA"]))
+                if "curve" in definition:
+                    curve = scaled_pump_curve(sizing["design_mdot"], sizing["pressure_rise_pa"], **definition["curve"])
+                    branch["head_model"] = curve
+                    sizing.update(curve_a=curve.a, curve_b=curve.b, curve_c=curve.c,
+                                  curve_max_mdot=curve.max_mdot)
+                continue
 
             if branch_type in ("loss", "incompressible_loss"):
                 if branch["CdA"] is not None:
                     continue
-                if circuit["prop"] == "oxidizer":
-                    mdot = self.mdot_ox
-                elif circuit["prop"] == "fuel":
-                    mdot = self.mdot_fuel
-                else:
-                    raise ValueError(
-                        f"Liquid circuit '{circuit_id}' must be oxidizer or fuel"
-                    )
+                mdot = design_flow(branch)
                 pressure_drop = (
                     nodes[branch["from"]]["P0"] - nodes[branch["to"]]["P0"]
                 )
@@ -827,16 +873,7 @@ class PropSystem:
                 upstream_pressure = float(nodes[branch["from"]]["P0"])
                 downstream_pressure = nodes[branch["to"]]["P0"]
                 gas = circuit_properties(circuit_id)
-                if circuit["prop"] == "oxidizer":
-                    mdot = self.mdot_ox
-                elif circuit["prop"] == "fuel":
-                    mdot = self.mdot_fuel
-                elif circuit["prop"] == "exhaust":
-                    mdot = self.mdot_total
-                else:
-                    raise ValueError(
-                        f"Gas circuit '{circuit_id}' has no engine-sized mass flow"
-                    )
+                mdot = design_flow(branch)
                 branch["CdA"] = FluidsDef.compressible_cda(
                     mdot,
                     upstream_pressure,
@@ -847,53 +884,51 @@ class PropSystem:
                 )
                 continue
 
-            if branch_type == "bang_bang_valve":
+            if branch_type in ("bang_bang_valve", "regulator"):
                 target_node = nodes[branch["to"]]
                 if target_node.get("component") != "propellant_tank":
                     raise ValueError(
-                        f"Bang-bang branch '{branch_id}' must feed a propellant tank"
+                        f"Pressurant branch '{branch_id}' must feed a propellant tank"
                     )
                 if target_node["gas_fluid"] != circuit["fluid"]:
                     raise ValueError(
-                        f"Bang-bang branch '{branch_id}' fluid must match tank ullage"
+                        f"Pressurant branch '{branch_id}' fluid must match tank ullage"
                     )
                 liquid_branches = [
                     candidate
                     for candidate in branches.values()
                     if candidate["from"] == branch["to"]
-                    and candidate.get("component", candidate.get("model"))
-                    in ("loss", "incompressible_loss")
+                    and circuits[candidate["circuit"]]["prop"] in ("oxidizer", "fuel")
+                    and candidate.get("from_port", "liquid") == "liquid"
                 ]
-                if len(liquid_branches) != 1:
+                if not liquid_branches:
                     raise ValueError(
-                        f"Tank '{branch['to']}' requires one liquid outlet"
+                        f"Tank '{branch['to']}' requires a liquid outlet"
                     )
-                liquid_circuit = liquid_branches[0]["circuit"]
-                liquid_prop = circuits[liquid_circuit]["prop"]
-                if liquid_prop == "oxidizer":
-                    liquid_mdot = self.mdot_ox
-                elif liquid_prop == "fuel":
-                    liquid_mdot = self.mdot_fuel
-                else:
-                    raise ValueError(
-                        f"Tank '{branch['to']}' outlet must be oxidizer or fuel"
-                    )
+                liquid_mdot = sum(design_flow(outlet) for outlet in liquid_branches)
+                supply_branches = [b for b in branches.values() if b["to"] == branch["to"]
+                                   and b.get("component", b.get("model")) in ("bang_bang_valve", "regulator")]
+                shares = [float(b.get("demand_fraction", 1.0 if len(supply_branches) == 1 else float("nan"))) for b in supply_branches]
+                if any(not isfinite(s) or s <= 0 for s in shares) or abs(sum(shares)-1) > 1e-9:
+                    raise ValueError("Pressurant feeds to one tank require positive demand_fraction values summing to one")
+                liquid_mdot *= float(branch.get("demand_fraction", 1.0))
 
                 source_node = nodes[branch["from"]]
                 if source_node.get("component") != "pressurant_tank":
                     raise ValueError(
-                        f"Bang-bang branch '{branch_id}' requires a gas-volume source"
+                        f"Pressurant branch '{branch_id}' requires a gas-volume source"
                     )
                 if source_node["fluid"] != circuit["fluid"]:
                     raise ValueError(
-                        f"Bang-bang branch '{branch_id}' fluid must match its source"
+                        f"Pressurant branch '{branch_id}' fluid must match its source"
                     )
-                initial_gas = circuit_properties(circuit_id)
                 downstream_pressure = float(target_node["P0"])
-                start_pressure = float(nodes[branch["from"]]["P0"])
+                source_state = source_node.get("state0", circuit["state0"])
+                start_pressure = float(source_state["P"])
+                initial_gas = self.fluid_properties.state_pt(source_node["fluid"], start_pressure, float(source_state["T"]))
                 if downstream_pressure <= 0.0 or start_pressure <= 0.0:
                     raise ValueError(
-                        f"Bang-bang branch '{branch_id}' pressures must be positive"
+                        f"Pressurant branch '{branch_id}' pressures must be positive"
                     )
                 start_temperature = initial_gas.T
                 gamma = initial_gas.gamma
@@ -901,18 +936,18 @@ class PropSystem:
                     gamma / (gamma - 1.0)
                 )
                 eol_pressure = downstream_pressure / critical_ratio
-                if start_pressure <= eol_pressure:
-                    raise ValueError(
-                        f"Bang-bang branch '{branch_id}' cannot remain choked at EOL"
-                    )
-                pressure_band = float(branch["pressure_band"])
+                if start_pressure < eol_pressure:
+                    tank_id = source_node.get("tank_id", branch["from"])
+                    raise DesignInfeasible({f"branch.{branch_id}.choked": start_pressure-eol_pressure,
+                                            f"tank.{tank_id}.Pmin": start_pressure-eol_pressure})
 
                 pressure_mid = 0.5 * (start_pressure + eol_pressure)
-                min_temperature = float(branch["min_temperature"])
+                tank_definition = getattr(self, "tank_definitions", {}).get(source_node.get("tank_id"), {})
+                min_temperature = float(tank_definition.get("min_temperature", branch.get("min_temperature", float("nan"))))
                 collapse_factor = float(branch["collapse_factor"])
-                if min_temperature <= 0.0 or collapse_factor <= 0.0:
+                if not isfinite(min_temperature) or not isfinite(collapse_factor) or min_temperature <= 0.0 or collapse_factor <= 0.0:
                     raise ValueError(
-                        f"Bang-bang branch '{branch_id}' sizing inputs must be positive"
+                        f"Pressurant branch '{branch_id}' sizing inputs must be positive"
                     )
                 temperature_mid = 0.5 * (start_temperature + min_temperature)
                 gas = self.fluid_properties.state_pt(
@@ -922,13 +957,24 @@ class PropSystem:
                 )
                 gamma = gas.gamma
                 gas_constant = gas.R
-                duty_cycle = float(branch["duty_cycle"])
+                if branch_type == "regulator":
+                    capacity_factor = float(branch["capacity_factor"])
+                    if not isfinite(capacity_factor) or capacity_factor < 1.0:
+                        raise ValueError("Regulator capacity_factor must be finite and >= 1")
+                    duty_cycle = 1.0 / capacity_factor
+                else:
+                    duty_cycle = float(branch["duty_cycle"])
                 if not 0.0 < duty_cycle <= 1.0:
                     raise ValueError(
                         f"Gas branch '{branch_id}' duty cycle must be in (0, 1]"
                     )
 
-                liquid_vdot = liquid_mdot / circuit_properties(liquid_circuit).rho
+                liquid_state = target_node.get("state0", circuits[liquid_branches[0]["circuit"]]["state0"])
+                liquid_density = self.fluid_properties.state_pt(
+                    target_node.get("liquid_fluid", circuits[liquid_branches[0]["circuit"]]["fluid"]),
+                    float(liquid_state["P"]), float(liquid_state["T"]),
+                ).rho
+                liquid_vdot = liquid_mdot / liquid_density
                 tank_gas = self.fluid_properties.state_pt(
                     circuit["fluid"],
                     downstream_pressure,
@@ -952,23 +998,135 @@ class PropSystem:
                 branch["design_mdot"] = gas_mdot / duty_cycle
                 branch["design_pressure"] = pressure_mid
                 branch["design_temperature"] = temperature_mid
-                branch["duty_cycle"] = duty_cycle
                 branch["eol_pressure"] = eol_pressure
                 branch["target_pressure"] = downstream_pressure
-                branch["pressure_band"] = pressure_band
+
+    def _bind_outputs(self):
+        """Discover engine reporting connections; IDs belong to templates."""
+        chambers = [key for key, node in self.node_definitions.items() if node.get("component") == "combustor"]
+        if len(chambers) != 1:
+            raise ValueError("The current engine model requires one combustor per vehicle")
+        self.chamber_id = chambers[0]
+        self.ambient_id = self.node_definitions[self.chamber_id]["ambient_node"]
+        self.engine_feeds = {role: [] for role in ("oxidizer", "fuel")}
+        nozzles = []
+        for key, branch in self.branch_definitions.items():
+            role = self.circuits[branch["circuit"]]["prop"]
+            if branch["to"] == self.chamber_id and role in self.engine_feeds:
+                self.engine_feeds[role].append(key)
+            if branch["from"] == self.chamber_id and branch.get("component") == "nozzle":
+                nozzles.append(key)
+        if len(nozzles) != 1 or not all(self.engine_feeds.values()):
+            raise ValueError("Combustor requires fuel/oxidizer feeds and one nozzle")
+        self.nozzle_id = nozzles[0]
+
+    def _configure_constraints(self):
+        """Attach limits to physical tank IDs and choked-flow requirements to edges."""
+        self.tank_limits = {}
+        self.choked_branches = {}
+        initial = dict(self.sizing_constraints)
+        for node_id, node in self.node_definitions.items():
+            tank_id = node.get("tank_id")
+            if tank_id is None:
+                continue
+            definition = self.tank_definitions.get(tank_id, {})
+            limits = {name: float(definition[name]) for name in ("min_temperature", "min_pressure") if name in definition}
+            if node.get("component") == "pressurant_tank" and "min_temperature" not in limits:
+                legacy = [float(b["min_temperature"]) for b in self.branch_definitions.values()
+                          if b["from"] == node_id and "min_temperature" in b]
+                if legacy:
+                    limits["min_temperature"] = max(legacy)
+                else:
+                    raise ValueError(f"Pressurant tank {tank_id!r} requires min_temperature")
+            if any(not isfinite(v) or v <= 0 for v in limits.values()):
+                raise ValueError(f"Tank {tank_id!r} limits must be finite and positive")
+            self.tank_limits[node_id] = (tank_id, limits)
+            state = node["state0"]
+            if "min_temperature" in limits:
+                initial[f"tank.{tank_id}.Tmin"] = min(float(state[key]) for key in ("T", "gas_T") if key in state) - limits["min_temperature"]
+            if "min_pressure" in limits:
+                initial[f"tank.{tank_id}.Pmin"] = float(state["P"]) - limits["min_pressure"]
+        for branch_id, branch in self.branch_definitions.items():
+            required = branch.get("require_choked", False)
+            if not isinstance(required, bool):
+                raise ValueError("require_choked must be boolean")
+            if not required:
+                continue
+            self.choked_branches[branch_id] = branch
+            source = self.node_definitions[branch["from"]]
+            target = self.node_definitions[branch["to"]]
+            state = source.get("state0", self.circuits[branch["circuit"]]["state0"])
+            pressure = float(state["P"])
+            gas = self.fluid_properties.state_pt(branch["fluid"], pressure, float(state["T"]))
+            downstream = float(target.get("state0", {}).get("P", target.get("P0", 0.0)))
+            margin = self._choked_margin(pressure, downstream, gas.gamma)
+            initial[f"branch.{branch_id}.choked"] = margin
+            if source.get("tank_id") is not None:
+                key = f"tank.{source['tank_id']}.Pmin"
+                initial[key] = min(initial.get(key, float("inf")), margin)
+        self.initial_constraints = initial
+        if any(value < 0 for value in initial.values()):
+            raise DesignInfeasible(initial, self.pump_sizing)
+
+    @staticmethod
+    def _choked_margin(upstream, downstream, gamma):
+        if not isfinite(gamma) or gamma <= 1:
+            raise ValueError("Choked-flow checking requires finite gamma > 1")
+        critical_ratio = (2.0 / (gamma + 1.0)) ** (gamma / (gamma - 1.0))
+        return upstream - downstream / critical_ratio
+
+    def _constraint_margins(self, state):
+        """Evaluate the same bulk pressures/gas gamma used by compressible flow.
+
+        Closed valves are checked for available choking pressure as well: closing
+        a valve must not hide an exhausted supply. Limits apply through shutdown.
+        """
+        for branch_id, definition in self.branch_definitions.items():
+            curve = definition.get("head_model")
+            if curve is None:
+                continue
+            branch_state = state.branches[branch_id]
+            if branch_state.get("pump_active", False):
+                curve.validate_flow(float(branch_state["mdot"]))
+        margins = {}
+        for node_id, (tank_id, limits) in self.tank_limits.items():
+            node = state.nodes[node_id]
+            if "min_temperature" in limits:
+                temperatures = [float(fluid["T"]) for fluid in node.get("fluids", {}).values() if "T" in fluid]
+                if "T" in node:
+                    temperatures.append(float(node["T"]))
+                if not temperatures:
+                    raise ValueError(f"Tank {tank_id!r} has no temperature to monitor")
+                margins[f"tank.{tank_id}.Tmin"] = min(temperatures) - limits["min_temperature"]
+            if "min_pressure" in limits:
+                margins[f"tank.{tank_id}.Pmin"] = float(node["P"]) - limits["min_pressure"]
+        for branch_id, branch in self.choked_branches.items():
+            source, target = state.nodes[branch["from"]], state.nodes[branch["to"]]
+            gas = source.get("fluids", {}).get(branch["fluid"])
+            gamma = float(gas["gamma"] if gas is not None else state.branches[branch_id]["gamma"])
+            margin = self._choked_margin(float(source["P"]), float(target["P"]), gamma)
+            margins[f"branch.{branch_id}.choked"] = margin
+            tank_id = self.node_definitions[branch["from"]].get("tank_id")
+            if tank_id is not None:
+                key = f"tank.{tank_id}.Pmin"
+                margins[key] = min(margins.get(key, float("inf")), margin)
+        if any(not isfinite(v) for v in margins.values()):
+            raise ValueError("Propulsion constraint margins must be finite")
+        return margins
 
     def _propulsion_output(
         self,
         network_output: Dict[str, Any],
     ) -> PropulsionOut:
-        mdot_ox = network_output["mdot"]["OX_INJ"]
-        mdot_fuel = network_output["mdot"]["FUEL_INJ"]
-        chamber = network_output["node"]["thrust_chamber"]
+        mdot = network_output["mdot"]
+        mdot_ox = sum(mdot[key] for key in self.engine_feeds["oxidizer"])
+        mdot_fuel = sum(mdot[key] for key in self.engine_feeds["fuel"])
+        chamber = network_output["node"][self.chamber_id]
         Pc = chamber["P"]
         MR = chamber["MR"]
         Cf = chamber["Cf"]
         mode = chamber["mode"]
-        nozzle = network_output["branch"]["NOZZLE"]
+        nozzle = network_output["branch"][self.nozzle_id]
         return PropulsionOut(
             mode=mode,
             shutdown_reason=chamber["shutdown_reason"],
@@ -983,25 +1141,25 @@ class PropSystem:
             cstar=chamber["cstar"],
             mdot_ox=mdot_ox,
             mdot_fuel=mdot_fuel,
-            mdot_nozzle=network_output["mdot"]["NOZZLE"],
+            mdot_nozzle=network_output["mdot"][self.nozzle_id],
         )
 
     def update(
         self,
         dt: Optional[float],
         atm: Any,
-        heat_flux: Dict[str, float],
+        heat_rate: Dict[str, Any],
         bcs: Optional[Dict[str, Dict[str, Any]]] = None,
         commit: bool = True,
         axial_specific_force: float = 0.0,
     ) -> FluidOut:
         boundaries = dict(bcs or {})
-        boundaries["ambient"] = {"P": float(atm.p)}
+        boundaries[self.ambient_id] = {"P": float(atm.p)}
 
         result = self.network.update(
             dt=dt,
             bcs=boundaries,
-            heat_flux=heat_flux,
+            heat_rate=heat_rate,
             commit=commit,
             axial_specific_force=axial_specific_force,
         )
@@ -1011,4 +1169,8 @@ class PropSystem:
             td_state=result["td_state"],
             mdot=result["mdot"],
             propulsion=self._propulsion_output(result),
+            events=result["events"],
+            event_counts=result["event_counts"],
+            constraints={**self.sizing_constraints, **result["constraints"]},
+            constraint_times=result["constraint_times"],
         )

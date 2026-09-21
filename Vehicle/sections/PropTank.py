@@ -1,146 +1,27 @@
 import numpy as np
 import warnings
-from dataclasses import dataclass
 from typing import Optional
-from functools import cached_property
 from .Section import Section
 from ..Material import MaterialProperties
 from ..utils import distribute as dist
-from ..utils import aero
+# from ..utils import aero  # Legacy analytical aero disabled.
 from ..utils import geometry as geo
-from ..utils import heating
 
+TANK_STOCK_THICKNESSES_IN = np.array([
+    0.040,
+    0.050,
+    0.063,   # ~1/16"
+    0.080,
+    0.090,
+    0.100,
+    0.125,   # 1/8"
+    0.160,
+    0.190,
+    0.250,   # 1/4"
+])
+TANK_STOCK_THICKNESSES = TANK_STOCK_THICKNESSES_IN * 0.0254
 
-@dataclass(frozen=True)
-class PropTankGeometry:
-    """Immutable internal geometry used to derive fill-dependent properties."""
-
-    volume: float
-    inner_diameter: float
-    cylinder_length: float
-    ellipse_ratio: float
-    passthrough_diameter: float
-    resolution: int = 512
-
-    def __post_init__(self):
-        positive = (
-            self.volume,
-            self.inner_diameter,
-            self.cylinder_length,
-            self.ellipse_ratio,
-        )
-        if any(value <= 0.0 for value in positive):
-            raise ValueError("Propellant tank geometry values must be positive")
-        if not 0.0 <= self.passthrough_diameter < self.inner_diameter:
-            raise ValueError("Passthrough diameter must be smaller than the tank")
-        if self.resolution < 2:
-            raise ValueError("Tank geometry resolution must be at least two")
-
-    @cached_property
-    def _profile(self):
-        radius = 0.5 * self.inner_diameter
-        passthrough_radius = 0.5 * self.passthrough_diameter
-        head_depth = radius / self.ellipse_ratio
-        length = self.cylinder_length + 2.0 * head_depth
-        dx = length / self.resolution
-        x = (np.arange(self.resolution) + 0.5) * dx
-
-        wall_radius = np.full_like(x, radius)
-        slope = np.zeros_like(x)
-        lower = x < head_depth
-        upper = x > head_depth + self.cylinder_length
-        for mask, center in (
-            (lower, head_depth),
-            (upper, head_depth + self.cylinder_length),
-        ):
-            axial = (x[mask] - center) / head_depth
-            root = np.sqrt(np.maximum(1.0 - axial**2, 0.0))
-            wall_radius[mask] = radius * root
-            slope[mask] = -radius * axial / (head_depth * root)
-
-        open_section = wall_radius > passthrough_radius
-        cross_area = np.where(
-            open_section,
-            np.pi * (wall_radius**2 - passthrough_radius**2),
-            0.0,
-        )
-        wall_area = np.where(
-            open_section,
-            (
-                2.0 * np.pi * wall_radius * np.sqrt(1.0 + slope**2)
-                + 2.0 * np.pi * passthrough_radius
-            )
-            * dx,
-            0.0,
-        )
-        cell_volume = cross_area * dx
-        return {
-            "length": length,
-            "volume": np.concatenate(([0.0], np.cumsum(cell_volume))),
-            "area": np.concatenate(([0.0], np.cumsum(wall_area))),
-            "height": np.linspace(0.0, length, self.resolution + 1),
-        }
-
-    def fill_state(self, liquid_volume: float):
-        """Return fill height and liquid/ullage wall contact areas."""
-
-        if not 0.0 <= liquid_volume <= self.volume:
-            raise ValueError("Liquid volume must remain within the tank volume")
-        profile = self._profile
-        geometric_volume = profile["volume"][-1]
-        if geometric_volume <= 0.0:
-            raise ValueError("Tank geometry has no usable internal volume")
-        target = liquid_volume / self.volume * geometric_volume
-        height = float(np.interp(target, profile["volume"], profile["height"]))
-        liquid_area = float(np.interp(target, profile["volume"], profile["area"]))
-        total_area = float(profile["area"][-1])
-        return {
-            "fill_height": height,
-            "liquid_contact_area": liquid_area,
-            "ullage_contact_area": total_area - liquid_area,
-        }
-
-    @property
-    def internal_area(self) -> float:
-        """Total wetted wall area available for gas-volume heat transfer."""
-
-        return float(self._profile["area"][-1])
-
-    def axial_mass(
-        self,
-        liquid_volume: float,
-        liquid_mass: float,
-        ullage_mass: float,
-    ) -> np.ndarray:
-        """Return the local fore-to-aft fluid mass vector."""
-
-        if not 0.0 <= liquid_volume <= self.volume:
-            raise ValueError("Liquid volume must remain within the tank volume")
-        if liquid_mass < 0.0 or ullage_mass < 0.0:
-            raise ValueError("Tank phase masses cannot be negative")
-
-        cell_volume = np.diff(self._profile["volume"])
-        cell_volume *= self.volume / np.sum(cell_volume)
-        aft_volume = cell_volume[::-1]
-        volume_before = np.concatenate(([0.0], np.cumsum(aft_volume)[:-1]))
-        liquid_cell_volume = np.clip(
-            liquid_volume - volume_before,
-            0.0,
-            aft_volume,
-        )[::-1]
-        ullage_cell_volume = cell_volume - liquid_cell_volume
-
-        def distribute(mass: float, volume: np.ndarray, phase: str) -> np.ndarray:
-            total_volume = np.sum(volume)
-            if mass == 0.0:
-                return np.zeros(self.resolution)
-            if total_volume <= 0.0:
-                raise ValueError(f"{phase} mass requires nonzero {phase} volume")
-            return mass * volume / total_volume
-
-        return distribute(
-            liquid_mass, liquid_cell_volume, "liquid"
-        ) + distribute(ullage_mass, ullage_cell_volume, "ullage")
+from ..tank_geometry import PropTankGeometry
 
 class PropTank(Section):
 
@@ -158,6 +39,7 @@ class PropTank(Section):
         ellipse_ratio: float,
         ullage_factor: float,
         tank_id: str,
+        weld_efficiency: float = 1.0,
     ):
 
         super().__init__(cfg)
@@ -171,6 +53,9 @@ class PropTank(Section):
         self.wall_material = material.name
         self.max_pressure = float(max_pressure)
         self.t_wall_min = float(t_wall_min)
+        self.weld_efficiency = float(weld_efficiency)
+        if not 0.0 < self.weld_efficiency <= 1.0:
+            raise ValueError("Tank weld_efficiency must be in (0, 1]")
         self.wall_thickness = self.get_thickness(wall_thickness)
         self.passthrough_wall_thickness = float(passthrough_wall_thickness)
         self.emissivity = 0.85
@@ -191,11 +76,12 @@ class PropTank(Section):
 
         self.TankVolume = self._tank_volume()
         self._get_length()
-        self.n = int(np.ceil(self.length / self.dx))
+        self.set_grid()
 
     def get_mass(self):
         dry_mass = self._get_dry_mass()
         self.dry_mass = dist.uniform(dry_mass, self.n)
+        self.shell_mass = self.dry_mass.copy()
         self.mass = self.dry_mass
 
     def _get_dry_mass(self) -> float:
@@ -231,12 +117,13 @@ class PropTank(Section):
     def get_thickness(self, supplied: Optional[float] = None) -> float:
         """Return supplied gauge or pressure-size it from the fixed OML diameter."""
 
-        allowable = self.material.require("yield_strength")
+        allowable = self.material.require("yield_strength") * self.weld_efficiency
         ratio = 1.5 * self.max_pressure / allowable
         required = max(
             ratio * (0.5 * self.OMLD) / (1.0 + ratio),
             self.t_wall_min,
         )
+        self.required_wall_thickness = required
         if supplied is None:
             return required
         supplied = float(supplied)
@@ -325,9 +212,17 @@ class PropTank(Section):
         self.Ixx = np.sum(self.mass * r**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
-    def get_CNa(self, M: float, alpha: float):
-        A_plan = self.cfg["vehicle"]["OMLD"] * self.length
-        self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
+# Legacy analytical aero / unused input container (inactive).
+#     def get_CNa(self, M: float, alpha: float):
+#         A_plan = self.cfg["vehicle"]["OMLD"] * self.length
+#         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
-    def get_heat_flux(self, atm, theta: float):
-        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)
+    def get_thermal_oml_area(self) -> np.ndarray:
+        return self.surf_area.copy()
+
+    def get_thermal_shell_mass(self) -> np.ndarray:
+        area = self.get_thermal_internal_area()
+        return np.sum(self.shell_mass) * area / np.sum(area)
+
+    def get_thermal_internal_area(self) -> np.ndarray:
+        return self.get_fluid_geometry().axial_internal_area

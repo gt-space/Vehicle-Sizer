@@ -3,7 +3,7 @@ the `ussa1976` package), tabulated once and interpolated for fast per-timestep
 lookups. `Environment.atmosphere(h, v)` returns the freestream AtmosState."""
 import numpy as np
 import ussa1976
-from .types import AtmosState
+from simulation_types import AtmosState
 
 R_AIR = 287.05287    # J/(kg K)
 GAMMA = 1.4
@@ -23,10 +23,9 @@ class Environment:
         self._log_rho = np.log(ds["rho"].values)
 
     def atmosphere(self, h: float, v: float) -> AtmosState:
-        z = np.clip(h, self._z[0], self._z[-1])
-        T = np.interp(z, self._z, self._T)
-        p = np.exp(np.interp(z, self._z, self._log_p))
-        rho = np.exp(np.interp(z, self._z, self._log_rho))
+        T = np.interp(h, self._z, self._T)
+        p = np.exp(np.interp(h, self._z, self._log_p))
+        rho = np.exp(np.interp(h, self._z, self._log_rho))
         a = np.sqrt(GAMMA * R_AIR * T)
         mu = sutherland(T)
         Ma = abs(v) / a

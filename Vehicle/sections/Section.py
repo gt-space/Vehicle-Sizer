@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 import numpy as np
 
-@dataclass
-class SectionInputs:
-    axial_load: float
-    bending_moment: float
-    temp: float
+# Legacy analytical aero / unused input container (inactive).
+# @dataclass
+# class SectionInputs:
+#     axial_load: float
+#     bending_moment: float
+#     temp: float
 
 class Section(ABC):
 
@@ -44,6 +44,15 @@ class Section(ABC):
         self.get_area()
         self.get_MOI()
 
+    def set_grid(self):
+        """Cells exactly cover the section; stations denote cell centers [m]."""
+        if not np.isfinite(self.length) or self.length <= 0 or not np.isfinite(self.dx) or self.dx <= 0:
+            raise ValueError("Section length and requested cell spacing must be finite and positive")
+        self.n = max(2, int(np.ceil(self.length / self.dx)))
+        self.dx = self.length / self.n
+        self.local_edges = np.linspace(0.0, self.length, self.n + 1)
+        self.local_centers = 0.5 * (self.local_edges[:-1] + self.local_edges[1:])
+
     @abstractmethod
     def get_mass(self) -> np.ndarray:
         pass
@@ -60,10 +69,22 @@ class Section(ABC):
     def get_MOI(self):
         pass
 
+# Legacy analytical aero / unused input container (inactive).
+#     @abstractmethod
+#     def get_CNa(self, M: float, alpha: float) -> np.ndarray:
+#         pass
+
     @abstractmethod
-    def get_CNa(self, M: float, alpha: float) -> np.ndarray:
+    def get_thermal_oml_area(self) -> np.ndarray:
+        """Return external heated area [m^2] for each axial cell."""
         pass
 
     @abstractmethod
-    def get_heat_flux() -> np.ndarray:
+    def get_thermal_shell_mass(self) -> np.ndarray:
+        """Return thermally active shell mass [kg] for each axial cell."""
         pass
+
+    def get_thermal_internal_area(self) -> np.ndarray:
+        """Return internal heat-transfer area [m^2] for each axial cell."""
+
+        return self.get_thermal_oml_area()

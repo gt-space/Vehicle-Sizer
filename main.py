@@ -1,79 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import time
 import csv
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import numpy as np
 
 from Configs.loader import load_config
-from Flight.Flight import FlightSim
-from Flight.PropSystem import PropSystem
-from Flight.environment import Environment
-from Flight.flight_forces import Aero
-from FluidProperties.PropertyModels import (
-    CEAPropertySource,
-    CoolPropPropertySource,
-    TableCombustionPropertySource,
-    TablePureFluidPropertySource,
-)
-from Vehicle.Engine import Engine
-from Vehicle.Vehicle import Vehicle
-
-
-ROOT = Path(__file__).resolve().parent
-
-
-def project_path(value: str) -> Path:
-    path = Path(value).expanduser()
-    return path if path.is_absolute() else ROOT / path
-
-
-def property_sources(cfg: dict):
-    """Construct the two property interfaces selected by the config."""
-
-    pure_cfg = cfg["property_models"]["pure_fluid"]
-    if pure_cfg["source"] == "coolprop":
-        pure = CoolPropPropertySource()
-    elif pure_cfg["source"] == "table":
-        table_cfg = pure_cfg["table"]
-        pure = TablePureFluidPropertySource(
-            project_path(table_cfg["lookup_file"]),
-            table_cfg["fluids"],
-        )
-    else:
-        raise ValueError(f"Unknown pure-fluid source {pure_cfg['source']!r}")
-
-    combustion_cfg = cfg["property_models"]["combustion"]
-    if combustion_cfg["source"] == "cea":
-        from rocketcea.cea_obj_w_units import CEA_Obj
-
-        engine = cfg["engine"]
-        cea = CEA_Obj(
-            oxName=engine["oxidizer"],
-            fuelName=engine["fuel"],
-            pressure_units="Pa",
-            cstar_units="m/s",
-            temperature_units="K",
-            enthalpy_units="J/kg",
-            density_units="kg/m^3",
-            specific_heat_units="J/kg-K",
-        )
-        combustion = CEAPropertySource(cea)
-    elif combustion_cfg["source"] == "table":
-        table_cfg = combustion_cfg["table"]
-        combustion = TableCombustionPropertySource(
-            project_path(table_cfg["lookup_file"]),
-            int(table_cfg["nfz"]),
-        )
-    else:
-        raise ValueError(
-            f"Unknown combustion source {combustion_cfg['source']!r}"
-        )
-    return pure, combustion
+from simulation import ROOT, project_path, property_sources, simulate
 
 
 def history_rows(history: list) -> list[dict]:
@@ -93,6 +28,8 @@ def history_rows(history: list) -> list[dict]:
             "altitude_m": kin.h,
             "velocity_m_s": kin.v,
             "acceleration_m_s2": forces["acceleration"],
+            "angle_of_attack_deg": np.degrees(kin.alpha),
+            "angular_rate_rad_s": kin.w,
             "mass_kg": mass["total_mass"],
             "cg_m": mass["cg"],
             "Ixx_kg_m2": mass["Ixx"],
@@ -101,6 +38,11 @@ def history_rows(history: list) -> list[dict]:
             "dynamic_pressure_Pa": atmosphere.q,
             "Cd": aero.Cd,
             "drag_N": forces["drag"],
+            "Ca": aero.Ca,
+            "axial_aero_force_N": aero.A,
+            "Cn": aero.Cn,
+            "normal_force_N": aero.N,
+            "cp_m": aero.cp,
             "thrust_N": propulsion.thrust,
             "chamber_pressure_Pa": propulsion.Pc,
             "mixture_ratio": propulsion.MR,
@@ -125,6 +67,19 @@ def history_rows(history: list) -> list[dict]:
                 if "is_open" in branch
             }
         )
+        for branch_id, branch in fluids.branch.items():
+            if "opening_fraction" in branch:
+                for field in ("opening_fraction", "pressure_error", "max_mdot"):
+                    row[f"{branch_id}_{field}"] = branch[field]
+                row[f"{branch_id}_mdot"] = fluids.mdot[branch_id]
+            if "is_open" in branch:
+                row[f"{branch_id}_switch_count"] = fluids.event_counts.get(
+                    f"branch:{branch_id}:switch", 0
+                )
+                row[f"{branch_id}_switches"] = sum(
+                    event["kind"] == "branch" and event["component"] == branch_id
+                    and "is_open" in event for event in fluids.events
+                )
         rows.append(row)
     return rows
 
@@ -137,25 +92,15 @@ def write_history(rows: list[dict], path: Path) -> None:
         writer.writerows(rows)
 
 
-def plot_history(rows: list[dict], path: Path) -> None:
+def write_events(history: list, path: Path) -> None:
+    """Save substep events without downsampling them to the flight output rate."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    time = [row["time_s"] for row in rows]
-    figure, axes = plt.subplots(2, 2, figsize=(10, 7), sharex=True)
-    axes[0, 0].plot(time, [row["altitude_m"] for row in rows])
-    axes[0, 0].set_ylabel("Altitude [m]")
-    axes[0, 1].plot(time, [row["velocity_m_s"] for row in rows])
-    axes[0, 1].set_ylabel("Velocity [m/s]")
-    axes[1, 0].plot(time, [row["thrust_N"] for row in rows])
-    axes[1, 0].set_ylabel("Thrust [N]")
-    axes[1, 1].plot(time, [row["chamber_pressure_Pa"] for row in rows])
-    axes[1, 1].set_ylabel("Chamber pressure [Pa]")
-    for axis in axes[-1]:
-        axis.set_xlabel("Time [s]")
-    for axis in axes.flat:
-        axis.grid(True, alpha=0.3)
-    figure.tight_layout()
-    figure.savefig(path, dpi=160)
-    plt.close(figure)
+    with path.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=(
+            "time_s", "kind", "component", "event", "count", "was_open", "is_open"
+        ))
+        writer.writeheader()
+        writer.writerows(event for state in history for event in state["plant"].fluids.events)
 
 
 def main() -> None:
@@ -164,7 +109,7 @@ def main() -> None:
         "config",
         nargs="?",
         type=Path,
-        default=ROOT / "Configs" / "flight_2500lbf_mr2.yaml",
+        default=ROOT / "Configs" / "flight_candidate_350_regulator.yaml",
     )
     parser.add_argument("--dt", type=float)
     parser.add_argument("--t-end", type=float)
@@ -175,52 +120,57 @@ def main() -> None:
     if args.t_end is not None:
         cfg["simulation"]["t_end"] = args.t_end
 
-    pure_properties, combustion_properties = property_sources(cfg)
-    vehicle = Vehicle(cfg, pure_properties)
-    propulsion = PropSystem(
-        cfg,
-        vehicle.tanks,
-        fluid_properties=pure_properties,
-        combustion_properties=combustion_properties,
-    )
-    engine = Engine(
-        mass=float(cfg["engine"]["mass"]),
-        length=float(cfg["engine"]["length"]),
-        exit_area=propulsion.exit_area,
-    )
-    vehicle.build(engine)
+    setup_started = time.perf_counter()
+    print("Loading models and running simulation...", flush=True)
+    started = time.perf_counter()
+    last_report = None
 
-    environment_cfg = cfg["environment"]
-    environment = Environment(
-        h_max=float(environment_cfg["max_altitude"]),
-        dh=float(environment_cfg["altitude_step"]),
-    )
-    aero_cfg = dict(cfg["aero"])
-    aero_cfg["cd_table"] = project_path(aero_cfg["cd_table"])
-    simulation = FlightSim(
-        cfg,
-        environment,
-        Aero(aero_cfg),
-        propulsion,
-        vehicle,
-    )
-    history = simulation.run(
-        h0=float(cfg["launch"]["altitude"]),
-        v0=float(cfg["launch"]["velocity"]),
-    )
+    def report_progress(kin):
+        nonlocal last_report
+        now = time.perf_counter()
+        if last_report is not None and now - last_report < 5.0:
+            return
+        limit = float(cfg["simulation"]["t_end"])
+        percent = min(100.0, 100.0 * kin.t / limit) if limit > 0 else 0.0
+        print(f"Simulation: t={kin.t:.3f}/{limit:g} s "
+              f"({percent:.1f}% of time limit), altitude={kin.h:.1f} m, "
+              f"elapsed={now - started:.1f} s [last completed step]", flush=True)
+        last_report = now
+
+    result = simulate(cfg, record_history=True, compute_loads=True, progress=report_progress)
+    history = result.history
     if not history:
-        raise RuntimeError("Flight simulation returned no time steps")
+        if result.termination in {"infeasible_initial_design", "infeasible_operating_state"}:
+            failures = [
+                f"  {name}: margin={record.margin:.6g} {record.units} (must be >= 0)"
+                for name, record in result.constraint_records.items()
+                if record.required and record.margin is not None and record.margin < 0
+            ]
+            raise SystemExit("\n".join([
+                f"Simulation rejected: {result.termination}",
+                f"Config: {args.config}",
+                *failures,
+            ]))
+        raise RuntimeError(f"Flight simulation returned no time steps ({result.termination})")
+    print(f"Propagation finished at t={history[-1]['kinematics'].t:.3f} s "
+          f"in {time.perf_counter() - started:.1f} s. Writing history and plots...", flush=True)
 
     rows = history_rows(history)
     output_path = project_path(cfg["simulation"]["output"])
     plot_path = project_path(cfg["simulation"]["plot"])
     write_history(rows, output_path)
-    plot_history(rows, plot_path)
+    events_path = output_path.with_name(output_path.stem + "_events.csv")
+    write_events(history, events_path)
+    from flight_plots import plot_flight
+    plots = plot_flight(history, rows, plot_path)
+    print(f"Run complete: {time.perf_counter() - setup_started:.1f} s total.", flush=True)
 
-    apogee = max(row["altitude_m"] for row in rows)
-    print(f"Apogee: {apogee:.1f} m")
+    print(f"Max altitude reached: {result.max_altitude:.1f} m")
+    print(f"Apogee: {result.apogee:.1f} m" if result.apogee_reached else "Apogee: not reached")
     print(f"History: {output_path}")
-    print(f"Plot: {plot_path}")
+    print(f"Events: {events_path}")
+    for name, path in plots.items():
+        print(f"{name.replace('_', ' ').title()}: {path}")
 
 
 if __name__ == "__main__":

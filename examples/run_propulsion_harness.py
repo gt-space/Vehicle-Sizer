@@ -16,7 +16,7 @@ from CoolProp.CoolProp import PropsSI
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from Flight.PropSystem import PropSystem
+from Fluids.PropSystem import PropSystem
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,7 @@ def initialize_tanks(cfg):
     press = state0["press_tank"]
     press_geometry = GasGeometry(**geometry_cfg["press_tank"])
     press["m"], press["U"] = stored_state(
-        press["fluid"], press["P"], press["T"], press_geometry.volume
+        press["fluid"], cfg["tanks"]["press_tank"]["design_pressure"], press["T"], press_geometry.volume
     )
     tanks["press_tank"] = GeometrySource(press_geometry)
 
@@ -173,7 +173,7 @@ def run(config_path, duration=None, dt=None, output=None):
 
     system = PropSystem(cfg, initialize_tanks(cfg))
     atmosphere = SimpleNamespace(p=float(simulation["ambient_pressure"]))
-    initial = system.update(dt=None, atm=atmosphere, heat_flux={}, commit=False)
+    initial = system.update(dt=None, atm=atmosphere, heat_rate={}, commit=False)
     previous_mass = stored_mass(initial)
     mass_balance_rtol = float(simulation["mass_balance_rtol"])
     progress_every = int(simulation["progress_every"])
@@ -185,7 +185,7 @@ def run(config_path, duration=None, dt=None, output=None):
     for step in range(1, steps + 1):
         time_s = step * dt
         try:
-            result = system.update(dt=dt, atm=atmosphere, heat_flux={})
+            result = system.update(dt=dt, atm=atmosphere, heat_rate={})
             previous_mass, error = validate(
                 result, previous_mass, dt, mass_balance_rtol
             )

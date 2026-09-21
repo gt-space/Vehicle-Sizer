@@ -2,6 +2,7 @@ from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 import contextlib
 import io
+import json
 import os
 import time
 import warnings
@@ -229,16 +230,14 @@ def engine_map(
 # ---------------------------------------------------------------------------
 
 def _evaluate_map_job(job):
-    evaluate, axis_names, axis_values, constants, input_names, index = job
+    evaluate, axis_names, axis_values, constants, index = job
 
     inputs = dict(constants)
 
     for name, values, i in zip(axis_names, axis_values, index):
         inputs[name] = float(values[i])
 
-    key = tuple(float(inputs[name]) for name in input_names)
-
-    return key, evaluate(**inputs)
+    return index, evaluate(**inputs)
 
 
 def generate_map_mp(
@@ -256,10 +255,13 @@ def generate_map_mp(
 
     axis_names = [axis.name for axis in axes]
     axis_values = [axis.values for axis in axes]
-    input_names = tuple(list(constants.keys()) + axis_names)
-
     shape = tuple(len(values) for values in axis_values)
     total_points = int(np.prod(shape))
+    output_names = tuple(kwargs["outputs"])
+    output_data = {
+        name: np.empty(shape, dtype=float)
+        for name in output_names
+    }
 
     def iter_jobs():
         for index in np.ndindex(shape):
@@ -268,7 +270,6 @@ def generate_map_mp(
                 axis_names,
                 axis_values,
                 constants,
-                input_names,
                 index,
             )
 
@@ -279,17 +280,16 @@ def generate_map_mp(
     print()
 
     start_time = time.perf_counter()
-    precomputed = {}
-
     with ProcessPoolExecutor(
         max_workers=workers,
         initializer=_worker_init,
     ) as pool:
-        for counter, (key, values) in enumerate(
+        for counter, (index, values) in enumerate(
             pool.map(_evaluate_map_job, iter_jobs(), chunksize=chunksize),
             start=1,
         ):
-            precomputed[key] = values
+            for name in output_names:
+                output_data[name][index] = values[name]
 
             if counter % progress_every == 0 or counter == total_points:
                 elapsed = time.perf_counter() - start_time
@@ -308,44 +308,33 @@ def generate_map_mp(
                 )
 
     print()
-    print(f"{group}: writing map with fullplot.generate_map...")
-    print()
-
-    write_counter = 0
-    write_start_time = time.perf_counter()
-
-    def precomputed_map(**inputs):
-        nonlocal write_counter
-
-        write_counter += 1
-
-        if write_counter % progress_every == 0 or write_counter == total_points:
-            elapsed = time.perf_counter() - write_start_time
-            rate = write_counter / elapsed if elapsed > 0 else 0.0
-            remaining = total_points - write_counter
-            eta = remaining / rate if rate > 0 else np.nan
-
-            print(
-                f"{group}: writing "
-                f"{write_counter:,} / {total_points:,} | "
-                f"{write_counter / total_points:.2%} | "
-                f"rate = {rate:,.1f} points/s | "
-                f"elapsed = {elapsed / 60:.1f} min | "
-                f"eta = {eta / 60:.1f} min",
-                flush=True,
-            )
-
-        key = tuple(float(inputs[name]) for name in input_names)
-        return precomputed[key]
-
-    return generate_map(
-        filename=filename,
-        group=group,
-        axes=axes,
-        evaluate=precomputed_map,
-        constants=constants,
-        **kwargs,
-    )
+    print(f"{group}: writing map in bulk...")
+    path = h5_filename(filename)
+    with h5py.File(path, "a") as file:
+        if group in file:
+            del file[group]
+        map_group = file.create_group(group)
+        map_group.attrs.update({
+            "name": group,
+            "kind": "map",
+            "map_format": "rectangular-grid-map-v1",
+            "axis_order": json.dumps(axis_names),
+            "output_names": json.dumps(output_names),
+            "metadata": json.dumps(kwargs.get("metadata", {})),
+            "constants": json.dumps(constants),
+        })
+        axes_group = map_group.create_group("axes")
+        for axis in axes:
+            dataset = axes_group.create_dataset(axis.name, data=axis.values)
+            dataset.attrs.update({
+                "name": axis.name,
+                "spacing": axis.spacing,
+                "units": axis.units,
+            })
+        outputs_group = map_group.create_group("outputs")
+        for name in output_names:
+            outputs_group.create_dataset(name, data=output_data[name])
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -437,9 +426,9 @@ axes = [
     ),
     Axis.linear(
         "mixture_ratio",
-        start=1.0,
-        stop=5.0,
-        count=25,
+        start=0.1,
+        stop=10.0,
+        count=61,
     ),
     Axis.linear(
         "expansion_ratio",

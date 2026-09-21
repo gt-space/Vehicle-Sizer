@@ -3,53 +3,19 @@ from .Section import Section
 from ..COPV import COPV
 from ..Material import MaterialProperties
 from ..utils import distribute as dist
-from ..utils import aero
+# from ..utils import aero  # Legacy analytical aero disabled.
 from ..utils import geometry as geo
-from ..utils import heating
-from dataclasses import dataclass
 
-@dataclass
-class PressTankInputs:
-    copv: COPV
-    mount_material: str
-    mount_thickness: float
-    airframe_material: str
+# Legacy analytical aero / unused input container (inactive).
+# @dataclass
+# class PressTankInputs:
+#     copv: COPV
+#     mount_material: str
+#     mount_thickness: float
+#     airframe_material: str
 
 
-@dataclass(frozen=True)
-class PressTankGeometry:
-    """Immutable COPV geometry used by the gas-volume node."""
-
-    volume: float
-    length: float
-    inner_diameter: float
-    cylinder_length: float
-    ellipse_ratio: float
-    internal_area: float
-    resolution: int = 1
-
-    def __post_init__(self):
-        if any(
-            value <= 0.0
-            for value in (
-                self.volume,
-                self.length,
-                self.inner_diameter,
-                self.cylinder_length,
-                self.ellipse_ratio,
-                self.internal_area,
-            )
-        ):
-            raise ValueError("Pressure tank geometry values must be positive")
-        if self.resolution < 1:
-            raise ValueError("Pressure tank geometry resolution must be positive")
-
-    def axial_mass(self, mass: float) -> np.ndarray:
-        """Return the local fore-to-aft gas mass vector."""
-
-        if mass < 0.0:
-            raise ValueError("Pressure-tank gas mass cannot be negative")
-        return np.full(self.resolution, mass / self.resolution)
+from ..tank_geometry import PressTankGeometry
 
 class PressTank(Section):
 
@@ -59,7 +25,7 @@ class PressTank(Section):
         self.tank_id = tank_id
         self.copv = copv
         self.length = self.copv.length
-        self.n = int(np.ceil(self.length / self.dx))
+        self.set_grid()
         self.wall_thickness = cfg["press_tank"]["airframe_wall_thickness"]
         self.wall_material = cfg["press_tank"]["airframe_material"]
         self.emissivity = 0.85
@@ -78,7 +44,8 @@ class PressTank(Section):
         )
 
     def get_mass(self):
-        mass = self._get_mount_mass() + self._get_airframe_mass() + self.copv.mass
+        self.shell_mass = dist.uniform(self._get_airframe_mass(), self.n)
+        mass = self._get_mount_mass() + np.sum(self.shell_mass) + self.copv.mass
         self.dry_mass = dist.uniform(mass, self.n)
         self.mass = self.dry_mass.copy()
 
@@ -136,9 +103,16 @@ class PressTank(Section):
         self.Ixx = np.sum(self.mass * r**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
-    def get_CNa(self, M: float, alpha: float):
-        A_plan = self.cfg["vehicle"]["OMLD"] * self.length
-        self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
+# Legacy analytical aero / unused input container (inactive).
+#     def get_CNa(self, M: float, alpha: float):
+#         A_plan = self.cfg["vehicle"]["OMLD"] * self.length
+#         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
-    def get_heat_flux(self, atm, theta: float):
-        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)
+    def get_thermal_oml_area(self) -> np.ndarray:
+        return self.surf_area.copy()
+
+    def get_thermal_shell_mass(self) -> np.ndarray:
+        return self.shell_mass.copy()
+
+    def get_thermal_internal_area(self) -> np.ndarray:
+        return np.full(self.n, self.copv.internal_area / self.n)

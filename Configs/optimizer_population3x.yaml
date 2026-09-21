@@ -1,0 +1,56 @@
+# Physical SI units throughout. Propulsion bounds are editable starting ranges,
+# not qualified hardware limits. Runtime property/solver failures stop the search.
+base_config: Configs/flight_3200lbf_13p25in_28ft.yaml
+tank_ids: {oxidizer: ox_tank, fuel: fuel_tank, pressurant: press_tank}
+seed: 42
+max_evaluations: 600
+maxiter: 100
+popsize: 12                   # Multiplier: 12 * 18 = 216 population members
+reference_mass: 250.0        # kg; fixed positive mass scale, does not alter ranking
+completion_penalty: 1.0
+missing_penalty: 1.0
+verification_dt_factor: 0.5  # One extra flight of the winner, with load peaks
+
+# Applied to a copy; the flight configs remain unchanged.
+evaluation_overrides:
+  simulation.t_end: 600.0
+  environment.max_altitude: 300000.0
+  aero.aoa_schedule: [[0.0, 5.0], [600.0, 5.0]]
+
+bounds:
+  # Full dragmodel ranges converted from inches to metres. Length and nozzle
+  # exit are derived and checked against the deck for every sized candidate.
+  omld: [0.2032, 0.4064]
+  fineness: [4.0, 6.0]
+  boattail_aft: [0.1905, 0.4064] # Also constrained by body diameter and nozzle fit
+  boattail_length: [0.508, 0.635]
+  span: [0.1524, 0.2286]
+  root: [0.381, 0.508]
+  tip: [0.1016, 0.2032]
+  sweep_fraction: [0.5, 1.0]
+  thickness: [0.00635, 0.0127]
+  chamber_pressure: [1400000.0, 3500000.0] # Pa
+  mixture_ratio: [1.5, 3.0]
+  thrust: [12000.0, 25000.0]                # N
+  oxidizer_pump_head: [500000.0, 2500000.0] # Pa
+  fuel_pump_head: [500000.0, 2500000.0]     # Pa
+  copv_pressure: [15000000.0, 30000000.0]   # Pa
+  copv_volume: [0.015, 0.100]               # m^3; fixed diameter/wall from base
+  oxidizer_mass: [100.0, 300.0]             # kg
+  fuel_mass: [40.0, 150.0]                 # kg; independent of engine MR
+
+# Scale of one unit of violation; these do NOT relax acceptance limits.
+constraint_scales:
+  goal_apogee: 10000.0
+  max_burn_duration: 5.0
+  max_q: 10000.0
+  min_stability_calibers: 1.0
+  min_rail_twr: 0.2
+unit_scales:
+  m: 0.01
+  Pa: 1000000.0
+  K: 10.0
+  s: 5.0
+  kW: 5.0
+  calibers: 1.0
+  '1': 1.0

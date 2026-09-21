@@ -1,0 +1,261 @@
+# Candidate 350 from outputs/search-population3x-004/evaluations.jsonl.
+# Modified from that run's base.yaml and saved design variables; now uses bang-bang.
+# Historical optimizer result (not this modified config):
+# apogee 131631.7675 m; initial mass 584.9822 kg; goal_apogee 18368.2325 m short.
+# Goal and burn limit retain the saved run's values: 150000 m and 75 s.
+# Reproduce with: python3 main.py Configs/flight_candidate_350_regulator.yaml
+# fluid_solve_post_shutdown: false reproduces the search's ideal cutoff.
+# Set it to true to investigate continued post-shutdown flow/blowdown;
+# that changes the model assumption and may change the result or expose failures.
+# Tank inlet pressures, vehicle length, and nozzle exit remain derived.
+simulation:
+  dt: 1.0
+  t_end: 600.0
+  fluid_solve_post_shutdown: true
+  fluid_stop_at_triple_point: true  # Freeze all fluids at the saturation-table floor; coast continues.
+  output: outputs/candidate_350_bang_bang/flight.csv
+  plot: outputs/candidate_350_bang_bang/flight.png
+constraints:
+  goal_apogee: 150000.0
+  max_burn_duration: 75.0
+advanced:
+  t_wall_min: 0.001
+  weld_efficiency: 0.5
+  flight:
+    corrector_tolerance: 1.0e-08
+    corrector_max_iterations: 10
+  heating:
+    convergence_tolerance: 0.001
+    temperature_tolerance: 0.01
+    max_iterations: 20
+  fluid_network:
+    residual_tolerance: 1.0e-07
+    event_time_tolerance: 1.0e-05
+    flow_direction_tolerance: 1.0e-10
+launch:
+  altitude: 0.0
+  velocity: 0.0
+  rail_height: 15.0
+environment:
+  max_altitude: 300000.0
+  altitude_step: 100.0
+thermal:
+  external_heating: false
+  initial_temperature: 288.15
+  sink_temperature: 288.15
+  material_overrides:
+    fiberglass_standard:
+      specific_heat: 800.0
+  nodes:
+    press_tank:
+      insulated: true
+    ox_tank:
+      insulated: false
+    fuel_tank:
+      insulated: false
+aero:
+  model: AeroTables/dragmodel.h5
+  nose: vonkarman
+  finish: 20um
+  fins_on_boattail: true
+  aoa_schedule:
+  - - 0.0
+    - 5.0
+  - - 600.0
+    - 5.0
+property_models:
+  pure_fluid:
+    source: table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      fluids:
+        Nitrogen:
+          pt: nitrogen_pt
+          saturation: nitrogen_saturation
+        Oxygen: oxygen_pt
+        n-Dodecane: ndodecane_pt
+  combustion:
+    source: table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      nfz: 1
+engine:
+  oxidizer: LOX
+  fuel: RP-1
+  cstar_efficiency: 0.85
+  cf_efficiency: 0.95
+  exit_pressure: 75842.3
+  mass: 20.0
+  length: 0.5715
+prop_system:
+  feed_type: pump_fed
+  pressurization: bang_bang
+  # pressurization: regulator  # Restore together with the regulator block below.
+  Pc_target: 1803895.652816386
+  MR_target: 2.1
+  thrust_target: 16000
+  ox_inj_stiffness: 0.2
+  fuel_inj_stiffness: 0.2
+  pump_ids:
+    oxidizer: oxidizer_pump
+    fuel: fuel_pump
+  pumps:
+    oxidizer_pump:
+      drive: electric
+      curve: &id001
+        reference_mdot: 2.172
+        points:
+        - - 0.0
+          - 3600000
+        - - 1.09
+          - 3450000
+        - - 1.6
+          - 3160000
+        - - 2.172
+          - 2548600
+        - - 2.8
+          - 1830000
+        - - 3.25
+          - 1250000
+        - - 4.2
+          - 0.0
+      pressure_rise_pa: 2000000
+      gas_CdA: 0.00024
+      efficiency: 0.7
+      max_power_kw: 15.0
+    fuel_pump:
+      drive: electric
+      curve: *id001
+      pressure_rise_pa: 2000000
+      gas_CdA: 0.00015
+      efficiency: 0.7
+      max_power_kw: 15.0
+  ox_pumpin_tank_dp: 275790
+  fuel_pumpin_tank_dp: 275790
+  ox_inj_pumpout_dp: 275790
+  fuel_inj_pumpout_dp: 275790
+  nozzle_cd: 1.0
+  bang_bang:
+    OX_BANGBANG:
+      tank_id: ox_tank
+      duty_cycle: 0.125  # Same sized valve capacity as regulator capacity_factor: 8.0.
+      collapse_factor: 1.2
+      min_temperature: 220.0
+      pressure_band: 34473.786466  # Pa, +/-5 psi around the derived tank pressure.
+      initially_open: true
+    FUEL_BANGBANG:
+      tank_id: fuel_tank
+      duty_cycle: 0.125
+      collapse_factor: 1.2
+      min_temperature: 220.0
+      pressure_band: 34473.786466  # Pa, +/-5 psi.
+      initially_open: true
+  # regulator:
+  #   OX_REGULATOR:
+  #     tank_id: ox_tank
+  #     capacity_factor: 8.0
+  #     collapse_factor: 1.2
+  #     min_temperature: 220.0
+  #   FUEL_REGULATOR:
+  #     tank_id: fuel_tank
+  #     capacity_factor: 8.0
+  #     collapse_factor: 1.2
+  #     min_temperature: 220.0
+  state0:
+    press_tank:
+      fluid: Nitrogen
+      T: 300.0
+    ox_tank:
+      fluid: Oxygen
+      gas_fluid: Nitrogen
+      T: 95.0
+      gas_T: 293.0
+    fuel_tank:
+      fluid: n-Dodecane
+      gas_fluid: Nitrogen
+      T: 293.0
+      gas_T: 293.0
+vehicle:
+  OMLD: 0.33245320365477454
+  dx: 0.01
+  sections:
+  - type: nosecone
+  - type: avi_bay
+  - type: press_tank
+    tank_id: press_tank
+  - type: inter_tank
+    mass: 11.3
+    length: 0.4
+    area_moment_of_inertia: 3.6e-05
+  - type: prop_tank
+    tank_id: ox_tank
+  - type: inter_tank
+    mass: 23.6
+    length: 0.2
+    area_moment_of_inertia: 3.6e-05
+  - type: prop_tank
+    tank_id: fuel_tank
+  - type: inter_tank
+    mass: 16.8
+    length: 0.7
+    area_moment_of_inertia: 3.6e-05
+  - type: fin_can
+tanks:
+  press_tank:
+    type: pressurant
+    design_pressure: 35659412.529857222
+    outer_diameter: 0.25
+    wall_thickness: 0.0032
+    ellipse_ratio: 1.75
+    material: 1018_carbon_steel_standard
+    volume: 0.025
+  ox_tank:
+    type: propellant
+    propellant_mass: 190
+    ullage_factor: 1.1
+    ellipse_ratio: 1.75
+    passthrough_diameter: 0.03175
+    passthrough_wall_thickness: 0.00254
+    material: aluminum_6061_t6
+  fuel_tank:
+    type: propellant
+    propellant_mass: 91
+    ullage_factor: 1.1
+    ellipse_ratio: 1.75
+    passthrough_diameter: 0.1016
+    passthrough_wall_thickness: 0.00254
+    material: aluminum_6061_t6
+nosecone:
+  profile: von_karman
+  fineness_ratio: 4.464544520231864
+  reco_mass: 5.0
+  material: carbon_fiber_standard
+  tip_radius: 0.01
+avi_bay:
+  length: 0.25
+  avi_mass: 11.3
+  clamshell_thickness: 0.003175
+  clamshell_material: fiberglass_standard
+  bulkhead_material: carbon_fiber_standard
+  ring_material: aluminum_6061_t6
+press_tank:
+  airframe_wall_thickness: 0.00318
+  airframe_material: carbon_fiber_standard
+  mount_thickness: 0.00318
+  mount_material: aluminum_7075_t6
+inter_tank:
+  clamshell_wall_thickness: 0.00318
+  clamshell_material: carbon_fiber_standard
+  stringer_material: aluminum_7075_t6
+  stringer_count: 4
+fin_can:
+  span: 0.2286                  # Aero deck upper bound: 9 in exposed semispan
+  root_chord: 0.508             # Aero deck upper bound: 20 in
+  tip_chord: 0.2032             # Aero deck upper bound: 8 in
+  sweep_fraction: 0.7422857985161306
+  fin_thickness: 0.009873904305986392
+  fin_count: 4
+  boattail_aft_diameter: 0.21324033825711197
+  boattail_length: 0.5731048459526931
+  boattail_wall_thickness: 0.00318
+  material: carbon_fiber_standard

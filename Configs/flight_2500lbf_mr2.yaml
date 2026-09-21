@@ -12,6 +12,10 @@ advanced:
   flight:
     corrector_tolerance: 1.0e-8
     corrector_max_iterations: 10
+  heating:
+    convergence_tolerance: 1.0e-3
+    temperature_tolerance: 1.0e-2  # K
+    max_iterations: 20
   fluid_network:
     residual_tolerance: 1.0e-7
     event_time_tolerance: 1.0e-5   # s
@@ -27,15 +31,28 @@ environment:
   altitude_step: 100.0             # m
 
 thermal:
-  model: adiabatic                 # adiabatic 
+  external_heating: true
+  initial_temperature: 288.15      # K
+  sink_temperature: 288.15         # K, effective radiative surroundings
+  material_overrides:
+    fiberglass_standard:
+      specific_heat: 800.0         # J/(kg K), laminate-dependent calibration
+  nodes:
+    press_tank:
+      insulated: true              # no OML-to-COPV heat-transfer path
+    ox_tank:
+      insulated: false
+    fuel_tank:
+      insulated: false
 
 aero:
-  cd_table: AeroTables/debug_vehicle.h5
-  stratum: vonkarman_20um
-  reference_area: 0.03242927866    # m^2; 8 in diameter reference area
+  model: AeroTables/dragmodel.h5
+  nose: vonkarman
+  finish: 20um
+  fins_on_boattail: true
   aoa_schedule:                    # [time (s), angle of attack (deg)]
-    - [5.0, 5.0]
-    - [90.0, 0.0]
+    - [0.0, 5.0]
+    - [90.0, 5.0]
 
 property_models:
   pure_fluid:
@@ -95,7 +112,6 @@ prop_system:
   state0:
     press_tank:
       fluid: Nitrogen
-      P: 29647456.360622           # Pa, 4300 psia
       T: 300.0                      # K
     ox_tank:
       fluid: Oxygen                 # CoolProp name
@@ -122,16 +138,22 @@ vehicle:
     - type: press_tank
       tank_id: press_tank
     - type: inter_tank
+      feed_system_mass: 5.0  # kg in this section only
+      avi_mass: 2.0          # kg in this section only
       length: 0.12
       area_moment_of_inertia: 3.60e-5 # m^4, carried by stringers
     - type: prop_tank
       tank_id: ox_tank
     - type: inter_tank
+      feed_system_mass: 5.0  # kg in this section only
+      avi_mass: 2.0          # kg in this section only
       length: 0.15
       area_moment_of_inertia: 3.60e-5
     - type: prop_tank
       tank_id: fuel_tank
     - type: inter_tank
+      feed_system_mass: 5.0  # kg in this section only
+      avi_mass: 2.0          # kg in this section only
       length: 0.461453343486       # m; sets assembled vehicle length to 23 ft
       area_moment_of_inertia: 3.60e-5
     - type: fin_can
@@ -140,11 +162,13 @@ vehicle:
 tanks:
   press_tank:
     type: pressurant
+    design_pressure: 29647456.360622  # Pa; design and initial charge pressure
     volume_liters: 20.0             # L, physical internal capacity
     outer_diameter: 0.22            # m
     wall_thickness: 0.0032          # m
     ellipse_ratio: 1.75
-    mass: 18.2                      # kg, dry COPV
+    material: 1018_carbon_steel_standard
+    mass: 18.2                      # kg, explicit override of geometric estimate
 
   ox_tank:
     type: propellant
@@ -190,12 +214,15 @@ inter_tank:
   clamshell_material: carbon_fiber_standard
   stringer_material: aluminum_7075_t6
   stringer_count: 4
-  feed_system_mass: 5.0              # kg per intertank section
-  avi_mass: 2.0                      # kg per intertank section
 
 fin_can:
-  fin_area: 0.065                    # m^2 total planform area
+  span: 0.1905                       # m, exposed semispan
+  root_chord: 0.4572                 # m
+  tip_chord: 0.1524                  # m
+  sweep_fraction: 0.75               # sweep / (root - tip)
   fin_thickness: 0.006604            # m
   fin_count: 4
+  boattail_aft_diameter: 0.1905       # m
+  boattail_length: 0.5588             # m
   boattail_wall_thickness: 0.00318   # m
   material: carbon_fiber_standard

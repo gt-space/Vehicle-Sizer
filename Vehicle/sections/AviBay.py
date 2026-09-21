@@ -1,11 +1,10 @@
 import numpy as np
 from scipy.optimize import root_scalar
-import matproplib as mp
+from ..Material import mp
 from .Section import Section
 from ..utils import distribute as dist
-from ..utils import aero
+# from ..utils import aero  # Legacy analytical aero disabled.
 from ..utils import geometry as geo
-from ..utils import heating
 
 class AviBay(Section):
 
@@ -14,7 +13,7 @@ class AviBay(Section):
         super().__init__(cfg)
         self.OMLD = cfg["vehicle"]["OMLD"]
         self.length = cfg["avi_bay"]["length"]
-        self.n = int(np.ceil(self.length / self.dx))
+        self.set_grid()
         self.wall_thickness = cfg["avi_bay"]["clamshell_thickness"]
         self.wall_material = cfg["avi_bay"]["clamshell_material"]
         self.emissivity = 0.85
@@ -36,7 +35,8 @@ class AviBay(Section):
 
     def get_mass(self):
         lump_masses = self._get_bulkhead_mass() + self.cfg["avi_bay"]["avi_mass"]
-        self.mass = self._get_shell_mass() + dist.uniform(lump_masses, self.n)
+        self.shell_mass = self._get_shell_mass()
+        self.mass = self.shell_mass + dist.uniform(lump_masses, self.n)
 
     def _get_shell_mass(self) -> np.ndarray:
         mat = mp.db.get_material(self.cfg["avi_bay"]["clamshell_material"])
@@ -84,20 +84,24 @@ class AviBay(Section):
         self.Ixx = np.sum(self.mass * self.radius**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
-    def get_CNa(self, M: float, alpha: float):
-        R = self.OMLD * 0.5
-        L_total = self.OMLD * self.cfg["nosecone"]["fineness_ratio"]
-        L_nosecone = L_total - self.length
-        n_nose = int(np.ceil(L_nosecone / self.dx))
-        x_nose = (np.arange(n_nose) + 0.5) * self.dx
-        profile = self.cfg["nosecone"]["profile"]
-        if profile == "von_karman":
-            r_nose = geo.vk_profile(x_nose, L_total, R)
-        else:
-            n_ps = self.cfg["nosecone"].get("power_series_n", 0.66)
-            r_nose = geo.power_series_profile(x_nose, L_total, R, n_ps)
-        lat_area_total = np.sum(2 * r_nose * self.dx) + np.sum(self.lat_area)
-        self.CNa = aero.nosecone_CNa(M) * self.lat_area / lat_area_total
+# Legacy analytical aero / unused input container (inactive).
+#     def get_CNa(self, M: float, alpha: float):
+#         R = self.OMLD * 0.5
+#         L_total = self.OMLD * self.cfg["nosecone"]["fineness_ratio"]
+#         L_nosecone = L_total - self.length
+#         n_nose = int(np.ceil(L_nosecone / self.dx))
+#         x_nose = (np.arange(n_nose) + 0.5) * self.dx
+#         profile = self.cfg["nosecone"]["profile"]
+#         if profile == "von_karman":
+#             r_nose = geo.vk_profile(x_nose, L_total, R)
+#         else:
+#             n_ps = self.cfg["nosecone"].get("power_series_n", 0.66)
+#             r_nose = geo.power_series_profile(x_nose, L_total, R, n_ps)
+#         lat_area_total = np.sum(2 * r_nose * self.dx) + np.sum(self.lat_area)
+#         self.CNa = aero.nosecone_CNa(M) * self.lat_area / lat_area_total
 
-    def get_heat_flux(self, atm, theta: float):
-        self.heat_flux = heating.get_body_heating(self.station, self.Tw, atm, theta)
+    def get_thermal_oml_area(self) -> np.ndarray:
+        return self.surf_area.copy()
+
+    def get_thermal_shell_mass(self) -> np.ndarray:
+        return self.shell_mass.copy()

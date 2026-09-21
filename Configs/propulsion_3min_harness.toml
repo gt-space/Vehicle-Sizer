@@ -31,9 +31,13 @@ min_temperature = 220.0
 pressure_band = 68947.6
 initially_open = true
 
+[tanks.press_tank]
+type = "pressurant"
+design_pressure = 3.0e7
+material = "1018_carbon_steel_standard"
+
 [prop_system.state0.press_tank]
 fluid = "Nitrogen"
-P = 3.0e7
 T = 300.0
 
 [prop_system.state0.ox_tank]

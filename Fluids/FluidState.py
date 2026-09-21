@@ -55,7 +55,6 @@ class NodeState(MutableMapping[str, Any]):
 
     state: Dict[str, Any] = field(default_factory=dict)
     fluids: Dict[str, FluidState] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, values: Dict[str, Any]) -> "NodeState":
@@ -67,7 +66,7 @@ class NodeState(MutableMapping[str, Any]):
         return cls(values, fluids)
 
     def as_dict(self) -> Dict[str, Any]:
-        values = {**self.state, **self.metadata}
+        values = dict(self.state)
         if self.fluids:
             values["fluids"] = {
                 name: fluid.as_dict() for name, fluid in self.fluids.items()
@@ -77,9 +76,7 @@ class NodeState(MutableMapping[str, Any]):
     def __getitem__(self, key: str) -> Any:
         if key == "fluids":
             return self.fluids
-        if key in self.state:
-            return self.state[key]
-        return self.metadata[key]
+        return self.state[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
         if key == "fluids":
@@ -90,19 +87,16 @@ class NodeState(MutableMapping[str, Any]):
     def __delitem__(self, key: str) -> None:
         if key == "fluids":
             self.fluids.clear()
-        elif key in self.state:
-            del self.state[key]
         else:
-            del self.metadata[key]
+            del self.state[key]
 
     def __iter__(self) -> Iterator[str]:
         yield from self.state
-        yield from self.metadata
         if self.fluids:
             yield "fluids"
 
     def __len__(self) -> int:
-        return len(self.state) + len(self.metadata) + bool(self.fluids)
+        return len(self.state) + bool(self.fluids)
 
 
 @dataclass
@@ -118,13 +112,6 @@ class BranchState(MutableMapping[str, Any]):
     @property
     def mdot(self) -> float:
         return sum(float(flow["mdot"]) for flow in self.flows.values())
-
-    def mdot_of(self, fluid: str) -> float:
-        return sum(
-            float(flow["mdot"])
-            for flow in self.flows.values()
-            if flow["fluid"].fluid == fluid
-        )
 
     def phase_mdot(self, phase: str) -> float:
         return sum(

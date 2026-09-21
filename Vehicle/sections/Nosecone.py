@@ -1,18 +1,17 @@
 import numpy as np
-import matproplib as mp
+from ..Material import mp
 from .Section import Section
 from ..utils import distribute as dist
-from ..utils import aero
+# from ..utils import aero  # Legacy analytical aero disabled.
 from ..utils import geometry as geo
-from ..utils import heating
-from dataclasses import dataclass
 
-@dataclass
-class NoseconeInputs:
-    fineness_ratio: float
-    profile: float
-    reco_mass: float
-    material: str
+# Legacy analytical aero / unused input container (inactive).
+# @dataclass
+# class NoseconeInputs:
+#     fineness_ratio: float
+#     profile: float
+#     reco_mass: float
+#     material: str
 
 class Nosecone(Section):
 
@@ -24,13 +23,14 @@ class Nosecone(Section):
         self.profile = cfg["nosecone"]["profile"]
         self.L_total = self.OMLD * self.fineness_ratio
         self.length = self.L_total - cfg["avi_bay"]["length"]
-        self.n = int(np.ceil(self.length / self.dx))
+        self.set_grid()
         self.wall_material = cfg["nosecone"]["material"]
         self.emissivity = 0.85
 
     def get_mass(self):
         reco_mass = self.cfg["nosecone"]["reco_mass"]
-        self.mass = self._get_shell_mass() + dist.uniform(reco_mass, self.n)
+        self.shell_mass = self._get_shell_mass()
+        self.mass = self.shell_mass + dist.uniform(reco_mass, self.n)
 
     def _get_shell_mass(self) -> np.ndarray:
         x = (np.arange(self.n) + 0.5) * self.dx
@@ -38,13 +38,13 @@ class Nosecone(Section):
         self.wall_thickness = 0.0032
         self.surf_area = 2 * np.pi * self.radius * self.dx
         V = self.surf_area * self.wall_thickness
-        return mp.db.get_material("carbon_fiber_standard").get("density") * V
+        return mp.db.get_material(self.wall_material).get("density") * V
 
     def get_EI(self):
         x = (np.arange(self.n) + 0.5) * self.dx
         r_o = self._get_profile(x)
         r_i = np.maximum(r_o - self.wall_thickness, 0.0)
-        E = mp.db.get_material("carbon_fiber_standard").get("elastic_modulus_0deg", 300.0)
+        E = mp.db.get_material(self.wall_material).get("elastic_modulus_0deg", 300.0)
         self.EI = E * geo.annulus_second_moment(r_o, r_i)
 
     def get_area(self):
@@ -55,16 +55,19 @@ class Nosecone(Section):
         self.Ixx = np.sum(self.mass * self.radius**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
-    def get_CNa(self, M: float, alpha: float):
-        n_avi = int(np.ceil(self.cfg["avi_bay"]["length"] / self.dx))
-        x_avi = self.length + (np.arange(n_avi) + 0.5) * self.dx
-        lat_area_avi = np.sum(2 * self._get_profile(x_avi) * self.dx)
-        lat_area_total = np.sum(self.lat_area) + lat_area_avi
-        self.CNa = aero.nosecone_CNa(M) * self.lat_area / lat_area_total
+# Legacy analytical aero / unused input container (inactive).
+#     def get_CNa(self, M: float, alpha: float):
+#         n_avi = int(np.ceil(self.cfg["avi_bay"]["length"] / self.dx))
+#         x_avi = self.length + (np.arange(n_avi) + 0.5) * self.dx
+#         lat_area_avi = np.sum(2 * self._get_profile(x_avi) * self.dx)
+#         lat_area_total = np.sum(self.lat_area) + lat_area_avi
+#         self.CNa = aero.nosecone_CNa(M) * self.lat_area / lat_area_total
 
-    def get_heat_flux(self, atm, theta: float):
-        R_n = self.cfg["nosecone"].get("tip_radius", 0.01)
-        self.heat_flux = heating.get_nose_heating(atm, R_n, self.radius, self.dx, self.Tw)
+    def get_thermal_oml_area(self) -> np.ndarray:
+        return self.surf_area.copy()
+
+    def get_thermal_shell_mass(self) -> np.ndarray:
+        return self.shell_mass.copy()
 
     def _get_profile(self, x: np.ndarray) -> np.ndarray:
         R = self.OMLD * 0.5

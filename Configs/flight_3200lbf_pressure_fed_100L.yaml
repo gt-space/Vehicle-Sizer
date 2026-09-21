@@ -1,0 +1,219 @@
+
+simulation:
+  dt: 1.0
+  t_end: 300.0
+  fluid_solve_post_shutdown: false
+  output: outputs/flight_3200lbf_pressure_fed_100L.csv
+  plot: outputs/flight_3200lbf_pressure_fed_100L.png
+
+constraints:
+  goal_apogee: 150000.0        # m; minimum accepted apogee
+  max_burn_duration: 75.0      # s; maximum accepted burn duration
+
+advanced:
+  t_wall_min: 0.001
+  weld_efficiency: 1.0          # (0, 1]; lower values increase required tank gauge
+  flight:
+    corrector_tolerance: 1.0e-8
+    corrector_max_iterations: 10
+  heating:
+    convergence_tolerance: 1.0e-3
+    temperature_tolerance: 1.0e-2
+    max_iterations: 20
+  fluid_network:
+    residual_tolerance: 1.0e-6
+    event_time_tolerance: 1.0e-5
+    flow_direction_tolerance: 1.0e-10
+
+launch:
+  altitude: 0.0
+  velocity: 0.0
+  rail_height: 15.0
+
+environment:
+  max_altitude: 150000.0
+  altitude_step: 100.0
+
+thermal:
+  external_heating: false
+  initial_temperature: 288.15
+  sink_temperature: 288.15
+  material_overrides:
+    fiberglass_standard:
+      specific_heat: 800.0
+  nodes:
+    press_tank:
+      insulated: true
+    ox_tank:
+      insulated: false
+    fuel_tank:
+      insulated: false
+
+aero:
+  model: AeroTables/dragmodel.h5
+  nose: vonkarman
+  finish: 20um
+  fins_on_boattail: true
+  aoa_schedule:
+    - [0.0, 5.0]
+    - [180.0, 5.0]
+
+property_models:
+  pure_fluid:
+    source: table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      fluids:
+        Nitrogen:
+          pt: nitrogen_pt
+          saturation: nitrogen_saturation
+        Oxygen: oxygen_pt
+        n-Dodecane: ndodecane_pt
+  combustion:
+    source: table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      nfz: 1
+
+engine:
+  oxidizer: LOX
+  fuel: RP-1
+  cstar_efficiency: 0.85
+  cf_efficiency: 0.95
+  exit_pressure: 75842.3
+  mass: 30.0
+  length: 0.5715                  # 22.5 in median boattail length
+
+prop_system:
+  feed_type: pressure_fed
+  pressurization: regulator
+  Pc_target: 1723689.323292       # Pa, 250 psia
+  MR_target: 2.0
+  thrust_target: 18550     
+  ox_inj_stiffness: 0.20
+  fuel_inj_stiffness: 0.20
+  ox_tank_inj_dp: 275790.291727   # Pa, 40 psi; preserves original 20 + 20 psi line losses
+  fuel_tank_inj_dp: 275790.291727 # Pa, 40 psi
+  nozzle_cd: 1.0
+
+  regulator:
+    OX_REGULATOR:
+      tank_id: ox_tank
+      capacity_factor: 4.0         # Same fully-open capacity as duty_cycle: 0.50
+      collapse_factor: 1.20
+    FUEL_REGULATOR:
+      tank_id: fuel_tank
+      capacity_factor: 4.0         # Same fully-open capacity as duty_cycle: 0.50
+      collapse_factor: 1.20
+  initial_conditions:          # Propellant-only P overrides; T/gas_T required
+    press_tank:
+      fluid: Nitrogen
+      T: 300.0
+    ox_tank:
+      fluid: Oxygen
+      gas_fluid: Nitrogen
+      T: 95.0
+      gas_T: 293.0
+    fuel_tank:
+      fluid: n-Dodecane
+      gas_fluid: Nitrogen
+      T: 293.0
+      gas_T: 293.0
+
+vehicle:
+  OMLD: 0.33655                  # m, 13.25 in
+  dx: 0.01
+  sections:
+    - type: nosecone
+    - type: avi_bay
+    - type: press_tank
+      tank_id: press_tank
+    - type: inter_tank
+      feed_system_mass: 5.0  # kg in this section only
+      avi_mass: 2.0          # kg in this section only
+      length: 0.12
+      area_moment_of_inertia: 3.60e-5
+    - type: prop_tank
+      tank_id: ox_tank             # Forward/above the fuel tank
+    - type: inter_tank
+      feed_system_mass: 5.0  # kg in this section only
+      avi_mass: 2.0          # kg in this section only
+      length: 0.15
+      area_moment_of_inertia: 3.60e-5
+    - type: prop_tank
+      tank_id: fuel_tank
+    - type: inter_tank
+      feed_system_mass: 5.0  # kg in this section only
+      avi_mass: 2.0          # kg in this section only
+      length: 0.762                # 30 in
+      area_moment_of_inertia: 3.60e-5
+    - type: fin_can
+
+tanks:
+  press_tank:
+    type: pressurant
+    design_pressure: 29647456.360622  # Pa, 4,300 psia; independent of engine ladder
+    volume: 0.100                # m^3; independent optimizer design variable
+    min_temperature: 220.0       # K; sizing reference and burn feasibility limit
+    outer_diameter: 0.22
+    wall_thickness: 0.0032        # Retained input; not requalified for 4,300 psia
+    ellipse_ratio: 1.75
+    material: 1018_carbon_steel_standard
+    # Omit mass: shell mass grows with the length derived from volume and inner diameter.
+
+  ox_tank:
+    type: propellant
+    propellant_mass: 230.0
+    ullage_factor: 1.10
+    ellipse_ratio: 1.75
+    passthrough_diameter: 0.0
+    passthrough_wall_thickness: 0
+    material: aluminum_6061_t6
+
+  fuel_tank:
+    type: propellant
+    propellant_mass: 115.0
+    ullage_factor: 1.10
+    ellipse_ratio: 1.75
+    passthrough_diameter: 0.1016
+    passthrough_wall_thickness: 0.00254
+    material: aluminum_6061_t6
+
+nosecone:
+  profile: von_karman
+  fineness_ratio: 5.0             # median of the aero table range
+  reco_mass: 5.0
+  material: carbon_fiber_standard
+  tip_radius: 0.01
+
+avi_bay:
+  length: 0.30
+  avi_mass: 2.0
+  clamshell_thickness: 0.003175
+  clamshell_material: fiberglass_standard
+  bulkhead_material: carbon_fiber_standard
+  ring_material: aluminum_6061_t6
+
+press_tank:
+  airframe_wall_thickness: 0.00318
+  airframe_material: carbon_fiber_standard
+  mount_thickness: 0.00318
+  mount_material: aluminum_7075_t6
+
+inter_tank:
+  clamshell_wall_thickness: 0.00318
+  clamshell_material: carbon_fiber_standard
+  stringer_material: aluminum_7075_t6
+  stringer_count: 4
+
+fin_can:
+  span: 0.228                   #
+  root_chord: 0.508              # 17.5 in, table median
+  tip_chord: 0.203               # 6 in, table median
+  sweep_fraction: 0.75            # table median
+  fin_thickness: 0.009525         # 0.375 in, table median
+  fin_count: 4
+  boattail_aft_diameter: 0.3032125 # 11.9375 in, conditional table median
+  boattail_length: 0.5715          # 22.5 in, table median
+  boattail_wall_thickness: 0.00318
+  material: carbon_fiber_standard

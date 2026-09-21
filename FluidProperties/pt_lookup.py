@@ -150,6 +150,10 @@ def generate_saturation_table(
         "enthalpy",
         "internal_energy",
         "specific_heat_ratio",
+        "dynamic_viscosity",
+        "conductivity",
+        "specific_heat_at_constant_pressure",
+        "isobaric_expansion_coefficient",
     )
     values = {"temperature": np.empty(pressure.size)}
     values.update(
@@ -169,6 +173,12 @@ def generate_saturation_table(
             values[f"{prefix}_enthalpy"][index] = enthalpy
             values[f"{prefix}_internal_energy"][index] = energy
             values[f"{prefix}_specific_heat_ratio"][index] = gamma
+            values[f"{prefix}_dynamic_viscosity"][index] = state.viscosity()
+            values[f"{prefix}_conductivity"][index] = state.conductivity()
+            values[f"{prefix}_specific_heat_at_constant_pressure"][index] = cp
+            values[f"{prefix}_isobaric_expansion_coefficient"][index] = (
+                state.isobaric_expansion_coefficient()
+            )
 
     temporary = f"__new_{group_name}"
     with h5py.File(path, "a") as file:
@@ -202,8 +212,14 @@ def generate_saturation_table(
             dataset.attrs["units"] = (
                 "K"
                 if name == "temperature"
+                else "Pa*s"
+                if name.endswith("dynamic_viscosity")
+                else "W/(m*K)"
+                if name.endswith("conductivity")
+                else "J/(kg*K)"
+                if name.endswith("specific_heat_at_constant_pressure")
                 else "dimensionless"
-                if name.endswith("ratio")
+                if name.endswith(("ratio", "coefficient"))
                 else "kg/m^3"
                 if name.endswith("density")
                 else "J/kg"

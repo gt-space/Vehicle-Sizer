@@ -4,15 +4,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Protocol
 
+import numpy as np
 from scipy.optimize import root_scalar
 
-from Flight.FluidsDef import FluidsDef
+from Fluids import FluidsDef
 from .LookupTables import LookupTables
 
 
 @dataclass(frozen=True)
 class PureFluidProperties:
-    """Thermodynamic properties required by fluid nodes and branches."""
+    """Thermodynamic and transport properties used by fluid and thermal nodes."""
 
     P: float
     T: float
@@ -21,6 +22,10 @@ class PureFluidProperties:
     u: float
     R: float
     gamma: float
+    mu: float
+    k: float
+    cp: float
+    beta: float
 
     @classmethod
     def from_dict(cls, values: Dict[str, float]) -> "PureFluidProperties":
@@ -65,6 +70,10 @@ class PureFluidPropertySource(Protocol):
         self, fluid: str, pressure: float, temperature: float
     ) -> PureFluidProperties: ...
 
+    def state_bounds(
+        self, fluid: str
+    ) -> tuple[tuple[float, float], tuple[float, float]]: ...
+
     def saturation_bounds(self, fluid: str) -> tuple[float, float]: ...
 
     def supports_saturation(self, fluid: str) -> bool: ...
@@ -104,6 +113,12 @@ class CoolPropPropertySource:
         )
 
     @staticmethod
+    def state_bounds(fluid: str):
+        del fluid
+        positive = (np.finfo(float).tiny, np.inf)
+        return positive, positive
+
+    @staticmethod
     def saturation_bounds(fluid: str) -> tuple[float, float]:
         from CoolProp.CoolProp import PropsSI
 
@@ -132,6 +147,9 @@ class TablePureFluidPropertySource:
         "enthalpy",
         "internal_energy",
         "specific_heat_ratio",
+        "dynamic_viscosity",
+        "conductivity",
+        "specific_heat_at_constant_pressure",
     )
 
     def __init__(
@@ -190,6 +208,7 @@ class TablePureFluidPropertySource:
         )
         if values["density"] <= 0.0 or values["specific_heat_ratio"] <= 0.0:
             raise ValueError(f"Fluid table '{table.name}' returned an invalid state")
+        beta = self._thermal_expansion(table, pressure, temperature, values["density"])
         return PureFluidProperties(
             P=float(pressure),
             T=float(temperature),
@@ -198,7 +217,44 @@ class TablePureFluidPropertySource:
             u=values["internal_energy"],
             R=gas_constant,
             gamma=values["specific_heat_ratio"],
+            mu=values["dynamic_viscosity"],
+            k=values["conductivity"],
+            cp=values["specific_heat_at_constant_pressure"],
+            beta=beta,
         )
+
+    def state_bounds(self, fluid: str):
+        table = self._table(fluid)
+        pressure = table.axes["pressure"]
+        temperature = table.axes["temperature"]
+        return (
+            (float(pressure[0]), float(pressure[-1])),
+            (float(temperature[0]), float(temperature[-1])),
+        )
+
+    @staticmethod
+    def _thermal_expansion(
+        table, pressure: float, temperature: float, rho: float
+    ) -> float:
+        """Estimate beta = -(1/rho)(drho/dT)_P from the existing PT map."""
+
+        axis = table.axes["temperature"]
+        step = max(float(np.min(np.diff(axis))) * 0.25, 1.0e-3)
+        low = max(float(axis[0]), float(temperature) - step)
+        high = min(float(axis[-1]), float(temperature) + step)
+        if high <= low:
+            raise ValueError(f"Fluid table '{table.name}' cannot evaluate thermal expansion")
+        densities = table.evaluate(
+            ("density",), pressure=float(pressure), temperature=low
+        ), table.evaluate(
+            ("density",), pressure=float(pressure), temperature=high
+        )
+        beta = -(densities[1]["density"] - densities[0]["density"]) / (
+            (high - low) * float(rho)
+        )
+        if not np.isfinite(beta) or beta == 0.0:
+            raise ValueError(f"Fluid table '{table.name}' returned invalid thermal expansion")
+        return abs(float(beta))
 
     def _saturation_table(self, fluid: str):
         try:
@@ -229,10 +285,18 @@ class TablePureFluidPropertySource:
             "liquid_enthalpy",
             "liquid_internal_energy",
             "liquid_specific_heat_ratio",
+            "liquid_dynamic_viscosity",
+            "liquid_conductivity",
+            "liquid_specific_heat_at_constant_pressure",
+            "liquid_isobaric_expansion_coefficient",
             "vapor_density",
             "vapor_enthalpy",
             "vapor_internal_energy",
             "vapor_specific_heat_ratio",
+            "vapor_dynamic_viscosity",
+            "vapor_conductivity",
+            "vapor_specific_heat_at_constant_pressure",
+            "vapor_isobaric_expansion_coefficient",
         )
         values = table.evaluate(names, pressure=float(pressure))
         gas_constant = float(table.constants["specific_gas_constant"])
@@ -246,6 +310,10 @@ class TablePureFluidPropertySource:
                 u=values[f"{prefix}_internal_energy"],
                 R=gas_constant,
                 gamma=values[f"{prefix}_specific_heat_ratio"],
+                mu=values[f"{prefix}_dynamic_viscosity"],
+                k=values[f"{prefix}_conductivity"],
+                cp=values[f"{prefix}_specific_heat_at_constant_pressure"],
+                beta=values[f"{prefix}_isobaric_expansion_coefficient"],
             )
 
         return SaturationProperties(
@@ -323,6 +391,11 @@ class TableCombustionPropertySource:
         missing = set(self.outputs).difference(self.table.outputs)
         if missing:
             raise ValueError(f"Engine table is missing outputs {sorted(missing)}")
+
+    @property
+    def chamber_pressure_bounds(self) -> tuple[float, float]:
+        pressure = self.table.axes["chamber_pressure"]
+        return float(pressure[0]), float(pressure[-1])
 
     def _coordinates(
         self,

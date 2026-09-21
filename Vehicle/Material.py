@@ -1,6 +1,11 @@
 from dataclasses import dataclass
 
-import matproplib as mp
+from contextlib import redirect_stdout
+from io import StringIO
+
+# matproplib prints its registry on import; library simulation must stay quiet.
+with redirect_stdout(StringIO()):
+    import matproplib as mp
 
 
 @dataclass(frozen=True)
@@ -11,6 +16,8 @@ class MaterialProperties:
     density: float
     yield_strength: float | None
     elastic_modulus: float | None
+    specific_heat: float | None = None
+    thermal_conductivity: float | None = None
 
     @classmethod
     def from_name(cls, name: str) -> "MaterialProperties":
@@ -29,6 +36,8 @@ class MaterialProperties:
             density=float(material.get("density")),
             yield_strength=optional("yield_strength", "yield_strength_0deg"),
             elastic_modulus=optional("elastic_modulus", "elastic_modulus_0deg"),
+            specific_heat=optional("specific_heat"),
+            thermal_conductivity=optional("thermal_conductivity"),
         )
 
     def require(self, name: str) -> float:

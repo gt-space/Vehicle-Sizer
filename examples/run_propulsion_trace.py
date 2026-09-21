@@ -20,7 +20,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from CoolProp.CoolProp import PropsSI
 
-from Flight.PropSystem import PropSystem
+from Fluids.PropSystem import PropSystem
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,7 @@ def initialize_tanks(cfg):
     press = state0["press_tank"]
     press_geometry = PressTankGeometry(**geometry_cfg["press_tank"])
     press["m"], press["U"] = stored_state(
-        press["fluid"], press["P"], press["T"], press_geometry.volume
+        press["fluid"], cfg["tanks"]["press_tank"]["design_pressure"], press["T"], press_geometry.volume
     )
     tanks["press_tank"] = TankGeometry(press_geometry)
 
@@ -128,7 +128,7 @@ def run(config_path: Path):
     pressure = {node_id: [] for node_id in system.network.nodes}
 
     for step in range(steps):
-        result = system.update(dt=dt, atm=atmosphere, heat_flux={})
+        result = system.update(dt=dt, atm=atmosphere, heat_rate={})
         time.append((step + 1) * dt)
         thrust.append(result.propulsion.thrust)
         for node_id in pressure:
