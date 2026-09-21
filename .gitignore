@@ -5,3 +5,5 @@ __pycache__/
 outputs/
 FluidProperties/*.h5
 AeroTables/*.h5
+.vscode
+settings.json
