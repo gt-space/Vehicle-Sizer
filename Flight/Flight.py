@@ -386,6 +386,17 @@ class FlightSim:
         )
 
     @staticmethod
+    def constrain_to_rail(kin: KinematicsState) -> KinematicsState:
+        return replace(
+            kin,
+            x=0.0,
+            vx=0.0,
+            theta=np.pi / 2,
+            q=0.0,
+            alpha=0.0,
+        )
+
+    @staticmethod
     def flight_kinematics(
         kin: KinematicsState,
         wind_x: float = 0.0,
@@ -493,10 +504,12 @@ class FlightSim:
                 Iyy=inertia,
             )
 
-            _, _, airspeed, _, alpha = self.flight_kinematics(kin)
             if self.on_rail(kin.h):
-                alpha = 0.0
-            kin = replace(kin, alpha=alpha)
+                kin = self.constrain_to_rail(kin)
+
+            _, _, airspeed, _, alpha = self.flight_kinematics(kin)
+            if not self.on_rail(kin.h):
+                kin = replace(kin, alpha=alpha)
             atmosphere = self.env.atmosphere(kin.h, airspeed)
 
             engine_on = self.engine_on(fluid_state.propulsion)
@@ -516,10 +529,12 @@ class FlightSim:
 
             # Use the explicit predictor to supply endpoint boundary conditions
             # for the single implicit fluid-network propagation.
-            _, _, predicted_airspeed, _, predicted_alpha = self.flight_kinematics(predicted_kin)
             if self.on_rail(predicted_kin.h):
-                predicted_alpha = 0.0
-            predicted_kin = replace(predicted_kin, alpha=predicted_alpha)
+                predicted_kin = self.constrain_to_rail(predicted_kin)
+
+            _, _, predicted_airspeed, _, predicted_alpha = self.flight_kinematics(predicted_kin)
+            if not self.on_rail(predicted_kin.h):
+                predicted_kin = replace(predicted_kin, alpha=predicted_alpha)
             predicted_atmosphere = self.env.atmosphere(
                 predicted_kin.h,
                 predicted_airspeed,
@@ -596,10 +611,12 @@ class FlightSim:
                     mass,
                     inertia,
                 )
-                _, _, _, _, corrected_alpha = self.flight_kinematics(corrected_kin)
                 if self.on_rail(corrected_kin.h):
-                    corrected_alpha = 0.0
-                corrected_kin = replace(corrected_kin, alpha=corrected_alpha)
+                    corrected_kin = self.constrain_to_rail(corrected_kin)
+
+                _, _, _, _, corrected_alpha = self.flight_kinematics(corrected_kin)
+                if not self.on_rail(corrected_kin.h):
+                    corrected_kin = replace(corrected_kin, alpha=corrected_alpha)
                 error = max(
                     abs(corrected_kin.x - next_kin.x)
                     / (1.0 + abs(corrected_kin.x)),
