@@ -225,18 +225,21 @@ class FlightSim:
         dt = kin.dt
         forces = self.forces(kin, plant, mass)
         acceleration = forces["acceleration"]
-        velocity = kin.v + acceleration * dt
-        altitude = kin.h + kin.v * dt + 0.5 * acceleration * dt**2
+        velocity = kin.vz + acceleration * dt
+        altitude = kin.h + kin.vz * dt + 0.5 * acceleration * dt**2
 
         return KinematicsState(
             t=kin.t + dt,
             dt=dt,
+            x=kin.x,
             h=altitude,
-            v=velocity,
-            w=kin.w,
+            vx=kin.vx,
+            vz=velocity,
+            theta=kin.theta,
+            q=kin.q,
             alpha=kin.alpha,
             m=mass,
-            Ixx=kin.Ixx,
+            Iyy=kin.Iyy,
         )
 
     @staticmethod
@@ -245,22 +248,25 @@ class FlightSim:
         start_acceleration: float,
         end_acceleration: float,
         mass: float,
-        Ixx: float,
+        Iyy: float,
     ) -> KinematicsState:
         """Apply the implicit trapezoidal corrector to the predicted endpoint."""
 
         dt = kin.dt
-        velocity = kin.v + 0.5 * (start_acceleration + end_acceleration) * dt
-        altitude = kin.h + 0.5 * (kin.v + velocity) * dt
+        velocity = kin.vz + 0.5 * (start_acceleration + end_acceleration) * dt
+        altitude = kin.h + 0.5 * (kin.vz + velocity) * dt
         return KinematicsState(
             t=kin.t + dt,
             dt=dt,
+            x=kin.x,
             h=altitude,
-            v=velocity,
-            w=kin.w,
+            vx=kin.vx,
+            vz=velocity,
+            theta=kin.theta,
+            q=kin.q,
             alpha=kin.alpha,
             m=mass,
-            Ixx=Ixx,
+            Iyy=Iyy,
         )
 
     @staticmethod
@@ -272,9 +278,9 @@ class FlightSim:
         """Return the forces and acceleration at one synchronized state."""
 
         thrust = float(plant.fluids.propulsion.thrust)
-        drag = math.copysign(float(plant.aero.D), kin.v) if kin.v != 0.0 else 0.0
+        drag = math.copysign(float(plant.aero.D), kin.vz) if kin.vz != 0.0 else 0.0
         weight = gravity(mass, kin.h)
-        if not all(math.isfinite(x) for x in (thrust, drag, weight, mass, kin.h, kin.v)) or mass <= 0 or weight <= 0:
+        if not all(math.isfinite(x) for x in (thrust, drag, weight, mass, kin.h, kin.vz)) or mass <= 0 or weight <= 0:
             raise ValueError("Nonphysical or nonfinite flight force state")
         vertical_thrust = thrust * math.cos(kin.alpha)
         net = vertical_thrust - drag - weight
@@ -317,8 +323,6 @@ class FlightSim:
             ),
         )
 
-    # this is only for 3DOF
-    # wind modifications already included
     @staticmethod
     def flight_kinematics(
         kin: KinematicsState,
@@ -340,7 +344,7 @@ class FlightSim:
             alpha = kin.theta - gamma_air # angle of attack (wind-relative)
         else:
             gamma_air = kin.theta # flight-path relative to wind 
-            alpha = 0.0
+            alpha = 0.0 # on rail
 
         return speed, gamma, airspeed, gamma_air, alpha
 
@@ -415,21 +419,23 @@ class FlightSim:
         if progress is not None:
             progress(kin)
 
-        while kin.t < t_end and (kin.t == 0.0 or kin.v >= 0.0):
+        while kin.t < t_end and (kin.t == 0.0 or kin.vz >= 0.0):
             # Evaluate every force used for propagation at the beginning of the
             # interval, using the fluid and vehicle state at the same time.
             mass = float(self.vehicle.total_mass)
-            inertia = float(self.vehicle.Ixx)
+            inertia = float(self.vehicle.Iyy)
             kin = replace(
                 kin,
                 dt=min(dt, t_end - kin.t),
-                alpha=self.angle_of_attack(kin.t, kin.h),
                 m=mass,
-                Ixx=inertia,
+                Iyy=inertia,
             )
 
-            _, _, airspeed, _, _ = self.flight_kinematics(kin)
-            atmosphere = self.env.atmosphere(kin.h, airspeed) # uses updated 3DOF atm lookup
+            _, _, airspeed, _, alpha = self.flight_kinematics(kin)
+            if self.on_rail(kin.h):
+                alpha = 0.0
+            kin = replace(kin, alpha=alpha)
+            atmosphere = self.env.atmosphere(kin.h, airspeed)
 
             engine_on = self.engine_on(fluid_state.propulsion)
             aero_out = self.trial_aero(kin, atmosphere, engine_on)
@@ -448,13 +454,10 @@ class FlightSim:
 
             # Use the explicit predictor to supply endpoint boundary conditions
             # for the single implicit fluid-network propagation.
-            predicted_kin = replace(
-                predicted_kin,
-                alpha=self.angle_of_attack(predicted_kin.t, predicted_kin.h),
-            )
-
-            # New 3DOF flight kinematics used for predictor step
-            _, _, predicted_airspeed, _, _ = self.flight_kinematics(predicted_kin)
+            _, _, predicted_airspeed, _, predicted_alpha = self.flight_kinematics(predicted_kin)
+            if self.on_rail(predicted_kin.h):
+                predicted_alpha = 0.0
+            predicted_kin = replace(predicted_kin, alpha=predicted_alpha)
             predicted_atmosphere = self.env.atmosphere(
                 predicted_kin.h,
                 predicted_airspeed,
@@ -492,7 +495,7 @@ class FlightSim:
                 fluid_state = replace(fluid_state, events=())
             self.vehicle.update_mass_distribution(fluid_state.node)
             mass = float(self.vehicle.total_mass)
-            inertia = float(self.vehicle.Ixx)
+            inertia = float(self.vehicle.Iyy)
 
             # Iterate the implicit trapezoidal corrector. Propulsion and mass
             # are fixed at their solved endpoint values; atmosphere and drag
@@ -501,11 +504,10 @@ class FlightSim:
             next_kin = replace(
                 predicted_kin,
                 m=mass,
-                Ixx=inertia,
+                Iyy=inertia,
             )
             for _ in range(corrector_max_iterations):
 
-                # new 3DOF kinematics function
                 _, _, trial_airspeed, _, _ = self.flight_kinematics(next_kin)
                 trial_atmosphere = self.env.atmosphere(next_kin.h, trial_airspeed)
 
@@ -531,18 +533,15 @@ class FlightSim:
                     mass,
                     inertia,
                 )
-                corrected_kin = replace(
-                    corrected_kin,
-                    alpha=self.angle_of_attack(
-                        corrected_kin.t,
-                        corrected_kin.h,
-                    ),
-                )
+                _, _, _, _, corrected_alpha = self.flight_kinematics(corrected_kin)
+                if self.on_rail(corrected_kin.h):
+                    corrected_alpha = 0.0
+                corrected_kin = replace(corrected_kin, alpha=corrected_alpha)
                 error = max(
                     abs(corrected_kin.h - next_kin.h)
                     / (1.0 + abs(corrected_kin.h)),
-                    abs(corrected_kin.v - next_kin.v)
-                    / (1.0 + abs(corrected_kin.v)),
+                    abs(corrected_kin.vz - next_kin.vz)
+                    / (1.0 + abs(corrected_kin.vz)),
                 )
                 next_kin = corrected_kin
                 if error <= corrector_tolerance:
@@ -553,8 +552,7 @@ class FlightSim:
                 )
 
             # Re-evaluate the complete corrected endpoint for history.
-
-            _, _, end_airspeed, _, _ = self.flight_kinematics(next_kin) # 3DOF kinematics
+            _, _, end_airspeed, _, _ = self.flight_kinematics(next_kin)
             end_atmosphere = self.env.atmosphere(next_kin.h, end_airspeed)
 
             end_aero = self.trial_aero(next_kin, end_atmosphere, end_engine_on)
@@ -567,10 +565,10 @@ class FlightSim:
             self._record_twr(result, next_kin, end_forces["twr"], kin, start_forces["twr"])
             self._record_extrema(result, end_atmosphere, end_aero)
             result.max_altitude = max(result.max_altitude, next_kin.h)
-            if kin.v > 0.0 and next_kin.v <= 0.0:
-                fraction = kin.v / (kin.v - next_kin.v)
+            if kin.vz > 0.0 and next_kin.vz <= 0.0:
+                fraction = kin.vz / (kin.vz - next_kin.vz)
                 elapsed = fraction * kin.dt
-                result.apogee = kin.h + 0.5 * kin.v * elapsed
+                result.apogee = kin.h + 0.5 * kin.vz * elapsed
                 result.apogee_time = kin.t + elapsed
                 result.max_altitude = max(result.max_altitude, result.apogee)
             if engine_on:
@@ -581,7 +579,7 @@ class FlightSim:
                     result.burn_complete = True
             result.final_time = next_kin.t
             result.final_altitude = next_kin.h
-            result.final_velocity = next_kin.v
+            result.final_velocity = next_kin.vz
             result.final_mass = mass
             result.shutdown_reason = fluid_state.propulsion.shutdown_reason
             merge_margins(result.constraints, fluid_state.constraints,
@@ -608,7 +606,7 @@ class FlightSim:
             if progress is not None:
                 progress(kin)
 
-        result.termination = "apogee" if result.apogee_reached else ("no_ascent" if kin.v < 0 else "time_limit")
+        result.termination = "apogee" if result.apogee_reached else ("no_ascent" if kin.vz < 0 else "time_limit")
         return history
 
     def _evaluate_loads(self, result, kin, atmosphere, aero, forces, engine_on):
