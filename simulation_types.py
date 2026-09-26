@@ -117,6 +117,12 @@ class SimResult:
     final_time: float = 0.0
     final_altitude: float = 0.0
     final_velocity: float = 0.0
+    final_x: float = 0.0
+    final_vx: float = 0.0
+    final_vz: float = 0.0
+    final_speed: float = 0.0
+    final_pitch_angle: float = 0.0
+    final_pitch_rate: float = 0.0
     termination: str = "time_limit"
     geometry_constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     constraints: Dict[str, Optional[float]] = field(default_factory=dict)

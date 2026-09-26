@@ -477,7 +477,14 @@ class FlightSim:
         result = self.result = SimResult(
             max_altitude=h0, initial_mass=mass, final_mass=mass,
             dry_mass=float(np.sum(getattr(self.vehicle, "dry_mass", self.vehicle.mass))),
-            final_altitude=h0, final_velocity=v0,
+            final_altitude=h0,
+            final_velocity=v0,  # retained as vertical velocity for compatibility
+            final_x=0.0,
+            final_vx=0.0,
+            final_vz=v0,
+            final_speed=abs(v0),
+            final_pitch_angle=np.pi / 2,
+            final_pitch_rate=0.0,
             geometry_constraints=dict(getattr(self.vehicle, "geometry_constraints", {})),
             history=history if record_history else None,
             constraints=dict(fluid_state.constraints),
@@ -672,7 +679,13 @@ class FlightSim:
                     result.burn_complete = True
             result.final_time = next_kin.t
             result.final_altitude = next_kin.h
-            result.final_velocity = next_kin.vz
+            result.final_velocity = next_kin.vz  # retained as vertical velocity for compatibility
+            result.final_x = next_kin.x
+            result.final_vx = next_kin.vx
+            result.final_vz = next_kin.vz
+            result.final_speed = math.hypot(next_kin.vx, next_kin.vz)
+            result.final_pitch_angle = next_kin.theta
+            result.final_pitch_rate = next_kin.q
             result.final_mass = mass
             result.shutdown_reason = fluid_state.propulsion.shutdown_reason
             merge_margins(result.constraints, fluid_state.constraints,
