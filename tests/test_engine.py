@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-sys.modules.setdefault("matproplib", MagicMock())
+sys.modules.setdefault("matprotlib", MagicMock())
 sys.modules.setdefault("Vehicle.utils.heating", MagicMock())
 
 from Vehicle.Engine import Engine

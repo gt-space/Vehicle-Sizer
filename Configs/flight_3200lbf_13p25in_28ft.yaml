@@ -39,7 +39,7 @@ thermal:
   initial_temperature: 288.15
   sink_temperature: 288.15
   material_overrides:
-    fiberglass_standard:
+    fiberglass:
       specific_heat: 800.0
   nodes:
     press_tank:
@@ -177,7 +177,7 @@ tanks:
     outer_diameter: 0.25
     wall_thickness: 0.0032
     ellipse_ratio: 1.75
-    material: 1018_carbon_steel_standard
+    material: 1018_carbon_steel
     # Omit mass: shell mass grows with the length derived from volume and inner diameter.
 
   ox_tank:
@@ -187,7 +187,7 @@ tanks:
     ellipse_ratio: 1.75
     passthrough_diameter: 0.03175
     passthrough_wall_thickness: 0.00254
-    material: aluminum_6061_t6
+    material: aluminum_6061
 
   fuel_tank:
     type: propellant
@@ -196,33 +196,33 @@ tanks:
     ellipse_ratio: 1.75
     passthrough_diameter: 0.1016
     passthrough_wall_thickness: 0.00254
-    material: aluminum_6061_t6
+    material: aluminum_6061
 
 nosecone:
   profile: von_karman
   fineness_ratio: 5.0            
   reco_mass: 5.0
-  material: carbon_fiber_standard
+  material: carbon_fiber
   tip_radius: 0.01
 
 avi_bay:
   length: 0.25
   avi_mass: 11.3
   clamshell_thickness: 0.003175
-  clamshell_material: fiberglass_standard
-  bulkhead_material: carbon_fiber_standard
-  ring_material: aluminum_6061_t6
+  clamshell_material: fiberglass
+  bulkhead_material: carbon_fiber
+  ring_material: aluminum_6061
 
 press_tank:
   airframe_wall_thickness: 0.00318
-  airframe_material: carbon_fiber_standard
+  airframe_material: carbon_fiber
   mount_thickness: 0.00318
-  mount_material: aluminum_7075_t6
+  mount_material: aluminum_7075
 
 inter_tank:
   clamshell_wall_thickness: 0.00318
-  clamshell_material: carbon_fiber_standard
-  stringer_material: aluminum_7075_t6
+  clamshell_material: carbon_fiber
+  stringer_material: aluminum_7075
   stringer_count: 4
 
 fin_can:
@@ -235,4 +235,4 @@ fin_can:
   boattail_aft_diameter: 0.3032125 # 11.9375 in
   boattail_length: 0.5715          # 22.5 in
   boattail_wall_thickness: 0.00318
-  material: carbon_fiber_standard
+  material: carbon_fiber

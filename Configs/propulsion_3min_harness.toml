@@ -34,7 +34,7 @@ initially_open = true
 [tanks.press_tank]
 type = "pressurant"
 design_pressure = 3.0e7
-material = "1018_carbon_steel_standard"
+material = "1018_carbon_steel"
 
 [prop_system.state0.press_tank]
 fluid = "Nitrogen"

@@ -3,14 +3,14 @@ from dataclasses import dataclass
 from contextlib import redirect_stdout
 from io import StringIO
 
-# matproplib prints its registry on import; library simulation must stay quiet.
+# Keep the material-library import quiet if it emits registry information.
 with redirect_stdout(StringIO()):
-    import matproplib as mp
+    import matprotlib as mp
 
 
 @dataclass(frozen=True)
 class MaterialProperties:
-    """Material values loaded once from matproplib for vehicle calculations."""
+    """Material values loaded once from matprotlib for vehicle calculations."""
 
     name: str
     density: float
@@ -21,7 +21,7 @@ class MaterialProperties:
 
     @classmethod
     def from_name(cls, name: str) -> "MaterialProperties":
-        material = mp.db.get_material(name)
+        material = mp.get_material(name)
         if material is None:
             raise ValueError(f"Unknown material {name!r}")
 
@@ -34,8 +34,8 @@ class MaterialProperties:
         return cls(
             name=name,
             density=float(material.get("density")),
-            yield_strength=optional("yield_strength", "yield_strength_0deg"),
-            elastic_modulus=optional("elastic_modulus", "elastic_modulus_0deg"),
+            yield_strength=optional("yield_strength"),
+            elastic_modulus=optional("elastic_modulus"),
             specific_heat=optional("specific_heat"),
             thermal_conductivity=optional("thermal_conductivity"),
         )

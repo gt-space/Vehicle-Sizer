@@ -38,13 +38,13 @@ class Nosecone(Section):
         self.wall_thickness = 0.0032
         self.surf_area = 2 * np.pi * self.radius * self.dx
         V = self.surf_area * self.wall_thickness
-        return mp.db.get_material(self.wall_material).get("density") * V
+        return mp.get_material(self.wall_material).get("density") * V
 
     def get_EI(self):
         x = (np.arange(self.n) + 0.5) * self.dx
         r_o = self._get_profile(x)
         r_i = np.maximum(r_o - self.wall_thickness, 0.0)
-        E = mp.db.get_material(self.wall_material).get("elastic_modulus_0deg", 300.0)
+        E = mp.get_material(self.wall_material).get("elastic_modulus", T=300.0)
         self.EI = E * geo.annulus_second_moment(r_o, r_i)
 
     def get_area(self):

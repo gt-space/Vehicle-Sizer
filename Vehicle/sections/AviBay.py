@@ -39,7 +39,7 @@ class AviBay(Section):
         self.mass = self.shell_mass + dist.uniform(lump_masses, self.n)
 
     def _get_shell_mass(self) -> np.ndarray:
-        mat = mp.db.get_material(self.cfg["avi_bay"]["clamshell_material"])
+        mat = mp.get_material(self.cfg["avi_bay"]["clamshell_material"])
         t = self.cfg["avi_bay"]["clamshell_thickness"]
         rho = mat.get("density")
         self.surf_area = 2 * np.pi * self.radius * self.dx
@@ -49,10 +49,10 @@ class AviBay(Section):
         a = 9.81 * 10.0
         P = self.cfg["avi_bay"]["avi_mass"] * a
 
-        mat = mp.db.get_material(self.cfg["avi_bay"]["bulkhead_material"])
-        nu = mat.get("poisson_ratio_major")
+        mat = mp.get_material(self.cfg["avi_bay"]["bulkhead_material"])
+        nu = mat.get("poisson_ratio", T=350.0)
         T = 350.0
-        sigma = mat.get("yield_strength_90deg", T)
+        sigma = mat.get("yield_strength", T=T)
 
         r = (self.OMLD * 0.5) - self.cfg["avi_bay"]["clamshell_thickness"]
         t = self._get_bulkhead_thickness(P, r, nu, sigma)
@@ -72,8 +72,8 @@ class AviBay(Section):
     def get_EI(self):
         t = self.cfg["avi_bay"]["clamshell_thickness"]
         r_i = np.maximum(self.radius - t, 0.0)
-        mat = mp.db.get_material(self.cfg["avi_bay"]["clamshell_material"])
-        E = mat.get("elastic_modulus_0deg") if "elastic_modulus_0deg" in mat.properties else mat.get("elastic_modulus")
+        mat = mp.get_material(self.cfg["avi_bay"]["clamshell_material"])
+        E = mat.get("elastic_modulus")
         self.EI = E * geo.annulus_second_moment(self.radius, r_i)
 
     def get_area(self):
