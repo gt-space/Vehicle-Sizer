@@ -17,6 +17,8 @@ def history_rows(history: list) -> list[dict]:
     rows = []
     for state in history:
         kin = state["kinematics"]
+        speed = np.hypot(kin.vx, kin.vz)
+        gamma = np.arctan2(kin.vz, kin.vx) if speed > 1.0e-8 else kin.theta
         atmosphere = state["atmosphere"]
         aero = state["plant"].aero
         propulsion = state["plant"].fluids.propulsion
@@ -25,17 +27,32 @@ def history_rows(history: list) -> list[dict]:
         mass = state["mass_properties"]
         row = {
             "time_s": kin.t,
+
+            "x_m": kin.x,  # added horizontal position
             "altitude_m": kin.h,
+
+            "vx_m_s": kin.vx,  # added horizontal velocity
+            "vz_m_s": kin.vz,  # added explicit vertical velocity
+            "speed_m_s": np.hypot(kin.vx, kin.vz),  # added total inertial speed
             "velocity_m_s": kin.vz,  # replaced v with vertical velocity vz
+
             "acceleration_m_s2": forces["acceleration"],
+
+            "flight_path_angle_deg": np.degrees(np.arctan2(kin.vz, kin.vx) if np.hypot(kin.vx, kin.vz) > 1.0e-8 else kin.theta),  # added flight-path angle
+            "pitch_angle_deg": np.degrees(kin.theta),  # added pitch angle
             "angle_of_attack_deg": np.degrees(kin.alpha),
+
+            "pitch_rate_rad_s": kin.q,  # added explicit pitch rate
             "angular_rate_rad_s": kin.q,  # replaced w with pitch rate q
+
             "mass_kg": mass["total_mass"],
             "cg_m": mass["cg"],
             "Iyy_kg_m2": mass["Iyy"],  # replaced Ixx with pitch inertia, Iyy
+
             "ambient_pressure_Pa": atmosphere.p,
             "mach": atmosphere.Ma,
             "dynamic_pressure_Pa": atmosphere.q,
+
             "Cd": aero.Cd,
             "drag_N": forces["drag"],
             "Ca": aero.Ca,
@@ -43,12 +60,14 @@ def history_rows(history: list) -> list[dict]:
             "Cn": aero.Cn,
             "normal_force_N": aero.N,
             "cp_m": aero.cp,
+
             "thrust_N": propulsion.thrust,
             "chamber_pressure_Pa": propulsion.Pc,
             "mixture_ratio": propulsion.MR,
             "oxidizer_mdot_kg_s": propulsion.mdot_ox,
             "fuel_mdot_kg_s": propulsion.mdot_fuel,
             "nozzle_mdot_kg_s": propulsion.mdot_nozzle,
+
             "engine_mode": propulsion.mode,
             "engine_on": state["engine_on"],
             "on_rail": state["on_rail"],
