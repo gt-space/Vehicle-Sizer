@@ -334,6 +334,8 @@ class FlightSim:
         ax = Fx / mass
         az = Fz / mass
 
+        axial_specific_force = (thrust - axial_aero) / mass # needed for fluid head pressure 
+
         pitch_moment = -normal_aero * (cp - cg)
         pitch_acceleration = pitch_moment / kin.Iyy
 
@@ -346,6 +348,7 @@ class FlightSim:
             "Fz": Fz,
             "ax": ax,
             "az": az,
+            "axial_specific_force": axial_specific_force,
             "pitch_moment": pitch_moment,
             "pitch_acceleration": pitch_acceleration,
             "twr": thrust / weight,
@@ -553,10 +556,7 @@ class FlightSim:
                         predicted_atmosphere,
                         predicted_aero,
                         fluid_state,
-                        axial_specific_force=(
-                            start_forces["thrust"] - start_forces["drag"]
-                        )
-                        / mass,
+                       axial_specific_force=start_forces["axial_specific_force"],
                     )
                 except RuntimeError as error:
                     raise RuntimeError(
