@@ -317,6 +317,34 @@ class FlightSim:
             ),
         )
 
+    # this is only for 3DOF
+    # wind modifications already included
+    @staticmethod
+    def flight_kinematics(
+        kin: KinematicsState,
+        wind_x: float = 0.0,
+        wind_z: float = 0.0,
+    ):
+        speed = math.hypot(kin.vx, kin.vz)
+
+        # flight-path angle
+        gamma = math.atan2(kin.vz, kin.vx) if speed > 1.0e-8 else kin.theta # if vehicle is on rail
+
+        vx_air = kin.vx - wind_x
+        vz_air = kin.vz - wind_z
+
+        airspeed = math.hypot(vx_air, vz_air)
+
+        if airspeed > 1.0e-8:
+            gamma_air = math.atan2(vz_air, vx_air)
+            alpha = kin.theta - gamma_air # angle of attack (wind-relative)
+        else:
+            gamma_air = kin.theta # flight-path relative to wind 
+            alpha = 0.0
+
+        return speed, gamma, airspeed, gamma_air, alpha
+
+
     def run(self, h0: float = 0.0, v0: float = 0.0, *, progress=None,
             record_history: bool = True, compute_loads: bool = True) -> List[Dict[str, Any]]:
         """Run the 1D trajectory with an explicit-implicit predictor-corrector."""
@@ -339,7 +367,7 @@ class FlightSim:
         corrector_tolerance = float(advanced.get("corrector_tolerance", 1.0e-8))
         corrector_max_iterations = int(advanced.get("corrector_max_iterations", 10))
 
-        atmosphere = self.env.atmosphere(h0, v0)
+        atmosphere = self.env.atmosphere(h0, abs(v0))
         fluid_state = self.commit_fluid(
             dt=None,
             atm=atmosphere,
@@ -347,16 +375,23 @@ class FlightSim:
         )
         self.vehicle.update_mass_distribution(fluid_state.node)
         mass = float(self.vehicle.total_mass)
-        inertia = float(self.vehicle.Ixx)
+        inertia = float(self.vehicle.Iyy)
+
+        # initial condition definition
+        # might be good to eventually put these in the config so that they're not hardcoded
+        # also could add automatic initial condition calcs from rail height and angle.
         kin = KinematicsState(
             t=0.0,
             dt=dt,
+            x=0.0, 
             h=h0,
-            v=v0,
-            w=0.0,
+            vx=0.0,
+            vz=v0,
+            theta=np.pi / 2,
+            q=0.0,
             alpha=0.0,
             m=mass,
-            Ixx=inertia,
+            Iyy=inertia,
         )
         history: List[Dict[str, Any]] = []
         result = self.result = SimResult(
@@ -392,7 +427,10 @@ class FlightSim:
                 m=mass,
                 Ixx=inertia,
             )
-            atmosphere = self.env.atmosphere(kin.h, kin.v)
+
+            _, _, airspeed, _, _ = self.flight_kinematics(kin)
+            atmosphere = self.env.atmosphere(kin.h, airspeed) # uses updated 3DOF atm lookup
+
             engine_on = self.engine_on(fluid_state.propulsion)
             aero_out = self.trial_aero(kin, atmosphere, engine_on)
             self._record_extrema(result, atmosphere, aero_out)
@@ -414,10 +452,15 @@ class FlightSim:
                 predicted_kin,
                 alpha=self.angle_of_attack(predicted_kin.t, predicted_kin.h),
             )
+
+            # New 3DOF flight kinematics used for predictor step
+            _, _, predicted_airspeed, _, _ = self.flight_kinematics(predicted_kin)
             predicted_atmosphere = self.env.atmosphere(
                 predicted_kin.h,
-                predicted_kin.v,
+                predicted_airspeed,
             )
+
+
             predicted_aero = self.trial_aero(
                 predicted_kin,
                 predicted_atmosphere,
@@ -461,7 +504,11 @@ class FlightSim:
                 Ixx=inertia,
             )
             for _ in range(corrector_max_iterations):
-                trial_atmosphere = self.env.atmosphere(next_kin.h, next_kin.v)
+
+                # new 3DOF kinematics function
+                _, _, trial_airspeed, _, _ = self.flight_kinematics(next_kin)
+                trial_atmosphere = self.env.atmosphere(next_kin.h, trial_airspeed)
+
                 trial_aero = self.trial_aero(
                     next_kin,
                     trial_atmosphere,
@@ -506,7 +553,10 @@ class FlightSim:
                 )
 
             # Re-evaluate the complete corrected endpoint for history.
-            end_atmosphere = self.env.atmosphere(next_kin.h, next_kin.v)
+
+            _, _, end_airspeed, _, _ = self.flight_kinematics(next_kin) # 3DOF kinematics
+            end_atmosphere = self.env.atmosphere(next_kin.h, end_airspeed)
+
             end_aero = self.trial_aero(next_kin, end_atmosphere, end_engine_on)
             end_plant = PlantOut(
                 aero=end_aero,

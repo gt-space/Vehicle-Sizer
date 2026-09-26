@@ -4,18 +4,21 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from constraints import ConstraintRecord, feasibility
 
-
+# Updated  state vector class with x, vx, and pitch
+# Iyy is used over Ixx for pitch
 @dataclass
 class KinematicsState:
     t: float
     dt: float
-    h: float
-    v: float
-    w: float
-    alpha: float
+    x: float # horizontal movement in plane
+    h: float # altitude direction, z
+    vx: float # horizontal speed
+    vz: float # vertical speed
+    theta: float # pitch angle (about y-axis)
+    q: float # pitch rate
+    alpha: float # angle of attack
     m: float
-    Ixx: float
-
+    Iyy: float # mass moment of inertia about y-axis
 
 @dataclass
 class AtmosState:

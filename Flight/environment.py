@@ -1,6 +1,6 @@
 """Atmosphere model: US Standard Atmosphere 1976 (full 0-1000 km standard via
 the `ussa1976` package), tabulated once and interpolated for fast per-timestep
-lookups. `Environment.atmosphere(h, v)` returns the freestream AtmosState."""
+lookups. `Environment.atmosphere(h, airspeed)` returns the freestream AtmosState."""
 import numpy as np
 import ussa1976
 from simulation_types import AtmosState
@@ -22,13 +22,13 @@ class Environment:
         self._log_p = np.log(ds["p"].values)
         self._log_rho = np.log(ds["rho"].values)
 
-    def atmosphere(self, h: float, v: float) -> AtmosState:
+    def atmosphere(self, h: float, airspeed: float) -> AtmosState:
         T = np.interp(h, self._z, self._T)
         p = np.exp(np.interp(h, self._z, self._log_p))
         rho = np.exp(np.interp(h, self._z, self._log_rho))
         a = np.sqrt(GAMMA * R_AIR * T)
         mu = sutherland(T)
-        Ma = abs(v) / a
-        q = 0.5 * rho * v**2
+        Ma = abs(airspeed) / a
+        q = 0.5 * rho * airspeed**2
         return AtmosState(T=float(T), p=float(p), rho=float(rho), mu=float(mu),
                           a=float(a), q=float(q), Ma=float(Ma))
