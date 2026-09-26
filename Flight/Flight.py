@@ -257,29 +257,42 @@ class FlightSim:
     @staticmethod
     def correct_kinematics(
         kin: KinematicsState,
-        start_acceleration: float,
-        end_acceleration: float,
+        start_forces: Dict[str, float],
+        end_forces: Dict[str, float],
         mass: float,
         Iyy: float,
     ) -> KinematicsState:
         """Apply the implicit trapezoidal corrector to the predicted endpoint."""
 
         dt = kin.dt
-        velocity = kin.vz + 0.5 * (start_acceleration + end_acceleration) * dt
-        altitude = kin.h + 0.5 * (kin.vz + velocity) * dt
+
+        # new corrector equations for 3DOF
+        vx = kin.vx + 0.5 * (start_forces["ax"] + end_forces["ax"]) * dt
+
+        vz = kin.vz + 0.5 * (start_forces["az"] + end_forces["az"]) * dt
+
+        x = kin.x + 0.5 * (kin.vx + vx) * dt
+        h = kin.h + 0.5 * (kin.vz + vz) * dt
+
+        q = kin.q + 0.5 * (start_forces["pitch_acceleration"] + end_forces["pitch_acceleration"]) * dt
+
+        theta = kin.theta + 0.5 * (kin.q + q) * dt
+
         return KinematicsState(
             t=kin.t + dt,
             dt=dt,
-            x=kin.x,
-            h=altitude,
-            vx=kin.vx,
-            vz=velocity,
-            theta=kin.theta,
-            q=kin.q,
+            x=x,
+            h=h,
+            vx=vx,
+            vz=vz,
+            theta=theta,
+            q=q,
             alpha=kin.alpha,
             m=mass,
             Iyy=Iyy,
         )
+
+
 
     def forces(
         self,
@@ -570,15 +583,16 @@ class FlightSim:
                     thermal=None,
                     fluids=fluid_state,
                 )
-                end_acceleration = self.forces(
+                end_forces = self.forces(
                     next_kin,
                     trial_plant,
                     mass,
-                )["acceleration"]
+                )
+
                 corrected_kin = self.correct_kinematics(
                     kin,
-                    start_forces["acceleration"],
-                    end_acceleration,
+                    start_forces,
+                    end_forces,
                     mass,
                     inertia,
                 )
@@ -587,10 +601,23 @@ class FlightSim:
                     corrected_alpha = 0.0
                 corrected_kin = replace(corrected_kin, alpha=corrected_alpha)
                 error = max(
+                    abs(corrected_kin.x - next_kin.x)
+                    / (1.0 + abs(corrected_kin.x)),
+
                     abs(corrected_kin.h - next_kin.h)
                     / (1.0 + abs(corrected_kin.h)),
+
+                    abs(corrected_kin.vx - next_kin.vx)
+                    / (1.0 + abs(corrected_kin.vx)),
+
                     abs(corrected_kin.vz - next_kin.vz)
                     / (1.0 + abs(corrected_kin.vz)),
+
+                    abs(corrected_kin.theta - next_kin.theta)
+                    / (1.0 + abs(corrected_kin.theta)),
+
+                    abs(corrected_kin.q - next_kin.q)
+                    / (1.0 + abs(corrected_kin.q)),
                 )
                 next_kin = corrected_kin
                 if error <= corrector_tolerance:
