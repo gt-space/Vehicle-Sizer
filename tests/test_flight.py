@@ -132,12 +132,12 @@ class FlightSkeletonTests(unittest.TestCase):
         start_acceleration = (300.0 - gravity(16.0, 0.0)) / 16.0
         end_acceleration = history[0]["forces"]["acceleration"]
         self.assertAlmostEqual(
-            history[0]["kinematics"].v,
+            history[0]["kinematics"].vz,  # replaced v with vertical velocity vz
             0.5 * (start_acceleration + end_acceleration) * 0.1,
         )
         self.assertAlmostEqual(
             history[0]["kinematics"].h,
-            0.5 * history[0]["kinematics"].v * 0.1,
+            0.5 * history[0]["kinematics"].vz * 0.1,  # replaced v with vz
         )
 
     def test_history_is_synchronized_at_end_of_step(self):

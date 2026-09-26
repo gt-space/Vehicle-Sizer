@@ -5,3 +5,4 @@ __pycache__/
 outputs/
 FluidProperties/*.h5
 AeroTables/*.h5
+.DS_Store

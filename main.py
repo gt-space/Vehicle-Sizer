@@ -26,13 +26,13 @@ def history_rows(history: list) -> list[dict]:
         row = {
             "time_s": kin.t,
             "altitude_m": kin.h,
-            "velocity_m_s": kin.v,
+            "velocity_m_s": kin.vz,  # replaced v with vertical velocity vz
             "acceleration_m_s2": forces["acceleration"],
             "angle_of_attack_deg": np.degrees(kin.alpha),
-            "angular_rate_rad_s": kin.w,
+            "angular_rate_rad_s": kin.q,  # replaced w with pitch rate q
             "mass_kg": mass["total_mass"],
             "cg_m": mass["cg"],
-            "Ixx_kg_m2": mass["Ixx"],
+            "Iyy_kg_m2": mass["Iyy"],  # replaced Ixx with pitch inertia, Iyy
             "ambient_pressure_Pa": atmosphere.p,
             "mach": atmosphere.Ma,
             "dynamic_pressure_Pa": atmosphere.q,
