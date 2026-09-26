@@ -214,6 +214,7 @@ class FlightSim:
         self.thermal.commit(thermal_out)
         return fluids, thermal_out
 
+
     def predict_kinematics(
         self,
         kin: KinematicsState,
@@ -224,23 +225,34 @@ class FlightSim:
 
         dt = kin.dt
         forces = self.forces(kin, plant, mass)
-        acceleration = forces["acceleration"]
-        velocity = kin.vz + acceleration * dt
-        altitude = kin.h + kin.vz * dt + 0.5 * acceleration * dt**2
+
+        ax = forces["ax"]
+        az = forces["az"]
+        q_dot = forces["pitch_acceleration"]
+
+        vx = kin.vx + ax * dt
+        vz = kin.vz + az * dt
+
+        x = kin.x + kin.vx * dt + 0.5 * ax * dt**2
+        h = kin.h + kin.vz * dt + 0.5 * az * dt**2
+
+        q = kin.q + q_dot * dt
+        theta = kin.theta + kin.q * dt + 0.5 * q_dot * dt**2
 
         return KinematicsState(
             t=kin.t + dt,
             dt=dt,
-            x=kin.x,
-            h=altitude,
-            vx=kin.vx,
-            vz=velocity,
-            theta=kin.theta,
-            q=kin.q,
+            x=x,
+            h=h,
+            vx=vx,
+            vz=vz,
+            theta=theta,
+            q=q,
             alpha=kin.alpha,
             m=mass,
             Iyy=kin.Iyy,
         )
+
 
     @staticmethod
     def correct_kinematics(
@@ -269,30 +281,67 @@ class FlightSim:
             Iyy=Iyy,
         )
 
-    @staticmethod
     def forces(
+        self,
         kin: KinematicsState,
         plant: PlantOut,
         mass: float,
     ) -> Dict[str, float]:
-        """Return the forces and acceleration at one synchronized state."""
+        """
+        Forces, moments, and state derivatives needed to update the 3DOF state vector.
+        From this, only the accelerations and pitch rate outputs really matter.
+        """
 
         thrust = float(plant.fluids.propulsion.thrust)
-        drag = math.copysign(float(plant.aero.D), kin.vz) if kin.vz != 0.0 else 0.0
+        axial_aero = float(plant.aero.A)
+        normal_aero = float(plant.aero.N)
+        cp = float(plant.aero.cp)
+        cg = float(self.vehicle.cg)
         weight = gravity(mass, kin.h)
-        if not all(math.isfinite(x) for x in (thrust, drag, weight, mass, kin.h, kin.vz)) or mass <= 0 or weight <= 0:
+
+        if (not all(math.isfinite(x) for x in (
+                    thrust,
+                    axial_aero,
+                    normal_aero,
+                    cp,
+                    cg,
+                    weight,
+                    mass,
+                    kin.h,
+                    kin.theta,
+                    kin.Iyy,
+                )
+            ) or mass <= 0.0 or weight <= 0.0 or kin.Iyy <= 0.0
+        ):
             raise ValueError("Nonphysical or nonfinite flight force state")
-        vertical_thrust = thrust * math.cos(kin.alpha)
-        net = vertical_thrust - drag - weight
+
+        Fx = (thrust - axial_aero) * math.cos(kin.theta) - normal_aero * math.sin(kin.theta)
+        Fz = (thrust - axial_aero) * math.sin(kin.theta) + normal_aero * math.cos(kin.theta) - weight
+
+        ax = Fx / mass
+        az = Fz / mass
+
+        pitch_moment = -normal_aero * (cp - cg)
+        pitch_acceleration = pitch_moment / kin.Iyy
+
         return {
             "thrust": thrust,
-            "vertical_thrust": vertical_thrust,
-            "drag": drag,
+            "axial_aero": axial_aero,
+            "normal_aero": normal_aero,
             "gravity": weight,
-            "net": net,
-            "acceleration": net / mass,
+            "Fx": Fx,
+            "Fz": Fz,
+            "ax": ax,
+            "az": az,
+            "pitch_moment": pitch_moment,
+            "pitch_acceleration": pitch_acceleration,
             "twr": thrust / weight,
+            "drag": axial_aero,
+            "net": Fz,
+            "acceleration": az,
         }
+
+
 
     def mass_properties(self) -> Dict[str, Any]:
         """Snapshot the vehicle mass state so later updates cannot alter history."""
