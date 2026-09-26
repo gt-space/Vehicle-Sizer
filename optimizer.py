@@ -264,9 +264,6 @@ def prepare(settings, model):
         raise ValueError("Search requires goal_apogee and max_burn_duration")
     if cfg["environment"]["max_altitude"] <= limits["goal_apogee"]:
         raise ValueError("Atmosphere max_altitude must exceed goal_apogee")
-    schedule = cfg["aero"]["aoa_schedule"]
-    if schedule[0][0] > 0 or schedule[-1][0] < cfg["simulation"]["t_end"]:
-        raise ValueError("AoA schedule must cover the evaluation horizon")
     paths = variable_paths(cfg, ids)
     if set(settings["bounds"]) != set(paths):
         raise ValueError(f"Bounds must contain exactly: {list(paths)}")

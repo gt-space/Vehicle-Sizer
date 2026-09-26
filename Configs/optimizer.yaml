@@ -15,7 +15,6 @@ verification_dt_factor: 0.5  # One extra flight of the winner, with load peaks
 evaluation_overrides:
   simulation.t_end: 600.0
   environment.max_altitude: 300000.0
-  aero.aoa_schedule: [[0.0, 5.0], [600.0, 5.0]]
 
 bounds:
   # Full dragmodel ranges converted from inches to metres. Length and nozzle

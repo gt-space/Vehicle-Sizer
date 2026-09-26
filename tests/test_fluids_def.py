@@ -1,11 +1,11 @@
 import unittest
 
-from Flight.FluidsDef import FluidsDef
+from Fluids.FluidsDef import coolprop_state
 
 
 class FluidsDefTests(unittest.TestCase):
     def test_near_critical_nitrogen_pt_state(self):
-        state = FluidsDef.coolprop_state(
+        state = coolprop_state(
             fluid="Nitrogen",
             input_1="P",
             value_1=3_368_884.784,

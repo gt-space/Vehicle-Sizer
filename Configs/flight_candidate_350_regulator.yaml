@@ -58,11 +58,6 @@ aero:
   nose: vonkarman
   finish: 20um
   fins_on_boattail: true
-  aoa_schedule:
-  - - 0.0
-    - 5.0
-  - - 600.0
-    - 5.0
 property_models:
   pure_fluid:
     source: table

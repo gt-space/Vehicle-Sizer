@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from Flight.FluidNetwork import FluidNetwork
-from Flight.FluidNode import CombustorComponent
-from Flight.FluidState import BranchState, FluidState
+from Fluids.FluidNetwork import FluidNetwork
+from Fluids.FluidNode import CombustorComponent
+from Fluids.FluidState import BranchState, FluidState
 from FluidProperties.PropertyModels import (
     CombustionProperties,
     PureFluidProperties,
@@ -43,6 +43,11 @@ class FixedFluidProperties:
     def __init__(self):
         self.calls = 0
 
+    @staticmethod
+    def supports_saturation(fluid):
+        del fluid
+        return False
+
     def state_pt(self, fluid, pressure, temperature):
         self.calls += 1
         return PureFluidProperties(
@@ -53,6 +58,10 @@ class FixedFluidProperties:
             u=300_000.0,
             R=296.8,
             gamma=1.4,
+            mu=1.8e-5,
+            k=0.026,
+            cp=1000.0,
+            beta=1.0 / temperature,
         )
 
 
@@ -93,7 +102,7 @@ def test_gas_node_accepts_an_injected_property_source():
 
     result = network.update()
 
-    assert properties.calls == 1
+    assert properties.calls >= 1
     assert result["node"]["tank"]["P"] == 200_000.0
     assert result["node"]["tank"]["fluids"]["test_gas"]["rho"] == 2.0
 

@@ -4,22 +4,22 @@ from dataclasses import dataclass
 
 from CoolProp.CoolProp import PropsSI
 
-from Flight.FluidBranch import (
+from Fluids.FluidBranch import (
     BangBangValveComponent,
     CompressibleLossModel,
     FluidBranch,
     IncompressibleLossModel,
     TwinPathNozzleModel,
 )
-from Flight.FluidNetwork import FluidNetwork, NetworkState
-from Flight.FluidNode import (
+from Fluids.FluidNetwork import FluidNetwork, NetworkState
+from Fluids.FluidNode import (
     CombustionModel,
     CombustorComponent,
     FluidNode,
     JunctionModel,
     TwinPathJunctionModel,
 )
-from Flight.FluidState import BranchState, FluidState, NodeState
+from Fluids.FluidState import BranchState, FluidState, NodeState
 from FluidProperties.PropertyModels import CEAPropertySource, CoolPropPropertySource
 
 

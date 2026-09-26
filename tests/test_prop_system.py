@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from CoolProp.CoolProp import PropsSI
 
-from Flight.FluidBranch import BangBangValveComponent
-from Flight.PropSystem import PropSystem
+from Fluids.FluidBranch import BangBangValveComponent
+from Fluids.PropSystem import PropSystem
 from FluidProperties.PropertyModels import TableCombustionPropertySource
 
 

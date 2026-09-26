@@ -23,7 +23,7 @@ from simulation_types import (
 
 
 class FlightSim:
-    """Coordinate atmosphere, propulsion, vehicle mass, and 1D kinematics."""
+    """Coordinate atmosphere, propulsion, vehicle mass, and planar 3DOF kinematics."""
 
     def __init__(
         self,
@@ -306,6 +306,7 @@ class FlightSim:
         """
 
         thrust = float(plant.fluids.propulsion.thrust)
+        drag = float(plant.aero.D)
         axial_aero = float(plant.aero.A)
         normal_aero = float(plant.aero.N)
         cp = float(plant.aero.cp)
@@ -314,6 +315,7 @@ class FlightSim:
 
         if (not all(math.isfinite(x) for x in (
                     thrust,
+                    drag,
                     axial_aero,
                     normal_aero,
                     cp,
@@ -341,6 +343,7 @@ class FlightSim:
 
         return {
             "thrust": thrust,
+            "drag": drag,
             "axial_aero": axial_aero,
             "normal_aero": normal_aero,
             "gravity": weight,
@@ -352,7 +355,6 @@ class FlightSim:
             "pitch_moment": pitch_moment,
             "pitch_acceleration": pitch_acceleration,
             "twr": thrust / weight,
-            "drag": axial_aero,
             "net": Fz,
             "acceleration": az,
         }
@@ -417,7 +419,8 @@ class FlightSim:
 
         if airspeed > 1.0e-8:
             gamma_air = math.atan2(vz_air, vx_air)
-            alpha = kin.theta - gamma_air # angle of attack (wind-relative)
+            angle = kin.theta - gamma_air
+            alpha = math.atan2(math.sin(angle), math.cos(angle)) # angle of attack (wind-relative)
         else:
             gamma_air = kin.theta # flight-path relative to wind 
             alpha = 0.0 # on rail
@@ -427,7 +430,7 @@ class FlightSim:
 
     def run(self, h0: float = 0.0, v0: float = 0.0, *, progress=None,
             record_history: bool = True, compute_loads: bool = True) -> List[Dict[str, Any]]:
-        """Run the 1D trajectory with an explicit-implicit predictor-corrector."""
+        """Run the planar 3DOF trajectory with an explicit-implicit predictor-corrector."""
 
         if self.vehicle.total_mass is None:
             raise RuntimeError("Vehicle must be built before starting FlightSim")
@@ -757,7 +760,7 @@ class FlightSim:
         return altitude < rail_end
 
     def angle_of_attack(self, time: float, altitude: float) -> float:
-        """Return zero on the rail and the scheduled AoA after rail exit."""
+        """Legacy scheduled-AoA helper; trajectory propagation derives AoA from state."""
 
         return 0.0 if self.on_rail(altitude) else self.aero.aoa(time)
 
