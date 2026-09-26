@@ -134,7 +134,7 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     base_path.parent.mkdir(parents=True, exist_ok=True)
     paths = {name: _path(base_path, name) for name in (
         "pressure_ladder", "copv_blowdown", "tank_temperatures",
-        "propellant_mass", "pc_thrust", "kinematics", "axial_temperatures",
+        "propellant_mass", "pc_thrust", "kinematics", "trajectory", "axial_temperatures",
         "bang_bang", "pressurant_mdot", "engine_mdot_mr", "mass_distribution",
         "axial_force_distribution", "normal_force_distribution",
     )}
@@ -183,20 +183,66 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     _mark_burnout(pressure_axis, burnout)
     _finish(figure, [pressure_axis, thrust_axis], paths["pc_thrust"])
 
-    figure, axes = plt.subplots(3, 2, figsize=(12, 10), sharex=True)
-    for axis, name, label, scale in zip(axes.flat,
-        ("altitude_m", "velocity_m_s", "acceleration_m_s2", "mach", "dynamic_pressure_Pa", "angle_of_attack_deg"),
-        ("Altitude [m]", "Velocity [m/s]", "Acceleration [m/s²]", "Mach", "Dynamic pressure [kPa]", "Angle of attack [deg]"),
-        (1, 1, 1, 1, 1e-3, 1)):
-        axis.plot(time, _series(rows, name, scale))
-        axis.set_ylabel(label)
+    figure, axes = plt.subplots(4, 2, figsize=(12, 13), sharex=True)
+
+    axes[0, 0].plot(time, _series(rows, "altitude_m"))
+    axes[0, 0].set_ylabel("Altitude [m]")
+
+    axes[0, 1].plot(time, _series(rows, "x_m"))
+    axes[0, 1].set_ylabel("Downrange distance [m]")
+
+    axes[1, 0].plot(time, _series(rows, "speed_m_s"), label="Speed")
+    axes[1, 0].plot(time, _series(rows, "vx_m_s"), label="Horizontal velocity")
+    axes[1, 0].plot(time, _series(rows, "vz_m_s"), label="Vertical velocity")
+    axes[1, 0].set_ylabel("Velocity [m/s]")
+
+    axes[1, 1].plot(time, _series(rows, "acceleration_m_s2"))
+    axes[1, 1].set_ylabel("Vertical acceleration [m/s²]")
+
+    axes[2, 0].plot(time, _series(rows, "mach"))
+    axes[2, 0].set_ylabel("Mach")
+
     q = _series(rows, "dynamic_pressure_Pa", 1e-3)
+    axes[2, 1].plot(time, q)
     max_q = int(np.nanargmax(q))
-    axes[2, 0].plot(time[max_q], q[max_q], "o", label=f"Max Q: {q[max_q]:.1f} kPa at {time[max_q]:.1f} s")
+    axes[2, 1].plot(
+        time[max_q],
+        q[max_q],
+        "o",
+        label=f"Max Q: {q[max_q]:.1f} kPa at {time[max_q]:.1f} s",
+    )
+    axes[2, 1].set_ylabel("Dynamic pressure [kPa]")
+
+    axes[3, 0].plot(time, _series(rows, "pitch_angle_deg"), label="Pitch angle")
+    axes[3, 0].plot(
+        time,
+        _series(rows, "flight_path_angle_deg"),
+        label="Flight-path angle",
+    )
+    axes[3, 0].plot(
+        time,
+        _series(rows, "angle_of_attack_deg"),
+        label="Angle of attack",
+    )
+    axes[3, 0].set_ylabel("Angle [deg]")
+
+    axes[3, 1].plot(time, _series(rows, "pitch_rate_rad_s"))
+    axes[3, 1].set_ylabel("Pitch rate [rad/s]")
+
     for axis in axes[-1]:
         axis.set_xlabel("Time [s]")
+
     figure.suptitle("Kinematics")
     _finish(figure, axes, paths["kinematics"], burnout)
+
+    figure, axis = plt.subplots(figsize=(8, 8))
+    axis.plot(_series(rows, "x_m"), _series(rows, "altitude_m"))
+    axis.set(
+        xlabel="Downrange distance [m]",
+        ylabel="Altitude [m]",
+        title="Flight trajectory",
+    )
+    _finish(figure, axis, paths["trajectory"])
 
     thermal = history[0]["plant"].thermal
     if thermal is None:
