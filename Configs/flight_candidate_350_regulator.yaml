@@ -10,7 +10,7 @@
 # Tank inlet pressures, vehicle length, and nozzle exit remain derived.
 simulation:
   dt: 1.0
-  t_end: 87.0
+  t_end: 600.0
   fluid_solve_post_shutdown: true
   fluid_stop_at_triple_point: true  # Freeze all fluids at the saturation-table floor; coast continues.
   output: outputs/candidate_350_bang_bang/flight.csv
