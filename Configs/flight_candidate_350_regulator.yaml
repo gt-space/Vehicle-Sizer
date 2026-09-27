@@ -1,5 +1,5 @@
 # Candidate 350 from outputs/search-population3x-004/evaluations.jsonl.
-# Modified from that run's base.yaml and saved design variables; now uses bang-bang.
+# Modified from that run's base.yaml and saved design variables; now uses regulators.
 # Historical optimizer result (not this modified config):
 # apogee 131631.7675 m; initial mass 584.9822 kg; goal_apogee 18368.2325 m short.
 # Goal and burn limit retain the saved run's values: 150000 m and 75 s.
@@ -10,11 +10,11 @@
 # Tank inlet pressures, vehicle length, and nozzle exit remain derived.
 simulation:
   dt: 1.0
-  t_end: 600.0
+  t_end: 100.0
   fluid_solve_post_shutdown: true
   fluid_stop_at_triple_point: true  # Freeze all fluids at the saturation-table floor; coast continues.
-  output: outputs/candidate_350_bang_bang/flight.csv
-  plot: outputs/candidate_350_bang_bang/flight.png
+  output: outputs/candidate_350_regulator/flight.csv
+  plot: outputs/candidate_350_regulator/flight.png
 constraints:
   goal_apogee: 150000.0
   max_burn_duration: 75.0
@@ -84,8 +84,8 @@ engine:
   length: 0.5715
 prop_system:
   feed_type: pump_fed
-  pressurization: bang_bang
-  # pressurization: regulator  # Restore together with the regulator block below.
+  # pressurization: bang_bang
+  pressurization: regulator
   Pc_target: 1803895.652816386
   MR_target: 2.1
   thrust_target: 16000
@@ -130,32 +130,32 @@ prop_system:
   ox_inj_pumpout_dp: 275790
   fuel_inj_pumpout_dp: 275790
   nozzle_cd: 1.0
-  bang_bang:
-    OX_BANGBANG:
-      tank_id: ox_tank
-      duty_cycle: 0.125  # Same sized valve capacity as regulator capacity_factor: 8.0.
-      collapse_factor: 1.2
-      min_temperature: 220.0
-      pressure_band: 34473.786466  # Pa, +/-5 psi around the derived tank pressure.
-      initially_open: true
-    FUEL_BANGBANG:
-      tank_id: fuel_tank
-      duty_cycle: 0.125
-      collapse_factor: 1.2
-      min_temperature: 220.0
-      pressure_band: 34473.786466  # Pa, +/-5 psi.
-      initially_open: true
-  # regulator:
-  #   OX_REGULATOR:
+  # bang_bang:
+  #   OX_BANGBANG:
   #     tank_id: ox_tank
-  #     capacity_factor: 8.0
+  #     duty_cycle: 0.125  # Same sized valve capacity as regulator capacity_factor: 8.0.
   #     collapse_factor: 1.2
   #     min_temperature: 220.0
-  #   FUEL_REGULATOR:
+  #     pressure_band: 34473.786466  # Pa, +/-5 psi around the derived tank pressure.
+  #     initially_open: true
+  #   FUEL_BANGBANG:
   #     tank_id: fuel_tank
-  #     capacity_factor: 8.0
+  #     duty_cycle: 0.125
   #     collapse_factor: 1.2
   #     min_temperature: 220.0
+  #     pressure_band: 34473.786466  # Pa, +/-5 psi.
+  #     initially_open: true
+  regulator:
+    OX_REGULATOR:
+      tank_id: ox_tank
+      capacity_factor: 8.0
+      collapse_factor: 1.2
+      min_temperature: 220.0
+    FUEL_REGULATOR:
+      tank_id: fuel_tank
+      capacity_factor: 8.0
+      collapse_factor: 1.2
+      min_temperature: 220.0
   state0:
     press_tank:
       fluid: Nitrogen
