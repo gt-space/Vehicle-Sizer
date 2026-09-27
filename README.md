@@ -23,12 +23,7 @@ result = simulate(cfg)
 print(result.dry_mass, result.initial_mass, result.apogee)
 ```
 
-
-`compute_loads=True` evaluates load distributions and retains absolute peaks
-in `load_peaks`; distributions are stored only when history is enabled.
-No flight structural acceptance constraints are imposed.
-`main.py` is the separate CLI/CSV/plotting layer.
-
+`compute_loads=True` evaluates load distributions 
 `simulation.fluid_stop_at_triple_point: true` freezes the entire
 fluid network when any stored fluid with saturation data reaches the lower
 saturation-domain boundary, never turn this off, I don't know how to get around this as it would 
