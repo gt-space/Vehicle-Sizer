@@ -1,10 +1,11 @@
 import unittest
+from copy import deepcopy
 
 import numpy as np
 
 from Flight.Flight import FlightSim
 from Flight.flight_forces import gravity
-from Flight.types import (
+from simulation_types import (
     AeroOut,
     AtmosState,
     FluidOut,
@@ -22,27 +23,45 @@ class FakeEnvironment:
 
 
 class FakeAero:
+    reference_area = 1.0
+
     @staticmethod
     def aoa(time):
         return 0.1 + 0.01 * time
 
     @staticmethod
     def evaluate(kinematics, atmosphere, engine_on):
-        return AeroOut(Cd=0.0, D=0.0, heat_bc={})
+        return AeroOut(Cd=0.0, D=0.0)
+
+    @staticmethod
+    def normal_distribution(mach, alpha):
+        del mach, alpha
+        return {"x": np.array([0.0, 2.0]), "dcn_dx": np.zeros(2)}
+
+    @staticmethod
+    def axial_distribution(mach, alpha, engine_on):
+        return dict(x=np.array([0., 2.]), dca_dx=np.zeros(2),
+                    parts={"base": np.zeros(2)}, point_loads={"base": (2., 0.)}, ca=0.)
 
 
 class FakePropSystem:
     def __init__(self):
         self.calls = []
 
+    def checkpoint(self):
+        return deepcopy(self.__dict__)
+
+    def restore(self, checkpoint):
+        self.__dict__ = deepcopy(checkpoint)
+
     def update(
-        self, dt, atm, heat_flux, commit=True, axial_specific_force=0.0
+        self, dt, atm, heat_rate, commit=True, axial_specific_force=0.0
     ):
         self.calls.append(
             {
                 "dt": dt,
                 "atm": atm,
-                "heat_flux": heat_flux,
+                "heat_rate": heat_rate,
                 "commit": commit,
                 "axial_specific_force": axial_specific_force,
             }
@@ -80,14 +99,29 @@ class FakePropSystem:
         )
 
 
+class ShutdownPropSystem(FakePropSystem):
+    def update(self, dt, atm, heat_rate, commit=True, axial_specific_force=0.0):
+        output = super().update(dt, atm, heat_rate, commit, axial_specific_force)
+        output.mdot = {"OX_INJ": 1.0, "FUEL_INJ": 0.5, "NOZZLE": 1.5}
+        if dt is not None:
+            output.propulsion.mode = "shutdown"
+            output.propulsion.shutdown_reason = "oxidizer_unavailable"
+            output.events = ({"event": "dryout"},)
+        return output
+
+
 class FakeVehicle:
     def __init__(self):
         self.total_mass = 10.0
         self.Ixx = 2.0
         self.Iyy = 3.0
         self.cg = 1.0
+        self.length = 2.0
         self.station = np.array([0.0, 1.0])
+        self.cell_edges = np.array([0.0, 1.0, 2.0])
+        self.engine_start_station = 1.0
         self.mass = np.array([5.0, 5.0])
+        self.EI = np.ones(2)
 
     def update_mass_distribution(self, node_states):
         self.total_mass = 10.0 + sum(
@@ -113,12 +147,20 @@ class FlightSkeletonTests(unittest.TestCase):
             vehicle=FakeVehicle(),
         )
 
+    def test_progress_reports_initial_and_completed_states(self):
+        reported = []
+        history = self.flight.run(progress=reported.append)
+        self.assertEqual(reported[0].t, 0.0)
+        self.assertEqual([kin.t for kin in reported[1:]],
+                         [state["kinematics"].t for state in history])
+        self.assertEqual(len(reported), len(history) + 1)
+
     def test_run_uses_prop_system_and_dynamic_node_mass(self):
         history = self.flight.run()
 
         self.assertEqual(len(history), 1)
         self.assertEqual(self.prop_system.calls[0]["dt"], None)
-        self.assertFalse(self.prop_system.calls[0]["commit"])
+        self.assertTrue(self.prop_system.calls[0]["commit"])
         self.assertEqual(self.prop_system.calls[1]["dt"], 0.1)
         self.assertTrue(self.prop_system.calls[1]["commit"])
         self.assertAlmostEqual(
@@ -180,7 +222,7 @@ class FlightSkeletonTests(unittest.TestCase):
         propulsion = self.prop_system.update(
             dt=None,
             atm=FakeEnvironment.atmosphere(0.0, 0.0),
-            heat_flux={},
+            heat_rate={},
             commit=False,
         ).propulsion
         self.assertTrue(self.flight.engine_on(propulsion))
@@ -189,6 +231,35 @@ class FlightSkeletonTests(unittest.TestCase):
         propulsion.thrust = 50.0
 
         self.assertFalse(self.flight.engine_on(propulsion))
+
+    def test_disabling_post_shutdown_solve_freezes_zero_flow_state(self):
+        propulsion = ShutdownPropSystem()
+        flight = FlightSim(
+            cfg={
+                "simulation": {
+                    "dt": 0.1,
+                    "t_end": 0.3,
+                    "fluid_solve_post_shutdown": False,
+                },
+                "launch": {"altitude": 0.0, "rail_height": 5.0},
+            },
+            env=FakeEnvironment(),
+            aero=FakeAero(),
+            prop_system=propulsion,
+            vehicle=FakeVehicle(),
+        )
+
+        history = flight.run(v0=100.0)
+
+        # Rail exit inserts an accepted event boundary before the usual samples.
+        self.assertEqual(len(propulsion.calls), 2)
+        self.assertEqual(len(history), 4)
+        for state in history:
+            fluids = state["plant"].fluids
+            self.assertTrue(all(mdot == 0.0 for mdot in fluids.mdot.values()))
+            self.assertEqual(fluids.propulsion.thrust, 0.0)
+        self.assertEqual(history[0]["plant"].fluids.events, ({"event": "dryout"},))
+        self.assertEqual(history[1]["plant"].fluids.events, ())
 
     def test_history_records_end_forces_and_mass_distribution(self):
         result = self.flight.run()[0]
@@ -200,25 +271,32 @@ class FlightSkeletonTests(unittest.TestCase):
         self.assertAlmostEqual(mass["cg"], self.flight.vehicle.cg)
         np.testing.assert_array_equal(mass["station"], self.flight.vehicle.station)
         np.testing.assert_array_equal(mass["axial_mass"], self.flight.vehicle.mass)
+        self.assertEqual(mass["length"], self.flight.vehicle.length)
+        self.assertEqual(set(result["loads"]), {"station", "axial", "axial_aero", "normal", "shear", "bending"})
         self.assertAlmostEqual(forces["gravity"], gravity(kin.m, kin.h))
         self.assertAlmostEqual(forces["acceleration"], forces["net"] / kin.m)
 
-    def test_step_fluids_passes_node_heat_flux(self):
+    def test_trial_fluid_passes_node_heat_rate(self):
         atmosphere = FakeEnvironment.atmosphere(0.0, 0.0)
         thermal = ThermalOut(
-            wall_T=300.0,
-            heat_flux_to_fluids={"tank": 25.0},
+            node={
+                "tank": {
+                    "cells": {"wall_T": np.array([300.0])},
+                    "phases": {"gas": {"heat_rate": 25.0}},
+                }
+            }
         )
 
-        self.flight.step_fluids(
+        self.flight.trial_fluid(
             0.1,
             atmosphere,
             thermal_out=thermal,
-            commit=False,
             axial_specific_force=12.0,
         )
 
-        self.assertEqual(self.prop_system.calls[-1]["heat_flux"], {"tank": 25.0})
+        self.assertEqual(
+            self.prop_system.calls[-1]["heat_rate"], {"tank": {"gas": 25.0}}
+        )
         self.assertFalse(self.prop_system.calls[-1]["commit"])
         self.assertEqual(self.prop_system.calls[-1]["axial_specific_force"], 12.0)
 

@@ -1,6 +1,6 @@
 import unittest
 
-from Flight.FluidsDef import FluidsDef
+from Fluids import FluidsDef
 
 
 class FluidsDefTests(unittest.TestCase):

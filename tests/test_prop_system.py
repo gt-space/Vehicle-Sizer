@@ -1,444 +1,167 @@
-import unittest
-from dataclasses import dataclass
+"""The same declarative templates serve sizing, IDAS and the flight adapter."""
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
-from CoolProp.CoolProp import PropsSI
+import numpy as np
+import pytest
+import yaml
 
-from Flight.FluidBranch import BangBangValveComponent
-from Flight.PropSystem import PropSystem
-from FluidProperties.PropertyModels import TableCombustionPropertySource
-
-
-@dataclass(frozen=True)
-class GasGeometry:
-    volume: float
-    internal_area: float = 1.0
-
-    @staticmethod
-    def axial_mass(mass):
-        return [mass]
+from Fluids.design import initial_conditions, tank_design_pressure
+from Fluids.templates import load_template
+from Fluids.PropSystem import PropSystem
+from FluidTables.PropertyModels import CEAPropertySource, CoolPropPropertySource, TablePureFluidPropertySource
+import propulsion_fixtures as fixtures
+from propulsion_fixtures import GeometrySource, TankGeometry, GasGeometry, FakeCEA
 
 
-@dataclass(frozen=True)
-class TankGeometry:
-    volume: float
-    internal_area: float = 2.0
-
-    def fill_state(self, liquid_volume):
-        fraction = liquid_volume / self.volume
-        return {
-            "fill_height": fraction,
-            "liquid_contact_area": self.internal_area * fraction,
-            "ullage_contact_area": self.internal_area * (1.0 - fraction),
-        }
-
-    @staticmethod
-    def axial_mass(liquid_volume, liquid_mass, ullage_mass):
-        return [liquid_mass + ullage_mass]
-
-
-class GeometrySource:
-    def __init__(self, geometry, prop_mass=None):
-        self.geometry = geometry
-        if prop_mass is not None:
-            self.prop_mass = prop_mass
-
-    def get_fluid_geometry(self):
-        return self.geometry
+def config(feed='pressure_fed', control='regulator'):
+    cfg = fixtures.config()
+    prop = cfg['prop_system']
+    prop['template'] = f'Configs/templates/{feed}_{control}.yaml'
+    prop['regulator'] = {leg + '_REGULATOR': dict(capacity_factor=2., collapse_factor=1.2, min_temperature=220.)
+                         for leg in ('OX', 'FUEL')}
+    if feed == 'pump_fed':
+        prop['pumps'] = {key: dict(drive='electric', pressure_rise_pa=1e6, gas_CdA=1e-5,
+                                  efficiency=.7, max_power_kw=100.) for key in ('oxidizer_pump','fuel_pump')}
+        for leg in ('ox','fuel'):
+            prop[leg+'_pumpin_tank_dp'] = 2e5
+            prop[leg+'_inj_pumpout_dp'] = 2e5
+    for state in prop['initial_conditions'].values():
+        for key in ('P', 'm', 'U', 'm_liq', 'U_liq', 'm_ull', 'U_ull'):
+            state.pop(key, None)
+    if control == 'blowdown':
+        del prop['initial_conditions']['press_tank']
+        del cfg['tanks']['press_tank']
+    return cfg
 
 
-class FakeCEA:
-    @staticmethod
-    def get_eps_at_PcOvPe(Pc, MR, PcOvPe):
-        return 5.0
-
-    @staticmethod
-    def get_Cstar(Pc, MR):
-        return 1500.0
-
-    @staticmethod
-    def getFrozen_PambCf(Pamb, Pc, MR, eps, frozen):
-        return 0.0, 1.5
-
-    @staticmethod
-    def get_Chamber_MolWt_gamma(Pc, MR, eps):
-        return 24.0, 1.2
-
-    @staticmethod
-    def get_Temperatures(Pc, MR, eps):
-        return (3000.0,)
-
-    @staticmethod
-    def get_Chamber_H(Pc, MR, eps):
-        return 5.0e6
+def build(cfg, mass=.2, tabled=False):
+    props = (TablePureFluidPropertySource(Path(__file__).resolve().parents[1] / 'FluidTables/sizer_lookups.h5',
+             {'Oxygen':'oxygen_pt','Nitrogen':{'pt':'nitrogen_pt','saturation':'nitrogen_saturation'},
+              'n-Dodecane':'ndodecane_pt'}) if tabled else CoolPropPropertySource())
+    states = initial_conditions(cfg)
+    tanks = {}
+    for key,state in states.items():
+        if 'gas_fluid' in state:
+            liquid_mass = mass if key == 'ox_tank' else 2 * mass
+            rho = props.state_pt(state['fluid'], state['P'], state['T']).rho
+            tanks[key] = GeometrySource(TankGeometry(liquid_mass/rho + .01), prop_mass=liquid_mass)
+        else:
+            tanks[key] = GeometrySource(GasGeometry(.05))
+    return PropSystem(cfg,tanks,props,CEAPropertySource(FakeCEA()))
 
 
-class PropSystemSizingTests(unittest.TestCase):
-    def _config(self):
-        return {
-            "prop_system": {
-                "press_model": "pressure_fed",
-                "Pc_target": 2.0e6,
-                "MR_target": 3.0,
-                "thrust_target": 12_000.0,
-                "fuel_inj_stiffness": 0.2,
-                "ox_inj_stiffness": 0.2,
-                "fuel_tank_inj_dp": 200_000.0,
-                "ox_tank_inj_dp": 200_000.0,
-                "expansion_ratio": 5.0,
-                "nozzle_cd": 1.0,
-                "bang_bang": {
-                    branch_id: {
-                        "duty_cycle": 0.5,
-                        "collapse_factor": 1.2,
-                        "min_temperature": 220.0,
-                        "pressure_band": 68_947.6,
-                        "initially_open": True,
-                    }
-                    for branch_id in ("OX_BANGBANG", "FUEL_BANGBANG")
-                },
-                "state0": {
-                    "press_tank": {
-                        "fluid": "Nitrogen",
-                        "P": 30.0e6,
-                        "T": 300.0,
-                        "m": 5.0,
-                        "U": 1.0e6,
-                    },
-                    "ox_tank": {
-                        "fluid": "Oxygen",
-                        "gas_fluid": "Nitrogen",
-                        "P": 2.6e6,
-                        "T": 100.0,
-                        "gas_T": 300.0,
-                        "m_liq": 90.0,
-                        "U_liq": 1.0e7,
-                        "m_ull": 0.1,
-                        "U_ull": 20_000.0,
-                    },
-                    "fuel_tank": {
-                        "fluid": "n-Dodecane",
-                        "gas_fluid": "Nitrogen",
-                        "P": 2.6e6,
-                        "T": 300.0,
-                        "gas_T": 300.0,
-                        "m_liq": 30.0,
-                        "U_liq": 1.0e7,
-                        "m_ull": 0.1,
-                        "U_ull": 20_000.0,
-                    },
-                },
-            },
-            "engine": {
-                "property_source": "cea",
-                "oxidizer": "LOX",
-                "fuel": "RP-1",
-                "cstar_efficiency": 1.0,
-                "cf_efficiency": 1.0,
-                "exit_pressure": 100_000.0,
-            },
-        }
-
-    @staticmethod
-    def _tanks(tank_pressure=2.6e6):
-        ox_density = PropsSI("Dmass", "P", tank_pressure, "T", 100.0, "Oxygen")
-        fuel_density = PropsSI(
-            "Dmass", "P", tank_pressure, "T", 300.0, "n-Dodecane"
-        )
-        return (
-            GeometrySource(TankGeometry(90.0 / ox_density * 1.1)),
-            GeometrySource(TankGeometry(30.0 / fuel_density * 1.1)),
-            GeometrySource(GasGeometry(0.05)),
-        )
-
-    @staticmethod
-    def _make_system(config, ox_tank, fuel_tank, press_tank=None):
-        tanks = {"ox_tank": ox_tank, "fuel_tank": fuel_tank}
-        if press_tank is not None:
-            tanks["press_tank"] = press_tank
-        with patch("Flight.PropSystem._make_cea", return_value=FakeCEA()):
-            return PropSystem(config, tanks)
-
-    def test_blowdown_does_not_require_a_pressure_tank(self):
-        config = self._config()
-        config["prop_system"]["press_model"] = "blowdown"
-        del config["prop_system"]["bang_bang"]
-        del config["prop_system"]["state0"]["press_tank"]
-        ox_tank, fuel_tank, _ = self._tanks()
-
-        system = self._make_system(config, ox_tank, fuel_tank)
-
-        self.assertNotIn("press_tank", system.network.nodes)
-        self.assertFalse(
-            any(
-                isinstance(branch, BangBangValveComponent)
-                for branch in system.network.branches.values()
-            )
-        )
-
-    def test_pump_feed_can_use_ullage_blowdown_without_press_tank(self):
-        config = self._config()
-        prop = config["prop_system"]
-        del prop["press_model"]
-        prop["feed_type"] = "pump_fed"
-        prop["pressurization"] = "blowdown"
-        del prop["bang_bang"]
-        del prop["state0"]["press_tank"]
-        prop.update(
-            fuel_pump_head=1.0e6,
-            ox_pump_head=1.0e6,
-            fuel_inj_pumpout_dp=2.0e5,
-            ox_inj_pumpout_dp=2.0e5,
-            fuel_pumpin_tank_dp=2.0e5,
-            ox_pumpin_tank_dp=2.0e5,
-        )
-        ox_tank, fuel_tank, _ = self._tanks()
-
-        system = self._make_system(config, ox_tank, fuel_tank)
-
-        self.assertEqual(system.feed_type, "pump_fed")
-        self.assertNotIn("press_tank", system.network.nodes)
-        self.assertIn("OX_PUMP", system.network.branches)
-
-    def test_pressure_fed_requires_its_template_pressure_tank(self):
-        ox_tank, fuel_tank, _ = self._tanks()
-
-        with self.assertRaisesRegex(ValueError, "requires tank 'press_tank'"):
-            self._make_system(self._config(), ox_tank, fuel_tank)
-
-    def test_branch_sizing_rejects_parallel_paths_for_now(self):
-        system = object.__new__(PropSystem)
-        circuits = {
-            "fuel": {
-                "prop": "fuel",
-                "fluid": "Water",
-                "state0": {"P": 300_000.0, "T": 300.0},
-            }
-        }
-        nodes = {
-            "tank_1": {"P0": 300_000.0},
-            "tank_2": {"P0": 300_000.0},
-            "manifold": {"P0": 200_000.0},
-        }
-        branches = {
-            branch_id: {
-                "model": "incompressible_loss",
-                "circuit": "fuel",
-                "from": tank_id,
-                "to": "manifold",
-                "CdA": None,
-            }
-            for branch_id, tank_id in (("feed_1", "tank_1"), ("feed_2", "tank_2"))
-        }
-
-        with self.assertRaisesRegex(ValueError, "Parallel branches"):
-            system._size_branches(circuits, nodes, branches)
-
-    def test_pressure_ladder_sizes_engine_and_branches(self):
-        system = self._make_system(self._config(), *self._tanks())
-
-        self.assertAlmostEqual(system.throat_area, 0.004)
-        self.assertAlmostEqual(
-            system.exit_area,
-            system.throat_area * system.expansion_ratio,
-        )
-        self.assertAlmostEqual(system.mdot_total, 16.0 / 3.0)
-        self.assertAlmostEqual(system.mdot_ox, 4.0)
-        self.assertAlmostEqual(system.mdot_fuel, 4.0 / 3.0)
-        self.assertFalse(hasattr(system, "fluid_circuits"))
-        self.assertEqual(system.network.nodes["ox_inj_in"].definition["P0"], 2.4e6)
-        self.assertFalse(hasattr(system.network, "circuits"))
-        self.assertEqual(
-            system.network.nodes["ox_ullage"].definition["liquid_fluid"],
-            "Oxygen",
-        )
-        self.assertEqual(
-            system.network.nodes["ox_ullage"].definition["gas_fluid"],
-            "Nitrogen",
-        )
-        self.assertNotIn("circuit", system.network.nodes["ox_ullage"].definition)
-        self.assertNotIn(
-            "liquid_circuit",
-            system.network.nodes["ox_ullage"].definition,
-        )
-        self.assertEqual(system.network.branches["OX_INJ"].parameters["circuit"], "oxidizer")
-        self.assertNotIn("state0", system.network.branches["OX_INJ"].parameters)
-        self.assertEqual(system.network.branches["OX_INJ"].state["mdot"], 0.0)
-        self.assertEqual(system.network.branches["OX_INJ"].fluid, "Oxygen")
-        self.assertGreater(system.network.branches["OX_INJ"].parameters["CdA"], 0.0)
-        self.assertGreater(system.network.branches["OX_BANGBANG"].parameters["CdA"], 0.0)
-        self.assertEqual(
-            system.network.branches["OX_BANGBANG"].parameters["target_pressure"],
-            system.target_ladder["Pox_tank"],
-        )
-        self.assertGreater(system.network.branches["OX_BANGBANG"].parameters["eol_pressure"], 0.0)
-        self.assertGreater(
-            system.network.branches["FUEL_BANGBANG"].parameters["eol_pressure"],
-            0.0,
-        )
-        self.assertFalse(hasattr(system, "press_tank_eol_pressure"))
-        self.assertEqual(
-            system.network.branches["OX_BANGBANG"].parameters["component"],
-            "bang_bang_valve",
-        )
-        self.assertNotIn("displaced_fluid", system.network.branches["OX_BANGBANG"].parameters)
-        self.assertEqual(system.network.branches["NOZZLE"].parameters["At"], system.throat_area)
-        self.assertNotIn(
-            "design_state",
-            system.network.nodes["thrust_chamber"].definition,
-        )
-        self.assertEqual(system.network.branches["NOZZLE"].parameters["Cd"], 1.0)
-
-    def test_initializes_conserved_tank_states_from_configured_pt(self):
-        config = self._config()
-        press = config["prop_system"]["state0"]["press_tank"]
-        ox = config["prop_system"]["state0"]["ox_tank"]
-        fuel = config["prop_system"]["state0"]["fuel_tank"]
-        for name in ("m", "U"):
-            del press[name]
-        for state in (ox, fuel):
-            for name in ("m_liq", "U_liq", "m_ull", "U_ull"):
-                del state[name]
-            state["gas_T"] = 290.0
-
-        ox_tank, fuel_tank, press_tank = self._tanks()
-        ox_tank.prop_mass = 90.0
-        fuel_tank.prop_mass = 30.0
-        system = self._make_system(config, ox_tank, fuel_tank, press_tank)
-
-        states = system.cfg["state0"]
-        self.assertAlmostEqual(states["ox_tank"]["m_liq"], 90.0)
-        self.assertAlmostEqual(states["fuel_tank"]["m_liq"], 30.0)
-        self.assertGreater(states["press_tank"]["m"], 0.0)
-        self.assertGreater(states["ox_tank"]["m_ull"], 0.0)
-        self.assertGreater(states["fuel_tank"]["m_ull"], 0.0)
-
-    def test_table_engine_source_does_not_construct_cea(self):
-        config = self._config()
-        root = Path(__file__).resolve().parents[1]
-        config["engine"].update(
-            {
-                "property_source": "table",
-                "lookup_file": str(
-                    root / "FluidProperties" / "sizer_lookups.h5"
-                ),
-                "nfz": 1,
-            }
-        )
-        ox_tank, fuel_tank, press_tank = self._tanks()
-        tanks = {
-            "ox_tank": ox_tank,
-            "fuel_tank": fuel_tank,
-            "press_tank": press_tank,
-        }
-
-        with patch(
-            "Flight.PropSystem._make_cea",
-            side_effect=AssertionError("CEA should not be constructed"),
-        ):
-            system = PropSystem(config, tanks)
-
-        self.assertIsInstance(
-            system.combustion_properties, TableCombustionPropertySource
-        )
-        self.assertGreater(system.expansion_ratio, 1.0)
-        self.assertGreater(system.cstar, 0.0)
-        self.assertGreater(system.Cf_design, 0.0)
-
-    def test_pressure_fed_update_returns_thrust(self):
-        config = self._config()
-        tank_pressure = 2.6e6
-        gas_temperature = 260.0
-        ox_density = PropsSI("Dmass", "P", tank_pressure, "T", 100.0, "Oxygen")
-        fuel_density = PropsSI(
-            "Dmass", "P", tank_pressure, "T", 300.0, "n-Dodecane"
-        )
-        ox_volume = (90.0 / ox_density) * 1.1
-        fuel_volume = (30.0 / fuel_density) * 1.1
-        press_volume = 0.05
-
-        def stored_state(fluid, pressure, temperature, volume):
-            density = PropsSI("Dmass", "P", pressure, "T", temperature, fluid)
-            internal_energy = PropsSI(
-                "Umass", "P", pressure, "T", temperature, fluid
-            )
-            mass = density * volume
-            return mass, mass * internal_energy
-
-        ox_gas_mass, ox_gas_energy = stored_state(
-            "Nitrogen", tank_pressure, gas_temperature, ox_volume - 90.0 / ox_density
-        )
-        fuel_gas_mass, fuel_gas_energy = stored_state(
-            "Nitrogen",
-            tank_pressure,
-            gas_temperature,
-            fuel_volume - 30.0 / fuel_density,
-        )
-        press_mass, press_energy = stored_state(
-            "Nitrogen", 30.0e6, 300.0, press_volume
-        )
-        ox_mass, ox_energy = stored_state(
-            "Oxygen", tank_pressure, 100.0, 90.0 / ox_density
-        )
-        fuel_mass, fuel_energy = stored_state(
-            "n-Dodecane", tank_pressure, 300.0, 30.0 / fuel_density
-        )
-        config["prop_system"]["state0"] = {
-            "press_tank": {
-                "fluid": "Nitrogen",
-                "P": 30.0e6,
-                "T": 300.0,
-                "m": press_mass,
-                "U": press_energy,
-            },
-            "ox_tank": {
-                "fluid": "Oxygen",
-                "gas_fluid": "Nitrogen",
-                "P": tank_pressure,
-                "T": 100.0,
-                "gas_T": gas_temperature,
-                "m_liq": ox_mass,
-                "U_liq": ox_energy,
-                "m_ull": ox_gas_mass,
-                "U_ull": ox_gas_energy,
-            },
-            "fuel_tank": {
-                "fluid": "n-Dodecane",
-                "gas_fluid": "Nitrogen",
-                "P": tank_pressure,
-                "T": 300.0,
-                "gas_T": gas_temperature,
-                "m_liq": fuel_mass,
-                "U_liq": fuel_energy,
-                "m_ull": fuel_gas_mass,
-                "U_ull": fuel_gas_energy,
-            },
-        }
-        system = self._make_system(
-            config,
-            GeometrySource(TankGeometry(ox_volume)),
-            GeometrySource(TankGeometry(fuel_volume)),
-            GeometrySource(GasGeometry(press_volume)),
-        )
-
-        result = system.update(
-            dt=0.001,
-            atm=SimpleNamespace(p=100_000.0),
-            heat_flux={},
-        )
-
-        self.assertEqual(result.propulsion.mode, "combusting")
-        self.assertIsNone(result.propulsion.shutdown_reason)
-        self.assertAlmostEqual(result.propulsion.MR, 3.0, places=3)
-        self.assertAlmostEqual(result.propulsion.thrust, 12_000.0, delta=20.0)
-        self.assertAlmostEqual(
-            result.propulsion.mdot_nozzle,
-            result.propulsion.mdot_ox + result.propulsion.mdot_fuel,
-            places=7,
-        )
+@pytest.mark.parametrize('feed', ['pressure_fed','pump_fed'])
+@pytest.mark.parametrize('control', ['blowdown','regulator','bang_bang'])
+def test_templates_size_without_solver_and_preserve_design_physics(feed, control):
+    cfg = config(feed,control)
+    before = deepcopy(cfg)
+    with build(cfg) as prop:
+        assert prop.throat_area == pytest.approx(12000 / (2e6*1.5))
+        assert prop.mdot_ox/prop.mdot_fuel == 3
+        assert prop.network.y is None
+        assert set(prop.network.branches) == set(load_template(cfg)['branches'])
+        assert len(prop.pump_sizing) == (2 if feed == 'pump_fed' else 0)
+        assert tank_design_pressure(cfg,'ox_tank') == pytest.approx(1.8e6 if feed=='pump_fed' else 2.6e6)
+    assert cfg == before
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_template_is_required_and_topology_not_selected_by_feed_flags():
+    cfg=config()
+    cfg['prop_system']['feed_type']='anything'
+    cfg['prop_system']['pressurization']='anything'
+    with build(cfg) as prop:
+        assert 'OX_REGULATOR' in prop.network.branches
+    del cfg['prop_system']['template']
+    with pytest.raises(ValueError,match='template'):
+        load_template(cfg)
+
+
+@pytest.mark.parametrize('control,expected', [('regulator', 1e-4), ('bang_bang', 1e-5), ('blowdown', 1e-7)])
+def test_template_sets_default_rtol_and_config_overrides(control, expected):
+    cfg = config('pump_fed', control)
+    # Template wiring, not these redundant labels, selects the tolerance.
+    cfg['prop_system']['pressurization'] = 'unused_label'
+    with build(cfg) as prop:
+        assert prop.network.options['rtol'] == expected
+        assert prop.network.options['jacobian'] == 'colored'
+    cfg['advanced'] = {'fluid_network': {'rtol': 2e-6, 'jacobian': 'dense'}}
+    with build(cfg) as prop:
+        assert prop.network.options['rtol'] == 2e-6
+        assert prop.network.options['jacobian'] == 'dense'
+
+
+def test_custom_template_renames_nodes_and_adds_a_loss_without_code_changes():
+    cfg=config('pump_fed')
+    template=load_template(cfg)
+    template['nodes']['extra_junction']={'component':'junction','P0':2.8e6}
+    template['nodes']['ox_pump_out']['P0']=3e6
+    template['nodes']['ox_pump_in']['P0']=2e6
+    template['nodes']['ox_ullage']['P0']=2.2e6
+    template['branches']['extra_loss']={'component':'loss','circuit':'oxidizer','from':'ox_pump_out','to':'extra_junction'}
+    template['branches']['OX_PUMP_INJ']['from']='extra_junction'
+    renames={key:'custom_'+key for key in template['nodes']}
+    template['nodes']={renames[key]:node for key,node in template['nodes'].items()}
+    for node in template['nodes'].values():
+        if 'ambient_node' in node: node['ambient_node']=renames[node['ambient_node']]
+    for branch in template['branches'].values():
+        for end in ('from','to'): branch[end]=renames[branch[end]]
+    cfg['prop_system']['template']=template
+    with build(cfg) as prop:
+        assert prop.chamber_id=='custom_thrust_chamber'
+        assert 'extra_loss' in prop.network.branches
+        assert prop.branch_definitions['extra_loss']['CdA']>0
+
+
+def test_template_pressure_cycle_and_wiring_override_are_rejected():
+    cfg=config()
+    template=load_template(cfg)
+    cfg['prop_system']['template']=template
+    template['nodes']['ox_ullage']['P0']={'node':'ox_ullage'}
+    with pytest.raises(ValueError,match='Cyclic'):
+        load_template(cfg)
+    template['nodes']['ox_ullage']['P0']=2.6e6
+    template['branches']['OX_REGULATOR']['parameters']={'to':'ambient'}
+    with pytest.raises(ValueError,match='wiring'):
+        load_template(cfg)
+
+
+@pytest.mark.parametrize('feed,control', [('pressure_fed','blowdown'), ('pressure_fed','bang_bang'), ('pump_fed','regulator')])
+def test_actual_template_preview_commit_dryout_and_stopping(feed,control):
+    pytest.importorskip('sundials4py')
+    cfg=config(feed,control)
+    cfg['simulation']={'fluid_solve_post_shutdown':False}
+    cfg['advanced']={'fluid_network':{'max_step':.01}}
+    with build(cfg,tabled=True) as prop:
+        atm=SimpleNamespace(p=1e5)
+        first=prop.update(None,atm,{})
+        assert first.propulsion.mode=='combusting'
+        y=prop.network.y.copy()
+        trial=prop.update(.2,atm,{},commit=False)
+        np.testing.assert_array_equal(y,prop.network.y)
+        assert prop.network.time==0 and not prop.network.events
+        actual=prop.update(.2,atm,{})
+        assert actual.propulsion.mode=='shutdown'
+        assert actual.propulsion.thrust==actual.propulsion.mdot_nozzle==0
+        assert prop.network.frozen
+        assert any(event['name']=='dryout' for event in actual.events)
+        assert trial.propulsion.thrust==actual.propulsion.thrust
+        for key in first.td_state:
+            assert actual.td_state[key]['mass']==pytest.approx(trial.td_state[key]['mass'])
+        later=prop.update(.3,atm,{})
+        assert later.events==()
+        assert later.event_counts==actual.event_counts
+        assert later.td_state==actual.td_state
+        assert prop.network.time==pytest.approx(.5)
+
+
+def test_template_continues_passive_flow_after_shutdown():
+    pytest.importorskip('sundials4py')
+    cfg=config('pump_fed','regulator')
+    cfg['advanced']={'fluid_network':{'max_step':.01}}
+    with build(cfg,tabled=True) as prop:
+        out=prop.update(.15,SimpleNamespace(p=1e5),{})
+        assert out.propulsion.mode=='shutdown'
+        assert out.propulsion.mdot_nozzle>0
+        assert not prop.network.frozen

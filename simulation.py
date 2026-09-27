@@ -8,7 +8,7 @@ from Flight.Flight import FlightSim
 from Fluids.PropSystem import PropSystem, DesignInfeasible
 from Flight.environment import Environment
 from Flight.flight_forces import Aero
-from FluidProperties.PropertyModels import (
+from FluidTables.PropertyModels import (
     CEAPropertySource,
     CoolPropPropertySource,
     TableCombustionPropertySource,
@@ -81,7 +81,7 @@ def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
     EvaluationFailure deliberately escapes to stop an optimizer. Its cause and
     copied config allow reproduction without printing or writing files here.
     """
-    context = {"phase": "configuration", "flight": None}
+    context = {"phase": "configuration", "flight": None, "propulsion": None}
     candidate = deepcopy(cfg)
     try:
         return _simulate(candidate, pure_properties=pure_properties,
@@ -91,6 +91,10 @@ def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
     except Exception as error:
         raise EvaluationFailure(context["phase"], candidate,
                                 getattr(context["flight"], "result", None)) from error
+    finally:
+        propulsion = context["propulsion"]
+        if propulsion is not None:
+            propulsion.close()
 
 
 def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
@@ -112,6 +116,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
         vehicle = Vehicle(cfg, pure_properties)
         propulsion = PropSystem(cfg, vehicle.tanks, fluid_properties=pure_properties,
                                 combustion_properties=combustion_properties)
+        context["propulsion"] = propulsion
         vehicle.build(Engine(float(cfg["engine"]["mass"]), float(cfg["engine"]["length"]), propulsion.exit_area))
     except DesignInfeasible as error:
         geometry = isinstance(error, GeometryError)

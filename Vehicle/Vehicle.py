@@ -1,5 +1,6 @@
 import numpy as np
 from Fluids.design import initial_conditions, tank_design_pressure
+from Fluids.templates import load_template
 
 from .COPV import COPV
 from .Engine import Engine
@@ -125,17 +126,11 @@ class Vehicle:
         design_pressure = tank_design_pressure(self.cfg, tank_id, fallback=initial_pressure)
         nominal = max(design_pressure, initial_pressure)
         prop_system = self.cfg["prop_system"]
-        legacy = prop_system.get("press_model")
-        pressurization = prop_system.get(
-            "pressurization",
-            "blowdown" if legacy == "blowdown" else "bang_bang",
-        )
-        controls = [
-            definition
-            for definition in prop_system.get("bang_bang", {}).values()
-            if definition.get("tank_id") == tank_id
-        ] if pressurization == "bang_bang" else []
+        controls = []
         template = prop_system.get("template")
+        if isinstance(template, str) or (isinstance(template, dict) and any(
+                isinstance(node.get("P0"), dict) for node in template["nodes"].values())):
+            template = load_template(self.cfg)
         if template is not None:
             target_nodes = {key for key, node in template["nodes"].items() if node.get("tank_id") == tank_id}
             controls = [branch for branch in template["branches"].values()
@@ -289,12 +284,3 @@ class Vehicle:
             "sweep_fraction": fin.sweep_fraction,
             "thickness": fin.fin_thickness / metres_per_inch,
         }
-
-# Legacy analytical aero / unused input container (inactive).
-#     def get_CNa(self, M: float, alpha: float):
-#         for sec in self.sections:
-#             sec.get_CNa(M, alpha)
-#         self.CNa = np.concatenate([sec.CNa for sec in self.sections])
-#         self.cp = np.sum(self.CNa * self.station) / np.sum(self.CNa)
-
-    # def update(self):

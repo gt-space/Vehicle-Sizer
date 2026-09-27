@@ -3,7 +3,6 @@ from scipy.optimize import root_scalar
 from ..Material import mp
 from .Section import Section
 from ..utils import distribute as dist
-# from ..utils import aero  # Legacy analytical aero disabled.
 from ..utils import geometry as geo
 
 class AviBay(Section):
@@ -84,21 +83,6 @@ class AviBay(Section):
         self.Ixx = np.sum(self.mass * self.radius**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
-# Legacy analytical aero / unused input container (inactive).
-#     def get_CNa(self, M: float, alpha: float):
-#         R = self.OMLD * 0.5
-#         L_total = self.OMLD * self.cfg["nosecone"]["fineness_ratio"]
-#         L_nosecone = L_total - self.length
-#         n_nose = int(np.ceil(L_nosecone / self.dx))
-#         x_nose = (np.arange(n_nose) + 0.5) * self.dx
-#         profile = self.cfg["nosecone"]["profile"]
-#         if profile == "von_karman":
-#             r_nose = geo.vk_profile(x_nose, L_total, R)
-#         else:
-#             n_ps = self.cfg["nosecone"].get("power_series_n", 0.66)
-#             r_nose = geo.power_series_profile(x_nose, L_total, R, n_ps)
-#         lat_area_total = np.sum(2 * r_nose * self.dx) + np.sum(self.lat_area)
-#         self.CNa = aero.nosecone_CNa(M) * self.lat_area / lat_area_total
 
     def get_thermal_oml_area(self) -> np.ndarray:
         return self.surf_area.copy()

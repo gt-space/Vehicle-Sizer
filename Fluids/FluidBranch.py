@@ -1,577 +1,360 @@
-from __future__ import annotations
+"""Quasi-steady momentum/pressure-flow closures for a SUNDIALS DAE.
+
+Branches have parameters, connectivity and discrete modes, but no integrated or
+committed flow state. The network owns y, ydot, initialization and acceptance.
+All variables below are algebraic; line inertia is not part of this model.
+Equation implementations are local, not adapters around the old fluids solver.
+"""
 
 from copy import deepcopy
-from dataclasses import replace
-from typing import Any, Dict
+from math import copysign, isfinite, sqrt
 
 import numpy as np
 
-from . import FluidsDef
-from .FluidState import BranchState, FluidState
+from .FluidState import BranchState
+from .errors import TrialDomainError
 
 
-def port_pressure(node_state, port) -> float:
-    """Return pressure at a node port, falling back to the bulk node pressure."""
-
-    return float(node_state.get("port_pressure", {}).get(port, node_state["P"]))
-
-
-class BranchModel:
-    """Physics and solver-state interface used by a fluid branch."""
-
-    phase = "unknown"
-    requires_enthalpy = True
-
-    def initial_state(self, branch) -> BranchState:
-        return BranchState(
-            flows={
-                "main": {
-                    "mdot": 0.0,
-                    "direction": 1,
-                    "fluid": FluidState(branch.fluid, self.phase),
-                }
-            }
-        )
-
-    def state(self, branch) -> Dict[str, float]:
-        if not branch.enabled:
-            return {}
-        mdot = branch.state.mdot
-        guess = float(branch.parameters.get("design_mdot", 1.0e-6))
-        return {"mdot": mdot if mdot != 0.0 else guess}
-
-    def scales(self, branch, state) -> Dict[str, float]:
-        design = abs(float(branch.parameters.get("design_mdot", 0.0)))
-        return {
-            name: (
-                1.0
-                if name == "gas_area_fraction"
-                else max(abs(float(value)), design, 1.0)
-            )
-            for name, value in state.items()
-        }
-
-    def bounds(self, branch, state):
-        bounds = {name: (-np.inf, np.inf) for name in state}
-        if "gas_area_fraction" in bounds:
-            bounds["gas_area_fraction"] = (0.0, 1.0)
-        return bounds
-
-    def evaluate(self, branch, state, node_state, source_fluids, directions):
-        mdot = float(state.get("mdot", 0.0)) if branch.enabled else 0.0
-        if len(source_fluids) != 1:
-            raise ValueError(f"Branch '{branch.id}' requires one source fluid")
-        fluid = next(iter(source_fluids.values()))
-        result = BranchState(
-            state={name: value for name, value in state.items() if name != "mdot"},
-            flows={"main": {"mdot": mdot, "direction": directions["main"], "fluid": fluid}},
-            dP=(
-                port_pressure(node_state[branch.from_node], branch.from_port)
-                - port_pressure(node_state[branch.to_node], branch.to_port)
-            ),
-            enabled=branch.enabled,
-        )
-        if self.requires_enthalpy:
-            if "h" not in fluid:
-                raise ValueError(
-                    f"Branch '{branch.id}' source fluid '{fluid.fluid}' requires h"
-                )
-            result.metadata["h"] = fluid["h"]
-        result.metadata.update(
-            {
-                name: fluid[name]
-                for name in ("T", "rho", "R", "gamma")
-                if name in fluid
-            }
-        )
-        return result
-
-    def residual(self, branch, state, node_state) -> np.ndarray:
-        raise NotImplementedError
-
-    def committed_state(self, branch, state: BranchState) -> BranchState:
-        return replace(state, state=dict(state.state))
-
-    def total_mdot(self, state) -> float:
-        return float(state.get("mdot", 0.0))
+def _port_pressure(node, port):
+    pressure = float(node.get("port_pressure", {}).get(port, node["P"]))
+    if not isfinite(node["P"]) or not isfinite(pressure):
+        raise TrialDomainError("Branch requires finite node and port pressures")
+    return pressure
 
 
-class IncompressibleLossModel(BranchModel):
-    phase = "liquid"
-
-    def residual(self, branch, state, node_state) -> np.ndarray:
-        expected = FluidsDef.incompressible_mdot(
-            branch.effective_cda(), state["rho"], state["dP"]
-        )
-        return np.array([(state["mdot"] - expected) / branch.flow_scale("mdot")])
-
-
-class CompressibleLossModel(BranchModel):
-    phase = "gas"
-
-    def mass_flow(self, branch, state, node_state) -> float:
-        direction = 1.0 if state["dP"] >= 0.0 else -1.0
-        pressures = (
-            node_state[branch.from_node]["P"],
-            node_state[branch.to_node]["P"],
-        )
-        mass_flux = FluidsDef.compressible_mass_flux(
-            max(pressures), min(pressures), state["T"], state["R"], state["gamma"]
-        )
-        return direction * branch.effective_cda() * mass_flux
-
-    def residual(self, branch, state, node_state) -> np.ndarray:
-        expected = self.mass_flow(branch, state, node_state)
-        return np.array([(state["mdot"] - expected) / branch.flow_scale("mdot")])
+def _gas_flux(upstream, downstream, fluid):
+    """Isentropic gas mass flux [kg/(m² s)], including choking."""
+    temperature, gas_constant, gamma = fluid["T"], fluid["R"], fluid["gamma"]
+    if (not all(isfinite(v) for v in (upstream, downstream, temperature, gas_constant, gamma))
+            or upstream <= 0 or downstream < 0 or temperature <= 0 or gas_constant <= 0 or gamma <= 1):
+        raise TrialDomainError("Gas flow requires finite physical absolute pressures, T, R and gamma")
+    if downstream >= upstream:
+        return 0.0
+    ratio = downstream / upstream
+    critical = (2 / (gamma + 1)) ** (gamma / (gamma - 1))
+    if ratio <= critical:
+        factor = sqrt(gamma) * (2 / (gamma + 1)) ** ((gamma + 1) / (2 * (gamma - 1)))
+    else:
+        factor = sqrt(max(0.0, 2 * gamma / (gamma - 1)
+                          * (ratio ** (2 / gamma) - ratio ** ((gamma + 1) / gamma))))
+    return upstream * factor / sqrt(gas_constant * temperature)
 
 
-class IdealRegulatorModel(CompressibleLossModel):
-    """Bounded pressure regulation, not a pressure-error/flow (droop) law."""
-
-    def residual(self, branch, state, node_state) -> np.ndarray:
-        capacity = max(0.0, self.mass_flow(branch, state, node_state))
-        scale = branch.flow_scale("mdot")
-        flow = state["mdot"] / scale
-        target = float(branch.parameters["target_pressure"])
-        error = (target - node_state[branch.to_node]["P"]) / target
-        # Interior root: error == 0. Limits: closed above target, full flow below.
-        return np.array([flow - np.clip(flow + error, 0.0, capacity / scale)])
-
-
-class PumpModel(BranchModel):
-    phase = "liquid"
-
-    def residual(self, branch, state, node_state) -> np.ndarray:
-        mdot = state["mdot"]
-        head_model = branch.parameters.get("head_model")
-        head = head_model(mdot) if callable(head_model) else branch.parameters["dP"]
-        loss = 0.0
-        if branch.parameters.get("CdA") is not None:
-            loss = np.sign(mdot) * (mdot / branch.parameters["CdA"]) ** 2
-            loss /= 2.0 * state["rho"]
-        return np.array([(state["dP"] + head - loss) / max(abs(float(head)), 1.0e5)])
-
-
-class CombustionNozzleModel(BranchModel):
-    phase = "gas"
-    requires_enthalpy = False
-
-    def residual(self, branch, state, node_state) -> np.ndarray:
-        chamber = node_state[branch.from_node]
-        expected = 0.0
-        if state["dP"] > 0.0 and chamber["cstar"] > 0.0:
-            expected = (
-                branch.parameters["Cd"]
-                * chamber["P"]
-                * branch.parameters["At"]
-                / chamber["cstar"]
-            )
-        return np.array([(state["mdot"] - expected) / branch.flow_scale("mdot")])
-
-
-class TwinPathNozzleModel(BranchModel):
-    """Gas and incompressible-liquid flow sharing one physical throat."""
-
-    requires_enthalpy = False
-
-    def __init__(self, phases):
-        self.phases = tuple(phases)
-
-    def initial_state(self, branch) -> BranchState:
-        return BranchState(
-            state={},
-            flows={
-                phase: {
-                    "mdot": 0.0,
-                    "direction": 1,
-                    "fluid": FluidState(branch.fluid, phase),
-                }
-                for phase in self.phases
-            },
-        )
-
-    def state(self, branch) -> Dict[str, float]:
-        if not branch.enabled:
-            return {}
-        variables = {
-            f"mdot_{phase}": branch.state.phase_mdot(phase) or 1.0e-6
-            for phase in self.phases
-        }
-        if len(self.phases) == 2:
-            variables["gas_area_fraction"] = float(
-                branch.state.state["gas_area_fraction"]
-            )
-        return variables
-
-    def total_mdot(self, variables: Dict[str, float]) -> float:
-        return sum(float(variables[f"mdot_{phase}"]) for phase in self.phases)
-
-    def evaluate(self, branch, state, node_state, source_fluids, directions):
-        flows = {}
-        missing = []
-        for phase in self.phases:
-            sources = {
-                name: fluid
-                for name, fluid in source_fluids.items()
-                if fluid.phase == phase
-            }
-            if not sources:
-                missing.append(phase)
-                continue
-            target = float(state[f"mdot_{phase}"])
-            share = target / len(sources)
-            for name, fluid in sources.items():
-                flows[name] = {
-                    "mdot": share,
-                    "direction": directions[phase],
-                    "fluid": fluid,
-                }
-        result = BranchState(
-            state={name: value for name, value in state.items() if not name.startswith("mdot_")},
-            flows=flows,
-            dP=(
-                port_pressure(node_state[branch.from_node], branch.from_port)
-                - port_pressure(node_state[branch.to_node], branch.to_port)
-            ),
-            enabled=branch.enabled,
-            metadata={"missing_phases": missing},
-        )
-        result.state.setdefault("gas_area_fraction", 1.0 if self.phases == ("gas",) else 0.0)
-        thrust = 0.0
-        for flow in flows.values():
-            fluid = flow["fluid"]
-            velocity = (
-                FluidsDef.isentropic_velocity(
-                    node_state[branch.from_node]["P"],
-                    node_state[branch.to_node]["P"],
-                    fluid["T"], fluid["R"], fluid["gamma"],
-                )
-                if fluid.phase == "gas"
-                else np.sqrt(max(2.0 * result.dP / fluid["rho"], 0.0))
-            )
-            thrust += float(flow["mdot"]) * velocity
-        result.metadata["thrust"] = thrust
-        return result
-
-    def residual(self, branch, state, node_state) -> np.ndarray:
-        definition = branch.parameters
-        chamber_pressure = node_state[branch.from_node]["P"]
-        ambient_pressure = node_state[branch.to_node]["P"]
-        area_fraction = float(state.get("gas_area_fraction", 1.0 if self.phases == ("gas",) else 0.0))
-        area = {"gas": area_fraction, "liquid": 1.0 - area_fraction}
-        equations = []
-        for phase in self.phases:
-            mdot = state.phase_mdot(phase)
-            if phase in state.metadata["missing_phases"]:
-                equations.append(mdot / branch.flow_scale(f"mdot_{phase}"))
-                continue
-            constituents = [flow for flow in state.flows.values() if flow["fluid"].phase == phase]
-            phase_mdot = sum(float(flow["mdot"]) for flow in constituents)
-            capacity = 0.0
-            for flow in constituents:
-                fluid = flow["fluid"]
-                if phase == "gas":
-                    flux = FluidsDef.compressible_mass_flux(
-                        chamber_pressure,
-                        ambient_pressure,
-                        fluid["T"],
-                        fluid["R"],
-                        fluid["gamma"],
-                    )
-                else:
-                    flux = np.sqrt(
-                        max(2.0 * fluid["rho"] * state["dP"], 0.0)
-                    )
-                fraction = (
-                    float(flow["mdot"]) / phase_mdot
-                    if phase_mdot else 1.0 / len(constituents)
-                )
-                capacity += fraction * flux
-            expected = (
-                definition["Cd"] * definition["At"] * area[phase] * capacity
-            )
-            equations.append((mdot - expected) / branch.flow_scale(f"mdot_{phase}"))
-        return np.asarray(equations)
+def _liquid_flux(pressure_drop, fluid):
+    """Signed incompressible mass flux [kg/(m² s)]."""
+    if not isfinite(pressure_drop) or not isfinite(fluid["rho"]) or fluid["rho"] <= 0:
+        raise TrialDomainError("Liquid flow requires finite pressure drop and positive finite density")
+    return copysign(sqrt(2 * fluid["rho"] * abs(pressure_drop)), pressure_drop)
 
 
 class FluidBranch:
-    """Solver branch holding flow state and an active physics model."""
+    """Base contract: fixed-mode trial data and normalized algebraic residuals."""
 
-    def __init__(self, branch_id: str, definition: Dict[str, Any], model: BranchModel):
+    requires_enthalpy = True
+    differential_variable_names = ()
+    equation_names = ("flow",)
+
+    def __init__(self, branch_id, definition, *, phase="liquid"):
         self.id = branch_id
-        self.parameters = {
-            name: value
-            for name, value in definition.items()
-            if name not in ("from", "to", "from_port", "to_port")
-        }
-        self.model = model
-        self.from_node = str(definition.get("from", ""))
-        self.to_node = str(definition.get("to", ""))
-        self.fluid = str(definition["fluid"])
-        self.from_port = definition.get("from_port", self.fluid)
-        self.to_port = definition.get("to_port", self.fluid)
+        self.parameters = deepcopy(definition)
+        self.from_node, self.to_node = definition["from"], definition["to"]
+        self.from_port = definition.get("from_port", definition.get("fluid"))
+        self.to_port = definition.get("to_port", definition.get("fluid"))
         self.enabled = True
-        self.state = model.initial_state(self)
+        self.set_phase(phase)
+        design_flow = float(definition.get("design_mdot", 0.0))
+        if not isfinite(design_flow):
+            raise ValueError("design_mdot must be finite")
+        self.flow_scale = max(abs(design_flow), 1.0)
 
-    def switch_model(self, model: BranchModel) -> None:
-        self.model = model
-        self.state = model.initial_state(self)
+    @property
+    def active(self):
+        return self.enabled
 
-    def effective_cda(self) -> float:
-        return float(self.parameters["CdA"])
+    @property
+    def variable_names(self):
+        """Names/order to place in the network's algebraic part of y."""
+        return ("mdot",)
 
-    def solver_state(self) -> Dict[str, float]:
-        return self.model.state(self)
+    def set_phase(self, phase):
+        if phase not in {"liquid", "gas"}:
+            raise ValueError(f"Unsupported phase: {phase}")
+        changed = getattr(self, "phase", None) != phase
+        self.phase = phase
+        return changed
 
-    def scales(self, state) -> Dict[str, float]:
-        return self.model.scales(self, state)
+    def set_enabled(self, enabled):
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be boolean")
+        changed = self.enabled != enabled
+        self.enabled = enabled
+        return changed
 
-    def bounds(self, state):
-        return self.model.bounds(self, state)
+    def pressures(self, node_states_by_id):
+        return (_port_pressure(node_states_by_id[self.from_node], self.from_port),
+                _port_pressure(node_states_by_id[self.to_node], self.to_port))
 
-    def total_mdot(self, state) -> float:
-        return state.mdot if isinstance(state, BranchState) else self.model.total_mdot(state)
+    def _positive(self, name):
+        value = float(self.parameters[name])
+        if not isfinite(value) or value <= 0:
+            raise ValueError(f"Branch '{self.id}' requires finite {name} > 0")
+        return value
 
-    def evaluate(self, state, node_state, source_fluids, directions) -> BranchState:
-        result = self.model.evaluate(self, state, node_state, source_fluids, directions)
-        if len(result.flows) == 1:
-            self.fluid = next(iter(result.flows.values()))["fluid"].fluid
-        return result
+    def _check_trial_values(self, trial_values):
+        if set(trial_values) != set(self.variable_names):
+            raise ValueError(f"Branch '{self.id}' requires variables {self.variable_names}")
+        if not all(isfinite(v) for v in trial_values.values()):
+            raise TrialDomainError(f"Branch '{self.id}' has non-finite trial values")
 
-    def residual(self, state, node_state) -> np.ndarray:
-        if not self.enabled:
-            return np.empty(0)
-        return self.model.residual(self, state, node_state)
+    def evaluate(self, trial_values, node_states_by_id, source_fluids, directions):
+        """Build a BranchState from local y values and endpoint/donor records.
 
-    def event_values(self, node_state) -> Dict[str, float]:
-        return {}
-
-    def apply_event(self, name: str) -> bool:
-        raise ValueError(f"Branch '{self.id}' has no event {name!r}")
-
-    def commit(self, state: BranchState) -> None:
-        self.state = self.model.committed_state(self, state)
-
-    def flow_scale(self, name: str) -> float:
-        return max(
-            abs(float(self.state.state.get(name, 0.0))),
-            abs(float(self.parameters.get("design_mdot", 0.0))),
-            1.0,
+        trial_values is keyed by variable_names. node_states_by_id supplies
+        endpoint pressures; source_fluids and directions specify donor routing.
+        This does not solve for flow or modify input/persistent records.
+        """
+        self._check_trial_values(trial_values)
+        if not self.active:
+            return BranchState(trial_values=trial_values, enabled=False,
+                               properties={"thrust": 0.0, "pump_active": False})
+        if len(source_fluids) != 1:
+            raise ValueError(f"Branch '{self.id}' requires one source fluid")
+        fluid = next(iter(source_fluids.values()))
+        if fluid.phase != self.phase:
+            raise ValueError(f"Branch '{self.id}' phase changed; apply the transition between solves")
+        if self.requires_enthalpy and "h" not in fluid:
+            raise ValueError(f"Branch '{self.id}' source fluid requires h")
+        p_from, p_to = self.pressures(node_states_by_id)
+        return BranchState(
+            trial_values=trial_values,
+            flows={"main": {"mdot": float(trial_values["mdot"]),
+                            "direction": directions["main"], "fluid": fluid}},
+            dP=p_from - p_to,
+            properties={name: fluid[name] for name in ("h", "T", "rho", "R", "gamma")
+                      if name in fluid and (name != "h" or self.requires_enthalpy)},
         )
 
+    def residual(self, branch_state, node_states_by_id):
+        """Return pressure/flow equation errors using evaluate's BranchState."""
+        if not self.active:
+            return np.array([branch_state.trial_values["mdot"] / self.flow_scale])
+        return np.asarray(self._residual(branch_state, node_states_by_id), dtype=float)
 
-class PumpComponent(FluidBranch):
-    """Liquid pump that becomes a passive loss when its inlet is gas."""
+    def _residual(self, branch_state, node_states_by_id):
+        raise NotImplementedError("Select a branch with a pressure-flow law")
 
-    def __init__(self, branch_id: str, definition: Dict[str, Any]):
-        gas_cda = float(definition["gas_CdA"])
-        if gas_cda <= 0.0:
-            raise ValueError(f"Pump '{branch_id}' requires gas_CdA > 0")
-        super().__init__(branch_id, definition, PumpModel())
-
-    def effective_cda(self) -> float:
-        if isinstance(self.model, CompressibleLossModel):
-            return float(self.parameters["gas_CdA"])
-        return super().effective_cda()
-
-    def evaluate(self, state, node_state, source_fluids, directions):
-        if len(source_fluids) != 1:
-            raise ValueError(f"Pump '{self.id}' requires one source fluid")
-        phase = next(iter(source_fluids.values())).phase
-        model = PumpModel if phase == "liquid" else CompressibleLossModel
-        if not isinstance(self.model, model):
-            self.model = model()
-        result = super().evaluate(state, node_state, source_fluids, directions)
-        result.metadata["pump_active"] = isinstance(self.model, PumpModel)
-        return result
+    def event_values(self, node_states_by_id):
+        return {}
 
 
 class LossComponent(FluidBranch):
-    """Passive loss selecting compressible or incompressible physics."""
+    """Restriction with explicit liquid/gas mode and bidirectional flow."""
 
-    def __init__(self, branch_id: str, definition: Dict[str, Any]):
-        super().__init__(branch_id, definition, IncompressibleLossModel())
+    def __init__(self, branch_id, definition, *, phase="liquid"):
+        super().__init__(branch_id, definition, phase=phase)
+        self.cda = self._positive("CdA")
 
-    def evaluate(self, state, node_state, source_fluids, directions):
-        if len(source_fluids) != 1:
-            raise ValueError(f"Loss branch '{self.id}' requires one source fluid")
-        phase = next(iter(source_fluids.values())).phase
-        if phase == "liquid":
-            model = IncompressibleLossModel
-        elif phase == "gas":
-            model = CompressibleLossModel
-        else:
-            raise ValueError(f"Loss branch '{self.id}' cannot transport phase '{phase}'")
-        if not isinstance(self.model, model):
-            self.model = model()
-        return super().evaluate(state, node_state, source_fluids, directions)
+    def mass_flow(self, branch_state, node_states_by_id):
+        fluid = next(iter(branch_state.flows.values()))["fluid"]
+        if self.phase == "liquid":
+            return self.cda * _liquid_flux(branch_state.dP, fluid)
+        # Preserve the original gas law: bulk pressures set capacity, while
+        # the port pressure difference sets its sign.
+        p_from = node_states_by_id[self.from_node]["P"]
+        p_to = node_states_by_id[self.to_node]["P"]
+        return copysign(self.cda * _gas_flux(max(p_from, p_to), min(p_from, p_to), fluid), branch_state.dP)
+
+    def _residual(self, branch_state, node_states_by_id):
+        return [(branch_state.mdot - self.mass_flow(branch_state, node_states_by_id)) / self.flow_scale]
 
 
-class RegulatorComponent(FluidBranch):
-    """Ideal, non-relieving gas regulator with finite fully-open CdA."""
+class PumpComponent(FluidBranch):
+    """Liquid pressure rise minus loss; passive gas restriction after dryout."""
 
-    def __init__(self, branch_id: str, definition: Dict[str, Any]):
-        for name in ("target_pressure", "CdA"):
-            value = float(definition[name])
-            if not np.isfinite(value) or value <= 0.0:
-                raise ValueError(f"Regulator '{branch_id}' requires finite {name} > 0")
-        super().__init__(branch_id, definition, IdealRegulatorModel())
+    def __init__(self, branch_id, definition, *, phase="liquid"):
+        super().__init__(branch_id, definition, phase=phase)
+        self.gas_cda = self._positive("gas_CdA")
+        self.loss_cda = self._positive("CdA") if definition.get("CdA") is not None else None
+        self.head_model = definition.get("head_model")
+        if self.head_model is not None and not callable(self.head_model):
+            raise ValueError("head_model must be callable")
+        self.design_head = self._positive("dP")
 
-    def evaluate(self, state, node_state, source_fluids, directions):
-        if any(fluid.phase != "gas" for fluid in source_fluids.values()):
-            raise ValueError(f"Regulator '{self.id}' requires gas")
-        result = super().evaluate(state, node_state, source_fluids, directions)
-        capacity = max(0.0, self.model.mass_flow(self, result, node_state))
-        result.metadata.update(
-            max_mdot=capacity,
-            opening_fraction=float(np.clip(result.mdot / capacity, 0.0, 1.0)) if capacity else 0.0,
-            target_pressure=float(self.parameters["target_pressure"]),
-            pressure_error=node_state[self.to_node]["P"] - self.parameters["target_pressure"],
-        )
-        return result
+    def evaluate(self, trial_values, node_states_by_id, source_fluids, directions):
+        branch_state = super().evaluate(trial_values, node_states_by_id, source_fluids, directions)
+        branch_state.properties["pump_active"] = self.active and self.phase == "liquid"
+        return branch_state
+
+    def _residual(self, branch_state, node_states_by_id):
+        fluid = next(iter(branch_state.flows.values()))["fluid"]
+        if self.phase == "gas":
+            p_from = node_states_by_id[self.from_node]["P"]
+            p_to = node_states_by_id[self.to_node]["P"]
+            expected = copysign(self.gas_cda * _gas_flux(max(p_from, p_to), min(p_from, p_to), fluid), branch_state.dP)
+            return [(branch_state.mdot - expected) / self.flow_scale]
+        head = self.head_model(branch_state.mdot) if self.head_model else self.design_head
+        if not isfinite(head) or not isfinite(fluid["rho"]) or fluid["rho"] <= 0:
+            raise TrialDomainError("Pump requires finite head and positive finite liquid density")
+        loss = copysign((branch_state.mdot / self.loss_cda) ** 2 / (2 * fluid["rho"]), branch_state.mdot) if self.loss_cda else 0.0
+        return [(branch_state.dP + head - loss) / max(abs(float(head)), 1e5)]
+
+
+class RegulatorComponent(LossComponent):
+    """Ideal non-relieving regulator: closed, regulating, or capacity-limited.
+
+    The projected equation preserves the old idealization. Its zero-time flow
+    ambiguity and consistent initialization must be addressed by the network.
+    """
+
+    def __init__(self, branch_id, definition):
+        super().__init__(branch_id, definition, phase="gas")
+        self.target = self._positive("target_pressure")
+
+    def set_phase(self, phase):
+        if phase != "gas":
+            raise ValueError("Regulator requires gas")
+        return super().set_phase(phase)
+
+    def evaluate(self, trial_values, node_states_by_id, source_fluids, directions):
+        branch_state = super().evaluate(trial_values, node_states_by_id, source_fluids, directions)
+        capacity = max(0.0, self.mass_flow(branch_state, node_states_by_id)) if self.active else 0.0
+        branch_state.properties.update(max_mdot=capacity,
+            opening_fraction=float(np.clip(branch_state.mdot / capacity, 0, 1)) if capacity else 0.0,
+            target_pressure=self.target, pressure_error=node_states_by_id[self.to_node]["P"] - self.target)
+        return branch_state
+
+    def _residual(self, branch_state, node_states_by_id):
+        q = branch_state.mdot / self.flow_scale
+        error = (self.target - node_states_by_id[self.to_node]["P"]) / self.target
+        capacity = branch_state.properties["max_mdot"] / self.flow_scale
+        return [q - np.clip(q + error, 0.0, capacity)]
 
 
 class BangBangValveComponent(LossComponent):
-    """Pressure-controlled gas valve with persistent hysteresis state."""
+    def __init__(self, branch_id, definition):
+        super().__init__(branch_id, definition, phase="gas")
+        self.target = self._positive("target_pressure")
+        self.band = self._positive("pressure_band")
+        if self.band >= self.target:
+            raise ValueError("pressure_band must be smaller than target_pressure")
+        self.set_open(definition["initially_open"])
 
-    def __init__(self, branch_id: str, definition: Dict[str, Any]):
-        FluidBranch.__init__(self, branch_id, definition, CompressibleLossModel())
-        target = float(definition["target_pressure"])
-        band = float(definition["pressure_band"])
-        if not 0.0 < band < target:
-            raise ValueError(
-                f"Bang-bang valve '{branch_id}' requires 0 < pressure_band "
-                "< target_pressure"
-            )
-        initially_open = definition["initially_open"]
-        if not isinstance(initially_open, bool):
-            raise ValueError("Bang-bang initially_open must be boolean")
-        self.is_open = initially_open
-        self._open_state = deepcopy(self.state)
+    def set_phase(self, phase):
+        if phase != "gas":
+            raise ValueError("Bang-bang valve requires gas")
+        return super().set_phase(phase)
 
-    def effective_cda(self) -> float:
-        return float(self.parameters["CdA"])
+    @property
+    def active(self):
+        return self.enabled and self.is_open
 
-    def solver_state(self) -> Dict[str, float]:
-        return super().solver_state() if self.is_open else {}
-
-    def evaluate(self, state, node_state, source_fluids, directions):
-        result = super().evaluate(state, node_state, source_fluids, directions)
-        result.metadata["is_open"] = self.is_open
-        return result
-
-    def residual(self, state, node_state) -> np.ndarray:
-        return super().residual(state, node_state) if self.is_open else np.empty(0)
-
-    def event_values(self, node_state) -> Dict[str, float]:
-        pressure = float(node_state[self.to_node]["P"])
-        target = float(self.parameters["target_pressure"])
-        band = float(self.parameters["pressure_band"])
-        margin = target + band - pressure if self.is_open else pressure - target + band
-        return {"switch": margin}
-
-    def apply_event(self, name: str) -> bool:
-        if name != "switch":
-            return super().apply_event(name)
-        self._set_open(not self.is_open)
-        return True
-
-    def _set_open(self, is_open: bool) -> None:
-        if self.is_open and not is_open:
-            self._open_state = deepcopy(self.state)
+    def set_open(self, is_open):
+        if not isinstance(is_open, bool):
+            raise ValueError("is_open must be boolean")
+        changed = getattr(self, "is_open", None) != is_open
         self.is_open = is_open
-        self.state = (
-            deepcopy(self._open_state)
-            if self.is_open
-            else BranchState(
-                state={name: 0.0 for name in self.state.state},
-                flows={
-                    name: {**flow, "mdot": 0.0}
-                    for name, flow in self.state.flows.items()
-                },
-            )
-        )
+        return changed
 
-    def update_control(self, tank_pressure: float) -> bool:
-        target = float(self.parameters["target_pressure"])
-        band = float(self.parameters["pressure_band"])
-        next_state = self.is_open
-        if self.is_open and tank_pressure >= target + band:
-            next_state = False
-        elif not self.is_open and tank_pressure <= target - band:
-            next_state = True
-        if next_state == self.is_open:
-            return False
-        self._set_open(next_state)
-        return True
+    def evaluate(self, trial_values, node_states_by_id, source_fluids, directions):
+        branch_state = super().evaluate(trial_values, node_states_by_id, source_fluids, directions)
+        branch_state.properties["is_open"] = self.is_open
+        return branch_state
+
+    def event_values(self, node_states_by_id):
+        """Active threshold, crossed in the negative direction; never toggles."""
+        if not self.enabled:
+            return {}
+        p = node_states_by_id[self.to_node]["P"]
+        return {"switch": self.target + self.band - p if self.is_open else p - self.target + self.band}
 
 
 class NozzleComponent(FluidBranch):
-    def __init__(self, branch_id: str, definition: Dict[str, Any]):
-        super().__init__(branch_id, definition, CombustionNozzleModel())
+    """Reacting throat or nonreacting gas/liquid discharge sharing one throat."""
 
-    def set_mode(self, combusting: bool, phases=()) -> bool:
-        model = CombustionNozzleModel() if combusting else TwinPathNozzleModel(phases)
-        if type(self.model) is type(model) and getattr(self.model, "phases", ()) == tuple(phases):
-            return False
-        self.switch_model(model)
-        return True
+    requires_enthalpy = False
 
-    def initialize_shutdown(self, inflows, chamber_pressure, ambient_pressure):
-        """Seed the shutdown nozzle entirely from its live inlet streams."""
+    def __init__(self, branch_id, definition):
+        super().__init__(branch_id, definition, phase="gas")
+        self.throat_area = self._positive("At") * self._positive("Cd")
+        self.set_mode(True)
 
-        phase_flows = {
-            phase: [flow for flow in inflows if flow["fluid"].phase == phase]
-            for phase in self.model.phases
-        }
-        self.state.flows = {
-            phase: {
-                "mdot": sum(float(flow["mdot"]) for flow in flows),
-                "direction": 1,
-                "fluid": (
-                    flows[0]["fluid"]
-                    if flows
-                    else FluidState(self.fluid, phase)
-                ),
-            }
-            for phase, flows in phase_flows.items()
-        }
-        if set(phase_flows) != {"gas", "liquid"} or not all(phase_flows.values()):
-            return
-        required_area = {}
-        for phase, flows in phase_flows.items():
-            total = sum(float(flow["mdot"]) for flow in flows)
-            capacity = 0.0
+    def set_phase(self, phase):
+        if phase != "gas":
+            raise ValueError("Use set_mode to select shutdown nozzle phases")
+        return super().set_phase(phase)
+
+    def set_mode(self, combusting, phases=()):
+        if not isinstance(combusting, bool):
+            raise ValueError("combusting must be boolean")
+        phases = tuple(sorted(phases))
+        if len(phases) != len(set(phases)) or not set(phases) <= {"gas", "liquid"}:
+            raise ValueError("Shutdown phases must be unique gas/liquid entries")
+        phases = () if combusting else phases
+        changed = (getattr(self, "combusting", None), getattr(self, "phases", None)) != (combusting, phases)
+        self.combusting, self.phases = combusting, phases
+        return changed
+
+    @property
+    def equation_names(self):
+        return ("flow",) if self.combusting or not self.active else tuple(f"{p}_flow" for p in self.phases)
+
+    @property
+    def variable_names(self):
+        if self.combusting or not self.active:
+            return ("mdot",)
+        return tuple(f"mdot_{phase}" for phase in self.phases) + (("gas_area_fraction",) if len(self.phases) == 2 else ())
+
+    def evaluate(self, trial_values, node_states_by_id, source_fluids, directions):
+        if self.combusting or not self.active:
+            return super().evaluate(trial_values, node_states_by_id, source_fluids, directions)
+        self._check_trial_values(trial_values)
+        if {f.phase for f in source_fluids.values()} != set(self.phases):
+            raise ValueError("Nozzle source phases changed; apply the transition between solves")
+        p_from, p_to = self.pressures(node_states_by_id)
+        flows, thrust = {}, 0.0
+        for phase in self.phases:
+            sources = {name: f for name, f in source_fluids.items() if f.phase == phase}
+            q = trial_values[f"mdot_{phase}"] / len(sources)
+            for name, f in sources.items():
+                flows[name] = {"mdot": q, "direction": directions[phase], "fluid": f}
+                if phase == "gas":
+                    chamber_p = node_states_by_id[self.from_node]["P"]
+                    ambient_p = node_states_by_id[self.to_node]["P"]
+                    _gas_flux(chamber_p, ambient_p, f)  # Validate thermodynamic inputs.
+                    velocity = sqrt(2 * f["gamma"] / (f["gamma"] - 1) * f["R"] * f["T"]
+                                    * (1 - (ambient_p / chamber_p) ** ((f["gamma"] - 1) / f["gamma"]))) if chamber_p > ambient_p else 0.0
+                else:
+                    velocity = _liquid_flux(max(p_from - p_to, 0), f) / f["rho"]
+                thrust += q * velocity
+        area_fraction = trial_values.get("gas_area_fraction", 1.0 if self.phases == ("gas",) else 0.0)
+        properties = {"thrust": thrust}
+        if "gas_area_fraction" not in trial_values:
+            properties["gas_area_fraction"] = area_fraction
+        return BranchState(trial_values=trial_values, flows=flows,
+                           dP=p_from - p_to, properties=properties)
+
+    def _residual(self, branch_state, node_states_by_id):
+        if self.combusting:
+            chamber = node_states_by_id[self.from_node]
+            expected = self.throat_area * chamber["P"] / chamber["cstar"] if branch_state.dP > 0 and chamber["cstar"] > 0 else 0.0
+            return [(branch_state.mdot - expected) / self.flow_scale]
+        p_from = node_states_by_id[self.from_node]["P"]
+        p_to = node_states_by_id[self.to_node]["P"]
+        fraction = branch_state["gas_area_fraction"]
+        areas = {"gas": fraction, "liquid": 1 - fraction}
+        equations = []
+        for phase in self.phases:
+            flows = [flow for flow in branch_state.flows.values() if flow["fluid"].phase == phase]
+            q = sum(flow["mdot"] for flow in flows)
+            flux = 0.0
             for flow in flows:
-                fluid = flow["fluid"]
-                flux = (
-                    FluidsDef.compressible_mass_flux(
-                        chamber_pressure,
-                        ambient_pressure,
-                        fluid["T"],
-                        fluid["R"],
-                        fluid["gamma"],
-                    )
-                    if phase == "gas"
-                    else np.sqrt(
-                        2.0
-                        * fluid["rho"]
-                        * max(chamber_pressure - ambient_pressure, 0.0)
-                    )
-                )
-                capacity += float(flow["mdot"]) / total * flux
-            required_area[phase] = total / capacity
-        self.state.state["gas_area_fraction"] = required_area["gas"] / sum(
-            required_area.values()
-        )
+                f = flow["fluid"]
+                weight = flow["mdot"] / q if q else 1 / len(flows)
+                capacity = _gas_flux(p_from, p_to, f) if phase == "gas" else _liquid_flux(max(branch_state.dP, 0), f)
+                flux += weight * capacity
+            equations.append((q - self.throat_area * areas[phase] * flux) / self.flow_scale)
+        return equations
 
-    def evaluate(self, state, node_state, source_fluids, directions):
-        if not source_fluids and not (
-            isinstance(self.model, TwinPathNozzleModel) and not self.model.phases
-        ):
-            raise ValueError(f"Nozzle branch '{self.id}' requires a source fluid")
-        if isinstance(self.model, CombustionNozzleModel) and (
-            len(source_fluids) != 1 or next(iter(source_fluids.values())).phase != "gas"
-        ):
-            raise ValueError(f"Combustion nozzle '{self.id}' requires one gas stream")
-        return super().evaluate(state, node_state, source_fluids, directions)
+
+__all__ = ["FluidBranch", "LossComponent", "PumpComponent", "RegulatorComponent",
+           "BangBangValveComponent", "NozzleComponent"]

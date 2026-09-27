@@ -1,0 +1,210 @@
+# SI units; SUNDIALS/IDAS fluid integration. Wiring is selected by prop_system.template.
+advanced:
+  flight:
+    corrector_max_iterations: 10
+    corrector_tolerance: 1.0e-08
+    event_max_iterations: 50
+    event_time_tolerance: 1.0e-06
+  fluid_network:
+    jacobian: colored
+    max_step: 1.0
+    residual_retries: 2
+    residual_tolerance: 1.0e-05
+    retry_rtol_factor: 0.1
+    retry_rtol_floor: 1.0e-08
+    rtol: 1.0e-05
+  heating:
+    convergence_tolerance: 0.001
+    max_iterations: 20
+    temperature_tolerance: 0.01
+  t_wall_min: 0.001
+  weld_efficiency: 1.0
+aero:
+  aoa_schedule:
+  - - 0.0
+    - 5.0
+  - - 180.0
+    - 5.0
+  finish: 20um
+  fins_on_boattail: true
+  model: AeroTables/dragmodel.h5
+  nose: vonkarman
+avi_bay:
+  avi_mass: 2.0
+  bulkhead_material: carbon_fiber_standard
+  clamshell_material: fiberglass_standard
+  clamshell_thickness: 0.003175
+  length: 0.3
+  ring_material: aluminum_6061_t6
+constraints:
+  goal_apogee: 150000.0
+  max_burn_duration: 75.0
+engine:
+  cf_efficiency: 0.95
+  cstar_efficiency: 0.85
+  exit_pressure: 75842.3
+  fuel: RP-1
+  length: 0.5715
+  mass: 30.0
+  oxidizer: LOX
+environment:
+  altitude_step: 100.0
+  max_altitude: 150000.0
+fin_can:
+  boattail_aft_diameter: 0.3032125
+  boattail_length: 0.5715
+  boattail_wall_thickness: 0.00318
+  fin_count: 4
+  fin_thickness: 0.009525
+  material: carbon_fiber_standard
+  root_chord: 0.508
+  span: 0.228
+  sweep_fraction: 0.75
+  tip_chord: 0.203
+inter_tank:
+  clamshell_material: carbon_fiber_standard
+  clamshell_wall_thickness: 0.00318
+  stringer_count: 4
+  stringer_material: aluminum_7075_t6
+launch:
+  altitude: 0.0
+  rail_height: 15.0
+  velocity: 0.0
+nosecone:
+  fineness_ratio: 5.0
+  material: carbon_fiber_standard
+  profile: von_karman
+  reco_mass: 5.0
+  tip_radius: 0.01
+press_tank:
+  airframe_material: carbon_fiber_standard
+  airframe_wall_thickness: 0.00318
+  mount_material: aluminum_7075_t6
+  mount_thickness: 0.00318
+prop_system:
+  MR_target: 2.0
+  Pc_target: 1723689.323292
+  fuel_inj_stiffness: 0.2
+  fuel_tank_inj_dp: 275790.291727
+  initial_conditions:
+    fuel_tank:
+      T: 293.0
+      fluid: n-Dodecane
+      gas_T: 293.0
+      gas_fluid: Nitrogen
+    ox_tank:
+      T: 95.0
+      fluid: Oxygen
+      gas_T: 293.0
+      gas_fluid: Nitrogen
+    press_tank:
+      T: 300.0
+      fluid: Nitrogen
+  nozzle_cd: 1.0
+  ox_inj_stiffness: 0.2
+  ox_tank_inj_dp: 275790.291727
+  template: Configs/templates/pressure_fed_bang_bang.yaml
+  thrust_target: 18550
+  bang_bang:
+    FUEL_BANGBANG:
+      tank_id: fuel_tank
+      duty_cycle: 0.25
+      collapse_factor: 1.2
+      pressure_band: 68947.6
+      initially_open: true
+    OX_BANGBANG:
+      tank_id: ox_tank
+      duty_cycle: 0.25
+      collapse_factor: 1.2
+      pressure_band: 68947.6
+      initially_open: true
+property_models:
+  combustion:
+    source: table
+    table:
+      lookup_file: FluidTables/sizer_lookups.h5
+      nfz: 1
+  pure_fluid:
+    source: table
+    table:
+      fluids:
+        Nitrogen:
+          pt: nitrogen_pt
+          saturation: nitrogen_saturation
+        Oxygen: oxygen_pt
+        n-Dodecane: ndodecane_pt
+      lookup_file: FluidTables/sizer_lookups.h5
+simulation:
+  dt: 1.0
+  fluid_solve_post_shutdown: false
+  output: outputs/flight_pressure_fed_bang_bang.csv
+  plot: outputs/flight_pressure_fed_bang_bang.png
+  t_end: 300.0
+tanks:
+  fuel_tank:
+    ellipse_ratio: 1.75
+    material: aluminum_6061_t6
+    passthrough_diameter: 0.1016
+    passthrough_wall_thickness: 0.00254
+    propellant_mass: 115.0
+    type: propellant
+    ullage_factor: 1.1
+  ox_tank:
+    ellipse_ratio: 1.75
+    material: aluminum_6061_t6
+    passthrough_diameter: 0.0
+    passthrough_wall_thickness: 0
+    propellant_mass: 230.0
+    type: propellant
+    ullage_factor: 1.1
+  press_tank:
+    design_pressure: 29647456.360622
+    ellipse_ratio: 1.75
+    material: 1018_carbon_steel_standard
+    min_temperature: 220.0
+    outer_diameter: 0.22
+    type: pressurant
+    volume: 0.1
+    wall_thickness: 0.0032
+thermal:
+  external_heating: false
+  initial_temperature: 288.15
+  material_overrides:
+    fiberglass_standard:
+      specific_heat: 800.0
+  nodes:
+    fuel_tank:
+      insulated: false
+    ox_tank:
+      insulated: false
+    press_tank:
+      insulated: true
+  sink_temperature: 288.15
+vehicle:
+  OMLD: 0.33655
+  dx: 0.01
+  sections:
+  - type: nosecone
+  - type: avi_bay
+  - tank_id: press_tank
+    type: press_tank
+  - area_moment_of_inertia: 3.6e-05
+    avi_mass: 2.0
+    feed_system_mass: 5.0
+    length: 0.12
+    type: inter_tank
+  - tank_id: ox_tank
+    type: prop_tank
+  - area_moment_of_inertia: 3.6e-05
+    avi_mass: 2.0
+    feed_system_mass: 5.0
+    length: 0.15
+    type: inter_tank
+  - tank_id: fuel_tank
+    type: prop_tank
+  - area_moment_of_inertia: 3.6e-05
+    avi_mass: 2.0
+    feed_system_mass: 5.0
+    length: 0.762
+    type: inter_tank
+  - type: fin_can

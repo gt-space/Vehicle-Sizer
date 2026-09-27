@@ -29,7 +29,7 @@ class VehicleMassDistributionTests(unittest.TestCase):
         vehicle = Vehicle(
             cfg={
                 "vehicle": {"dx": 1.0},
-                "prop_system": {"state0": {}},
+                "prop_system": {"initial_conditions": {}},
                 "tanks": {},
             }
         )

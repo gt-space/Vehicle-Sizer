@@ -24,7 +24,7 @@ class OperatingInfeasible(DesignInfeasible):
 
 
 class EvaluationFailure(RuntimeError):
-    """Fatal: callers must not convert this to an optimizer penalty."""
+    """Failed evaluation with reproducible inputs; optimizer may rank runtime failures as unresolved."""
     def __init__(self, phase, config, partial_result=None):
         self.phase = phase
         self.config = config

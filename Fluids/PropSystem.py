@@ -4,12 +4,13 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from math import isfinite
 from copy import deepcopy
 from constraints import DesignInfeasible
-from .pump_curve import scaled_pump_curve
-from .design import initial_conditions, pressure_ladder, tank_design_pressure, pump_definition, size_electric_pump
+from Fluids.pump_curve import scaled_pump_curve
+from Fluids.design import initial_conditions, pump_definition, size_electric_pump
+from Fluids.templates import load_template
 
 from .FluidNetwork import FluidNetwork
-from . import FluidsDef
-from FluidProperties.PropertyModels import (
+from Fluids import FluidsDef
+from FluidTables.PropertyModels import (
     CEAPropertySource,
     CombustionPropertySource,
     CoolPropPropertySource,
@@ -38,99 +39,99 @@ def _make_cea(engine_cfg: Dict[str, Any]):
 
 
 class PropSystem:
-    """Configure, size, and expose the vehicle fluid network."""
+    """Size and bind one declarative template, then expose the IDAS network to flight."""
 
-    def __init__(
-        self,
-        cfg: Dict[str, Any],
-        tanks: Mapping[str, Any],
-        fluid_properties: Optional[PureFluidPropertySource] = None,
-        combustion_properties: Optional[CombustionPropertySource] = None,
-    ):
-        self.cfg = deepcopy(cfg["prop_system"])
-        self.tank_definitions = deepcopy(cfg.get("tanks", {}))
-        self.design_config = cfg
-        self.initial_states = initial_conditions(cfg)
-        self.engine_cfg = cfg["engine"]
-        legacy = self.cfg.get("press_model")
-        self.feed_type = self.cfg.get(
-            "feed_type",
-            "pressure_fed" if legacy == "blowdown" else legacy,
-        )
-        self.pressurization = self.cfg.get(
-            "pressurization",
-            "blowdown" if legacy == "blowdown" else "bang_bang",
-        )
-        if self.feed_type not in ("pressure_fed", "pump_fed"):
-            raise ValueError(f"Unknown feed_type={self.feed_type!r}")
-        if self.pressurization not in ("bang_bang", "regulator", "blowdown"):
-            raise ValueError(f"Unknown pressurization={self.pressurization!r}")
-        self.fluid_properties = (
-            fluid_properties
-            if fluid_properties is not None
-            else CoolPropPropertySource()
-        )
+    def __init__(self, cfg, tanks, fluid_properties=None, combustion_properties=None):
+        self.design_config = deepcopy(cfg)
+        self.cfg = self.design_config["prop_system"]
+        self.template = load_template(self.design_config)
+        self.cfg["template"] = self.template
+        self.tank_definitions = self.design_config.get("tanks", {})
+        self.initial_states = initial_conditions(self.design_config)
+        self.engine_cfg = self.design_config["engine"]
+        self.fluid_properties = fluid_properties if fluid_properties is not None else CoolPropPropertySource()
         self.combustion_properties = combustion_properties
-        tank_geometries = {
-            tank_id: tank.get_fluid_geometry() for tank_id, tank in tanks.items()
-        }
-        self._initialize_tank_states(tanks, tank_geometries)
-
-        self.Pc_target = float(self.cfg["Pc_target"])
-        self.MR_target = float(self.cfg["MR_target"])
-        self.thrust_target = float(self.cfg["thrust_target"])
-        self.fuel_inj_stiffness = float(self.cfg["fuel_inj_stiffness"])
-        self.ox_inj_stiffness = float(self.cfg["ox_inj_stiffness"])
-
-        positive = {
-            "Pc_target": self.Pc_target,
-            "MR_target": self.MR_target,
-            "thrust_target": self.thrust_target,
-        }
-        invalid = [name for name, value in positive.items() if value <= 0.0]
-        if invalid:
-            raise ValueError(f"PropSystem inputs must be positive: {invalid}")
-        if min(self.fuel_inj_stiffness, self.ox_inj_stiffness) < 0.0:
-            raise ValueError("Injector stiffness values must be nonnegative")
-
-        if self.feed_type == "pump_fed":
-            self.fuel_inj_pumpout_dp = float(self.cfg["fuel_inj_pumpout_dp"])
-            self.ox_inj_pumpout_dp = float(self.cfg["ox_inj_pumpout_dp"])
-            self.fuel_pumpin_tank_dp = float(self.cfg["fuel_pumpin_tank_dp"])
-            self.ox_pumpin_tank_dp = float(self.cfg["ox_pumpin_tank_dp"])
-        else:
-            self.fuel_tank_inj_dp = float(self.cfg["fuel_tank_inj_dp"])
-            self.ox_tank_inj_dp = float(self.cfg["ox_tank_inj_dp"])
-
+        geometries = {key: tank.get_fluid_geometry() for key, tank in tanks.items()}
+        self._initialize_tank_states(tanks, geometries)
+        for name in ("Pc_target", "MR_target", "thrust_target"):
+            value = float(self.cfg[name])
+            if not isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+            setattr(self, name, value)
         self._size_engine()
-        self.target_ladder = self._build_pressure_ladder()
-
-        circuits, nodes, branches = self._wire_network(tank_geometries)
-        self.pump_sizing = {}
-        self.sizing_constraints = {}
+        circuits, nodes, branches = self._bind_template(geometries)
+        self.pump_sizing, self.sizing_constraints = {}, {}
         self._size_branches(circuits, nodes, branches)
         if set(self.pump_sizing) != set(self.cfg.get("pumps", {})):
             raise ValueError("Every configured pump must be referenced by exactly one template branch")
         if any(value < 0 for value in self.sizing_constraints.values()):
             raise DesignInfeasible(self.sizing_constraints, self.pump_sizing)
-        self.node_definitions = nodes
-        self.branch_definitions = branches
-        self.circuits = circuits
+        self.circuits, self.node_definitions, self.branch_definitions = circuits, nodes, branches
         self._bind_outputs()
         self._configure_constraints()
-        post_shutdown = cfg.get("simulation", {}).get("fluid_solve_post_shutdown", True)
-        if not isinstance(post_shutdown, bool):
-            raise ValueError("simulation.fluid_solve_post_shutdown must be boolean")
-        self.network = FluidNetwork(
-            nodes=nodes,
-            branches=branches,
-            fluid_properties=self.fluid_properties,
-            combustion_properties=self.combustion_properties,
-            tolerances=cfg.get("advanced", {}).get("fluid_network"),
-            constraint_monitor=self._constraint_margins,
-            stop_at_shutdown=not post_shutdown,
-            stop_at_triple_point=cfg.get("simulation", {}).get("fluid_stop_at_triple_point", False),
-        )
+        simulation = self.design_config.get("simulation", {})
+        post_shutdown = simulation.get("fluid_solve_post_shutdown", True)
+        triple = simulation.get("fluid_stop_at_triple_point", False)
+        if not isinstance(post_shutdown, bool) or not isinstance(triple, bool):
+            raise ValueError("Fluid stopping policies must be boolean")
+        self.network = FluidNetwork(nodes, branches, fluid_properties=self.fluid_properties,
+                                    combustion_properties=self.combustion_properties,
+                                    tolerances=self.design_config.get("advanced", {}).get("fluid_network"),
+                                    constraint_monitor=self._constraint_margins,
+                                    stop_at_shutdown=not post_shutdown, stop_at_triple_point=triple)
+
+    def _bind_template(self, geometries):
+        template = deepcopy(self.template)
+        circuits, nodes, branches = (template[k] for k in ("circuits", "nodes", "branches"))
+        used = []
+        for circuit in circuits.values():
+            if "tank_id" in circuit:
+                state = self.initial_states[circuit["tank_id"]]
+                circuit.setdefault("fluid", state["fluid"])
+                circuit.setdefault("state0", {"P": state["P"], "T": state["T"]})
+            elif circuit["prop"] == "exhaust":
+                circuit.setdefault("fluid", "combustion_gas")
+                circuit.setdefault("state0", {"P": self.Pc_target, "T": self.combustion_gas["T"]})
+        for key, node in nodes.items():
+            kind = FluidNetwork._kind(node)
+            node.pop("model", None)
+            node["component"] = kind
+            if kind in ("propellant_tank", "pressurant_tank"):
+                tank_id = node["tank_id"]
+                used.append(tank_id)
+                state = deepcopy(self.initial_states[tank_id])
+                node.update(geometry=geometries[tank_id], state0=state)
+                if kind == "pressurant_tank":
+                    node["fluid"] = state["fluid"]
+                else:
+                    node.update(liquid_fluid=state["fluid"], gas_fluid=state["gas_fluid"])
+            elif kind == "combustor":
+                for role in ("oxidizer", "fuel"):
+                    fluids = {circuits[b["circuit"]]["fluid"] for b in branches.values()
+                              if b["to"] == key and circuits[b["circuit"]]["prop"] == role}
+                    if len(fluids) != 1:
+                        raise ValueError(f"Combustor {key!r} needs one {role} fluid identity")
+                    node.setdefault(f"{role}_fluid", fluids.pop())
+                node.setdefault("combustion_fluid", "combustion_gas")
+                node.update(expansion_ratio=self.expansion_ratio,
+                            cstar_efficiency=self.cstar_efficiency, cf_efficiency=self.cf_efficiency)
+        if len(used) != len(set(used)) or set(used) != set(geometries):
+            raise ValueError("Template must reference every configured tank exactly once")
+        for key, branch in branches.items():
+            kind = FluidNetwork._kind(branch)
+            branch.pop("model", None)
+            branch["component"] = kind
+            if kind == "nozzle":
+                branch.setdefault("At", self.throat_area)
+                branch.setdefault("Cd", self.nozzle_cd)
+            else:
+                branch.setdefault("CdA", None)
+            for end in ("from", "to"):
+                node = nodes[branch[end]]
+                if node["component"] == "propellant_tank" and f"{end}_port" not in branch:
+                    raise ValueError(f"Branch {key!r} must specify {end}_port for a propellant tank")
+        return circuits, nodes, branches
+
 
     def _initialize_tank_states(
         self,
@@ -143,7 +144,7 @@ class PropSystem:
             try:
                 state = self.initial_states[tank_id]
             except KeyError as error:
-                raise ValueError(f"Tank {tank_id!r} requires a state0 entry") from error
+                raise ValueError(f"Tank {tank_id!r} requires an initial_conditions entry") from error
             geometry = geometries[tank_id]
             required = {"fluid", "P", "T"}
             if "gas_fluid" in state:
@@ -151,7 +152,7 @@ class PropSystem:
             missing = required.difference(state)
             if missing:
                 raise ValueError(
-                    f"Tank {tank_id!r} state0 is missing {sorted(missing)}"
+                    f"Tank {tank_id!r} initial_conditions is missing {sorted(missing)}"
                 )
             pressure = float(state["P"])
 
@@ -175,10 +176,6 @@ class PropSystem:
                 raise ValueError(
                     f"Tank {tank_id!r} must supply all conserved states or none"
                 )
-            if all(supplied) and not hasattr(tank, "prop_mass"):
-                # Compatibility for geometry-only network harnesses. Vehicle
-                # builds always derive inventories from propellant_mass and P/T.
-                continue
             if not hasattr(tank, "prop_mass"):
                 raise ValueError(
                     f"Tank {tank_id!r} requires prop_mass to initialize from P/T"
@@ -260,510 +257,6 @@ class PropSystem:
         self.mdot_fuel = self.mdot_total / (1.0 + self.MR_target)
         self.nozzle_cd = float(self.cfg["nozzle_cd"])
 
-    def _build_pressure_ladder(self) -> Dict[str, float]:
-        return pressure_ladder(self.cfg)
-
-    def _state0(self, name: str) -> Dict[str, Any]:
-        return dict(self.initial_states[name])
-
-    def _wire_network(
-        self,
-        tank_geometries: Mapping[str, Any],
-    ) -> Tuple[
-        Dict[str, Dict[str, Any]],
-        Dict[str, Dict[str, Any]],
-        Dict[str, Dict[str, Any]],
-    ]:
-        if "template" in self.cfg:
-            template = self._configured_template(tank_geometries)
-        elif self.feed_type == "pump_fed":
-            template = self._template_pump_fed(tank_geometries)
-        elif self.pressurization != "blowdown":
-            template = self._template_pressure_fed(tank_geometries)
-        else:
-            template = self._template_blowdown(tank_geometries)
-        circuits, nodes, branches = template
-        for branch in branches.values():
-            source = nodes[branch["from"]].get("component")
-            target = nodes[branch["to"]].get("component")
-            circuit = circuits[branch["circuit"]]["prop"]
-            if source == "pressurant_tank":
-                branch.setdefault("from_port", "gas")
-            elif source == "propellant_tank":
-                branch.setdefault("from_port", "liquid" if circuit in ("oxidizer", "fuel") else "ullage")
-            elif source == "combustor":
-                branch.setdefault("from_port", "nozzle")
-            if target == "propellant_tank":
-                branch.setdefault("to_port", "ullage")
-            elif target == "combustor" and circuit in ("oxidizer", "fuel"):
-                branch.setdefault("to_port", circuit)
-        return circuits, nodes, branches
-
-    def _configured_template(self, tank_geometries):
-        """Bind a declarative wiring template to sized tank/engine data."""
-        template = deepcopy(self.cfg["template"])
-        circuits, nodes, branches = (template[key] for key in ("circuits", "nodes", "branches"))
-        used = []
-        for node in nodes.values():
-            kind = FluidNetwork._kind(node)
-            node.pop("model", None)
-            node["component"] = kind
-            if kind in ("propellant_tank", "pressurant_tank"):
-                tank_id = node["tank_id"]
-                used.append(tank_id)
-                state = self._state0(tank_id)
-                node.update(geometry=tank_geometries[tank_id], state0=state)
-                if kind == "pressurant_tank":
-                    node["P0"] = state["P"]
-                if "P0" not in node:
-                    node["P0"] = tank_design_pressure(self.design_config, tank_id, fallback=state["P"])
-                if kind == "pressurant_tank":
-                    node["fluid"] = state["fluid"]
-                else:
-                    node.update(liquid_fluid=state["fluid"], gas_fluid=state["gas_fluid"])
-            elif kind == "combustor":
-                node.setdefault("P0", self.Pc_target)
-                node.update(expansion_ratio=self.expansion_ratio,
-                            cstar_efficiency=self.cstar_efficiency, cf_efficiency=self.cf_efficiency)
-            if isinstance(node.get("P0"), str):
-                node["P0"] = self.target_ladder[node["P0"]]
-        if len(used) != len(set(used)) or set(used) != set(tank_geometries):
-            raise ValueError("Template must reference every configured tank exactly once")
-        for circuit in circuits.values():
-            if "tank_id" in circuit:
-                state = self._state0(circuit["tank_id"])
-                circuit.setdefault("fluid", state["fluid"])
-                circuit.setdefault("state0", {"P": state["P"], "T": state["T"]})
-            elif circuit["prop"] == "exhaust":
-                circuit.setdefault("fluid", "combustion_gas")
-                circuit.setdefault("state0", {"P": self.Pc_target, "T": self.combustion_gas["T"]})
-        for branch in branches.values():
-            kind = FluidNetwork._kind(branch)
-            branch.pop("model", None)
-            branch["component"] = kind
-            if branch.get("component") == "nozzle":
-                branch.setdefault("At", self.throat_area)
-                branch.setdefault("Cd", self.nozzle_cd)
-            else:
-                branch.setdefault("CdA", None)
-        return circuits, nodes, branches
-
-    def _pressurant_branches(self):
-        """Both active pressurization options share routing and capacity sizing."""
-        if self.pressurization == "blowdown":
-            return {}
-        regulator = self.pressurization == "regulator"
-        suffix = "REGULATOR" if regulator else "BANGBANG"
-        return {
-            f"{leg}_{suffix}": {
-                "component": "regulator" if regulator else "bang_bang_valve",
-                "circuit": "pressurant", "from": "press_tank", "to": destination,
-                **self.cfg[self.pressurization][f"{leg}_{suffix}"], "CdA": None,
-            }
-            for leg, destination in (("OX", "ox_ullage"), ("FUEL", "fuel_ullage"))
-        }
-
-    def _template_pressure_fed(self, tank_geometries: Mapping[str, Any]):
-        if "press_tank" not in tank_geometries:
-            raise ValueError("Pressure-fed template requires tank 'press_tank'")
-        ox_state0 = self._state0("ox_tank")
-        fuel_state0 = self._state0("fuel_tank")
-        press_state0 = self._state0("press_tank")
-        ox_fluid = str(ox_state0["fluid"])
-        fuel_fluid = str(fuel_state0["fluid"])
-        press_fluid = str(press_state0["fluid"])
-        circuits = {
-            "oxidizer": {
-                "prop": "oxidizer",
-                "fluid": ox_fluid,
-                "state0": {"P": ox_state0["P"], "T": ox_state0["T"]},
-            },
-            "fuel": {
-                "prop": "fuel",
-                "fluid": fuel_fluid,
-                "state0": {"P": fuel_state0["P"], "T": fuel_state0["T"]},
-            },
-            "pressurant": {
-                "prop": "pressurant",
-                "fluid": press_fluid,
-                "state0": {"P": press_state0["P"], "T": press_state0["T"]},
-            },
-            "combustion_gas": {
-                "prop": "exhaust",
-                "fluid": "combustion_gas",
-                "state0": {"P": self.Pc_target, "T": self.combustion_gas["T"]},
-            },
-        }
-        nodes = {
-            "press_tank": {
-                "component": "pressurant_tank",
-                "tank_id": "press_tank",
-                "fluid": press_fluid,
-                "geometry": tank_geometries["press_tank"],
-                "P0": float(press_state0["P"]),
-                "state0": press_state0,
-            },
-            "ox_ullage": {
-                "component": "propellant_tank",
-                "tank_id": "ox_tank",
-                "liquid_fluid": ox_fluid,
-                "gas_fluid": press_fluid,
-                "geometry": tank_geometries["ox_tank"],
-                "P0": self.target_ladder["Pox_tank"],
-                "state0": ox_state0,
-            },
-            "ox_inj_in": {
-                "model": "junction",
-                "P0": self.target_ladder["Pox_inj"],
-            },
-            "fuel_ullage": {
-                "component": "propellant_tank",
-                "tank_id": "fuel_tank",
-                "liquid_fluid": fuel_fluid,
-                "gas_fluid": press_fluid,
-                "geometry": tank_geometries["fuel_tank"],
-                "P0": self.target_ladder["Pfuel_tank"],
-                "state0": fuel_state0,
-            },
-            "fuel_inj_in": {
-                "model": "junction",
-                "P0": self.target_ladder["Pfuel_inj"],
-            },
-            "thrust_chamber": {
-                "component": "combustor",
-                "P0": self.Pc_target,
-                "oxidizer_fluid": ox_fluid,
-                "fuel_fluid": fuel_fluid,
-                "combustion_fluid": "combustion_gas",
-                "ambient_node": "ambient",
-                "expansion_ratio": self.expansion_ratio,
-                "cstar_efficiency": self.cstar_efficiency,
-                "cf_efficiency": self.cf_efficiency,
-            },
-            "ambient": {"model": "boundary"},
-        }
-        branches = {
-            **self._pressurant_branches(),
-            "OX_TANK_INJ": {
-                "component": "loss",
-                "circuit": "oxidizer",
-                "from": "ox_ullage",
-                "to": "ox_inj_in",
-                "CdA": None,
-            },
-            "OX_INJ": {
-                "component": "loss",
-                "circuit": "oxidizer",
-                "from": "ox_inj_in",
-                "to": "thrust_chamber",
-                "CdA": None,
-            },
-            "FUEL_TANK_INJ": {
-                "component": "loss",
-                "circuit": "fuel",
-                "from": "fuel_ullage",
-                "to": "fuel_inj_in",
-                "CdA": None,
-            },
-            "FUEL_INJ": {
-                "component": "loss",
-                "circuit": "fuel",
-                "from": "fuel_inj_in",
-                "to": "thrust_chamber",
-                "CdA": None,
-            },
-            "NOZZLE": {
-                "component": "nozzle",
-                "circuit": "combustion_gas",
-                "from": "thrust_chamber",
-                "to": "ambient",
-                "At": self.throat_area,
-                "Cd": self.nozzle_cd,
-            },
-        }
-        return circuits, nodes, branches
-
-    def _template_blowdown(self, tank_geometries: Mapping[str, Any]):
-        ox_state0 = self._state0("ox_tank")
-        fuel_state0 = self._state0("fuel_tank")
-        ox_fluid = str(ox_state0["fluid"])
-        fuel_fluid = str(fuel_state0["fluid"])
-        circuits = {
-            "oxidizer": {
-                "prop": "oxidizer",
-                "fluid": ox_fluid,
-                "state0": {"P": ox_state0["P"], "T": ox_state0["T"]},
-            },
-            "fuel": {
-                "prop": "fuel",
-                "fluid": fuel_fluid,
-                "state0": {"P": fuel_state0["P"], "T": fuel_state0["T"]},
-            },
-            "combustion_gas": {
-                "prop": "exhaust",
-                "fluid": "combustion_gas",
-                "state0": {"P": self.Pc_target, "T": self.combustion_gas["T"]},
-            },
-        }
-        nodes = {
-            "ox_ullage": {
-                "component": "propellant_tank",
-                "tank_id": "ox_tank",
-                "liquid_fluid": ox_fluid,
-                "gas_fluid": str(ox_state0["gas_fluid"]),
-                "geometry": tank_geometries["ox_tank"],
-                "P0": self.target_ladder["Pox_tank"],
-                "state0": ox_state0,
-            },
-            "ox_inj_in": {
-                "model": "junction",
-                "P0": self.target_ladder["Pox_inj"],
-            },
-            "fuel_ullage": {
-                "component": "propellant_tank",
-                "tank_id": "fuel_tank",
-                "liquid_fluid": fuel_fluid,
-                "gas_fluid": str(fuel_state0["gas_fluid"]),
-                "geometry": tank_geometries["fuel_tank"],
-                "P0": self.target_ladder["Pfuel_tank"],
-                "state0": fuel_state0,
-            },
-            "fuel_inj_in": {
-                "model": "junction",
-                "P0": self.target_ladder["Pfuel_inj"],
-            },
-            "thrust_chamber": {
-                "component": "combustor",
-                "P0": self.Pc_target,
-                "oxidizer_fluid": ox_fluid,
-                "fuel_fluid": fuel_fluid,
-                "combustion_fluid": "combustion_gas",
-                "ambient_node": "ambient",
-                "expansion_ratio": self.expansion_ratio,
-                "cstar_efficiency": self.cstar_efficiency,
-                "cf_efficiency": self.cf_efficiency,
-            },
-            "ambient": {"model": "boundary"},
-        }
-        branches = {
-            "OX_TANK_INJ": {
-                "component": "loss",
-                "circuit": "oxidizer",
-                "from": "ox_ullage",
-                "to": "ox_inj_in",
-                "CdA": None,
-            },
-            "OX_INJ": {
-                "component": "loss",
-                "circuit": "oxidizer",
-                "from": "ox_inj_in",
-                "to": "thrust_chamber",
-                "CdA": None,
-            },
-            "FUEL_TANK_INJ": {
-                "component": "loss",
-                "circuit": "fuel",
-                "from": "fuel_ullage",
-                "to": "fuel_inj_in",
-                "CdA": None,
-            },
-            "FUEL_INJ": {
-                "component": "loss",
-                "circuit": "fuel",
-                "from": "fuel_inj_in",
-                "to": "thrust_chamber",
-                "CdA": None,
-            },
-            "NOZZLE": {
-                "component": "nozzle",
-                "circuit": "combustion_gas",
-                "from": "thrust_chamber",
-                "to": "ambient",
-                "At": self.throat_area,
-                "Cd": self.nozzle_cd,
-            },
-        }
-        return circuits, nodes, branches
-
-    def _template_pump_fed(self, tank_geometries: Mapping[str, Any]):
-        actively_pressurized = self.pressurization != "blowdown"
-        if actively_pressurized and "press_tank" not in tank_geometries:
-            raise ValueError("Active pressurization requires tank 'press_tank'")
-        ox_state0 = self._state0("ox_tank")
-        fuel_state0 = self._state0("fuel_tank")
-        press_state0 = self._state0("press_tank") if actively_pressurized else None
-        ox_fluid = str(ox_state0["fluid"])
-        fuel_fluid = str(fuel_state0["fluid"])
-        press_fluid = str(press_state0["fluid"]) if press_state0 else None
-        circuits = {
-            "oxidizer": {
-                "prop": "oxidizer",
-                "fluid": ox_fluid,
-                "state0": {"P": ox_state0["P"], "T": ox_state0["T"]},
-            },
-            "fuel": {
-                "prop": "fuel",
-                "fluid": fuel_fluid,
-                "state0": {"P": fuel_state0["P"], "T": fuel_state0["T"]},
-            },
-            **({
-                "pressurant": {
-                    "prop": "pressurant",
-                    "fluid": press_fluid,
-                    "state0": {"P": press_state0["P"], "T": press_state0["T"]},
-                },
-            } if actively_pressurized else {}),
-            "combustion_gas": {
-                "prop": "exhaust",
-                "fluid": "combustion_gas",
-                "state0": {"P": self.Pc_target, "T": self.combustion_gas["T"]},
-            },
-        }
-        nodes = {
-            **({
-                "press_tank": {
-                    "component": "pressurant_tank",
-                    "tank_id": "press_tank",
-                    "fluid": press_fluid,
-                    "geometry": tank_geometries["press_tank"],
-                    "P0": float(press_state0["P"]),
-                    "state0": press_state0,
-                },
-            } if actively_pressurized else {}),
-            "ox_ullage": {
-                "component": "propellant_tank",
-                "tank_id": "ox_tank",
-                "liquid_fluid": ox_fluid,
-                "gas_fluid": press_fluid or str(ox_state0["gas_fluid"]),
-                "geometry": tank_geometries["ox_tank"],
-                "P0": self.target_ladder["Pox_tank"],
-                "state0": ox_state0,
-            },
-            "ox_pump_in": {
-                "model": "junction",
-                "P0": self.target_ladder["Pox_pump_inlet"],
-            },
-            "ox_pump_out": {
-                "model": "junction",
-                "P0": self.target_ladder["Pox_pump_outlet"],
-            },
-            **({
-                "ox_inj_in": {
-                    "model": "junction",
-                    "P0": self.target_ladder["Pox_inj"],
-                },
-            } if self.ox_inj_stiffness > 0.0 else {}),
-            "fuel_ullage": {
-                "component": "propellant_tank",
-                "tank_id": "fuel_tank",
-                "liquid_fluid": fuel_fluid,
-                "gas_fluid": press_fluid or str(fuel_state0["gas_fluid"]),
-                "geometry": tank_geometries["fuel_tank"],
-                "P0": self.target_ladder["Pfuel_tank"],
-                "state0": fuel_state0,
-            },
-            "fuel_pump_in": {
-                "model": "junction",
-                "P0": self.target_ladder["Pfuel_pump_inlet"],
-            },
-            "fuel_pump_out": {
-                "model": "junction",
-                "P0": self.target_ladder["Pfuel_pump_outlet"],
-            },
-            **({
-                "fuel_inj_in": {
-                    "model": "junction",
-                    "P0": self.target_ladder["Pfuel_inj"],
-                },
-            } if self.fuel_inj_stiffness > 0.0 else {}),
-            "thrust_chamber": {
-                "component": "combustor",
-                "P0": self.Pc_target,
-                "oxidizer_fluid": ox_fluid,
-                "fuel_fluid": fuel_fluid,
-                "combustion_fluid": "combustion_gas",
-                "ambient_node": "ambient",
-                "expansion_ratio": self.expansion_ratio,
-                "cstar_efficiency": self.cstar_efficiency,
-                "cf_efficiency": self.cf_efficiency,
-            },
-            "ambient": {"model": "boundary"},
-        }
-        branches = {
-            **self._pressurant_branches(),
-            "OX_TANK_PUMP": {
-                "component": "loss",
-                "circuit": "oxidizer",
-                "from": "ox_ullage",
-                "to": "ox_pump_in",
-                "CdA": None,
-            },
-            "OX_PUMP": {
-                "component": "pump",
-                "circuit": "oxidizer",
-                "from": "ox_pump_in",
-                "to": "ox_pump_out",
-                "pump_id": self.cfg["pump_ids"]["oxidizer"],
-                "CdA": None,
-            },
-            "OX_PUMP_INJ": {
-                "component": "loss",
-                "circuit": "oxidizer",
-                "from": "ox_pump_out",
-                "to": "ox_inj_in" if self.ox_inj_stiffness > 0.0 else "thrust_chamber",
-                "CdA": None,
-            },
-            **({
-                "OX_INJ": {
-                    "component": "loss",
-                    "circuit": "oxidizer",
-                    "from": "ox_inj_in",
-                    "to": "thrust_chamber",
-                    "CdA": None,
-                },
-            } if self.ox_inj_stiffness > 0.0 else {}),
-            "FUEL_TANK_PUMP": {
-                "component": "loss",
-                "circuit": "fuel",
-                "from": "fuel_ullage",
-                "to": "fuel_pump_in",
-                "CdA": None,
-            },
-            "FUEL_PUMP": {
-                "component": "pump",
-                "circuit": "fuel",
-                "from": "fuel_pump_in",
-                "to": "fuel_pump_out",
-                "pump_id": self.cfg["pump_ids"]["fuel"],
-                "CdA": None,
-            },
-            "FUEL_PUMP_INJ": {
-                "component": "loss",
-                "circuit": "fuel",
-                "from": "fuel_pump_out",
-                "to": "fuel_inj_in" if self.fuel_inj_stiffness > 0.0 else "thrust_chamber",
-                "CdA": None,
-            },
-            **({
-                "FUEL_INJ": {
-                    "component": "loss",
-                    "circuit": "fuel",
-                    "from": "fuel_inj_in",
-                    "to": "thrust_chamber",
-                    "CdA": None,
-                },
-            } if self.fuel_inj_stiffness > 0.0 else {}),
-            "NOZZLE": {
-                "component": "nozzle",
-                "circuit": "combustion_gas",
-                "from": "thrust_chamber",
-                "to": "ambient",
-                "At": self.throat_area,
-                "Cd": self.nozzle_cd,
-            },
-        }
-        return circuits, nodes, branches
-
     def _size_branches(
         self,
         circuits: Dict[str, Dict[str, Any]],
@@ -787,17 +280,6 @@ class PropSystem:
                 float(state0["T"]),
             )
             return properties[circuit_id]
-
-        for node_id in nodes:
-            incoming = [
-                branch["circuit"]
-                for branch in branches.values()
-                if branch["to"] == node_id
-            ]
-            if len(incoming) != len(set(incoming)):
-                raise ValueError(
-                    f"Parallel branches from one circuit cannot enter node '{node_id}'"
-                )
 
         design_flows = {
             "oxidizer": self.mdot_ox,
@@ -885,6 +367,8 @@ class PropSystem:
                 continue
 
             if branch_type in ("bang_bang_valve", "regulator"):
+                if branch["CdA"] is not None:
+                    continue
                 target_node = nodes[branch["to"]]
                 if target_node.get("component") != "propellant_tank":
                     raise ValueError(
@@ -1032,10 +516,10 @@ class PropSystem:
             definition = self.tank_definitions.get(tank_id, {})
             limits = {name: float(definition[name]) for name in ("min_temperature", "min_pressure") if name in definition}
             if node.get("component") == "pressurant_tank" and "min_temperature" not in limits:
-                legacy = [float(b["min_temperature"]) for b in self.branch_definitions.values()
+                branch_limits = [float(b["min_temperature"]) for b in self.branch_definitions.values()
                           if b["from"] == node_id and "min_temperature" in b]
-                if legacy:
-                    limits["min_temperature"] = max(legacy)
+                if branch_limits:
+                    limits["min_temperature"] = max(branch_limits)
                 else:
                     raise ValueError(f"Pressurant tank {tank_id!r} requires min_temperature")
             if any(not isfinite(v) or v <= 0 for v in limits.values()):
@@ -1156,6 +640,7 @@ class PropSystem:
         boundaries = dict(bcs or {})
         boundaries[self.ambient_id] = {"P": float(atm.p)}
 
+        event_start = len(self.network.events)
         result = self.network.update(
             dt=dt,
             bcs=boundaries,
@@ -1163,14 +648,43 @@ class PropSystem:
             commit=commit,
             axial_specific_force=axial_specific_force,
         )
+        margins, times = dict(result["constraints"]), dict(result["constraint_times"])
+        for key, value in self.initial_constraints.items():
+            if value < margins.get(key, float("inf")):
+                margins[key], times[key] = value, 0.0
+        events = []
+        for event in result["events"][event_start:]:
+            event = {**event, "event": event["name"]}
+            if "before" in event:
+                before = event["before"]
+                event["before"] = FluidOut(
+                    node=before["node"], branch=before["branch"], mdot=before["mdot"],
+                    td_state={k: before["node"][k] for k in result["td_state"]},
+                    propulsion=self._propulsion_output(before))
+            events.append(event)
         return FluidOut(
             node=result["node"],
             branch=result["branch"],
             td_state=result["td_state"],
             mdot=result["mdot"],
             propulsion=self._propulsion_output(result),
-            events=result["events"],
+            events=tuple(events),
             event_counts=result["event_counts"],
-            constraints={**self.sizing_constraints, **result["constraints"]},
-            constraint_times=result["constraint_times"],
+            constraints=margins,
+            constraint_times=times,
         )
+
+    def checkpoint(self):
+        return self.network._checkpoint()
+
+    def restore(self, checkpoint):
+        self.network.restore(checkpoint)
+
+    def close(self):
+        self.network.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()

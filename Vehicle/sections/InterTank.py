@@ -3,7 +3,6 @@ from scipy.optimize import brentq
 from .Section import Section
 from ..Material import MaterialProperties
 from ..utils import distribute as dist
-# from ..utils import aero  # Legacy analytical aero disabled.
 from ..utils import geometry as geo
 
 class InterTank(Section):
@@ -102,10 +101,6 @@ class InterTank(Section):
         self.Ixx = np.sum(self.mass * r**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
-# Legacy analytical aero / unused input container (inactive).
-#     def get_CNa(self, M: float, alpha: float):
-#         A_plan = self.cfg["vehicle"]["OMLD"] * self.length
-#         self.CNa = dist.weighted(aero.body_CNa(M, alpha, A_plan, self.ref_area), self.lat_area)
 
     def get_thermal_oml_area(self) -> np.ndarray:
         return self.surf_area.copy()

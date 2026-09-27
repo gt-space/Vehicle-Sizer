@@ -2,16 +2,8 @@ import numpy as np
 from ..Material import mp
 from .Section import Section
 from ..utils import distribute as dist
-# from ..utils import aero  # Legacy analytical aero disabled.
 from ..utils import geometry as geo
 
-# Legacy analytical aero / unused input container (inactive).
-# @dataclass
-# class NoseconeInputs:
-#     fineness_ratio: float
-#     profile: float
-#     reco_mass: float
-#     material: str
 
 class Nosecone(Section):
 
@@ -55,13 +47,6 @@ class Nosecone(Section):
         self.Ixx = np.sum(self.mass * self.radius**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
-# Legacy analytical aero / unused input container (inactive).
-#     def get_CNa(self, M: float, alpha: float):
-#         n_avi = int(np.ceil(self.cfg["avi_bay"]["length"] / self.dx))
-#         x_avi = self.length + (np.arange(n_avi) + 0.5) * self.dx
-#         lat_area_avi = np.sum(2 * self._get_profile(x_avi) * self.dx)
-#         lat_area_total = np.sum(self.lat_area) + lat_area_avi
-#         self.CNa = aero.nosecone_CNa(M) * self.lat_area / lat_area_total
 
     def get_thermal_oml_area(self) -> np.ndarray:
         return self.surf_area.copy()

@@ -1,0 +1,84 @@
+# 16 variables, 64 DE population members, 2000 candidate evaluations.
+base_config: Configs/flight_pressure_fed_regulator.yaml
+tank_ids:
+  oxidizer: ox_tank
+  fuel: fuel_tank
+  pressurant: press_tank
+seed: 42
+max_evaluations: 2000
+maxiter: 100
+popsize: 4
+reference_mass: 250.0
+conditional_geometry: true
+verification_dt_factor: 0.5
+evaluation_overrides:
+  simulation.t_end: 600.0
+  environment.max_altitude: 300000.0
+  aero.aoa_schedule:
+  - - 0.0
+    - 5.0
+  - - 600.0
+    - 5.0
+bounds:
+  omld:
+  - 0.22636
+  - 0.4064
+  fineness:
+  - 4.0
+  - 6.0
+  boattail_aft:
+  - 0.1905
+  - 0.4064
+  boattail_length:
+  - 0.5715
+  - 0.635
+  span:
+  - 0.1524
+  - 0.2286
+  root:
+  - 0.381
+  - 0.508
+  tip:
+  - 0.1016
+  - 0.2032
+  sweep_fraction:
+  - 0.5
+  - 1.0
+  thickness:
+  - 0.00635
+  - 0.0127
+  chamber_pressure:
+  - 1400000.0
+  - 3500000.0
+  mixture_ratio:
+  - 1.5
+  - 3.0
+  thrust:
+  - 12000.0
+  - 25000.0
+  copv_pressure:
+  - 15000000.0
+  - 30000000.0
+  copv_volume:
+  - 0.015
+  - 0.1
+  oxidizer_mass:
+  - 100.0
+  - 300.0
+  fuel_mass:
+  - 40.0
+  - 150.0
+constraint_scales:
+  goal_apogee: 10000.0
+  max_burn_duration: 5.0
+  max_q: 10000.0
+  min_stability_calibers: 1.0
+  min_rail_twr: 0.2
+unit_scales:
+  m: 0.01
+  Pa: 1000000.0
+  K: 10.0
+  s: 5.0
+  kW: 5.0
+  calibers: 1.0
+  '1': 1.0

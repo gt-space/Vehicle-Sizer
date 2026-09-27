@@ -3,5 +3,5 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 outputs/
-FluidProperties/*.h5
+FluidTables/*.h5
 AeroTables/*.h5

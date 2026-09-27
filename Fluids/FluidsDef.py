@@ -64,40 +64,6 @@ def compressible_mass_flux(
     return float(P_upstream * flow_function / np.sqrt(gas_constant * T_upstream))
 
 
-def isentropic_velocity(
-    P_stagnation: float,
-    P_exit: float,
-    T_stagnation: float,
-    gas_constant: float,
-    gamma: float,
-) -> float:
-    """Ideal-gas velocity after isentropic expansion to the exit pressure."""
-
-    if P_stagnation <= P_exit:
-        return 0.0
-    pressure_ratio = P_exit / P_stagnation
-    return float(
-        np.sqrt(
-            2.0
-            * gamma
-            / (gamma - 1.0)
-            * gas_constant
-            * T_stagnation
-            * (1.0 - pressure_ratio ** ((gamma - 1.0) / gamma))
-        )
-    )
-
-
-def incompressible_mdot(CdA: float, density: float, pressure_drop: float) -> float:
-    """Mass flow through an incompressible restriction."""
-
-    return float(
-        np.sign(pressure_drop)
-        * CdA
-        * np.sqrt(max(2.0 * density * abs(pressure_drop), 0.0))
-    )
-
-
 def incompressible_cda(
     mdot: float,
     density: float,

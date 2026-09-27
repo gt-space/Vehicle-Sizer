@@ -98,7 +98,7 @@ def write_events(history: list, path: Path) -> None:
     with path.open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=(
             "time_s", "kind", "component", "event", "count", "was_open", "is_open"
-        ))
+        ), extrasaction="ignore")
         writer.writeheader()
         writer.writerows(event for state in history for event in state["plant"].fluids.events)
 
@@ -109,7 +109,7 @@ def main() -> None:
         "config",
         nargs="?",
         type=Path,
-        default=ROOT / "Configs" / "flight_candidate_350_regulator.yaml",
+        default=ROOT / "Configs" / "flight_pump_fed_regulator.yaml",
     )
     parser.add_argument("--dt", type=float)
     parser.add_argument("--t-end", type=float)

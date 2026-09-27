@@ -1,182 +1,181 @@
-from __future__ import annotations
+"""Evaluated fluid and component records.
 
-from collections.abc import MutableMapping
+Records contain data, not physics, connectivity or solver history. Components
+build them for one trial; consumers must treat shared records as read-only.
+Use deepcopy for accepted network snapshots. as_dict returns a detached
+report, not a solver checkpoint. y/ydot and acceptance remain network concerns.
+
+Mapping access is for reading. Builders write explicitly to trial_values,
+properties, flows, etc., so the distinction between unknowns and derived data
+is visible. Nested dictionaries are mutable; these are not frozen objects.
+"""
+
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator
+from typing import Any
 
 
 @dataclass
-class FluidState(MutableMapping[str, Any]):
-    """Thermodynamic state carried by a node or branch flow."""
+class FluidState(Mapping):
+    """One fluid's identity, represented phase and evaluated properties."""
 
     fluid: str
     phase: str
-    properties: Dict[str, Any] = field(default_factory=dict)
+    properties: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if {"fluid", "phase"} & self.properties.keys():
+            raise ValueError("Fluid identity and phase belong in their explicit fields")
+        self.properties = dict(self.properties)
 
     @classmethod
-    def from_dict(cls, fluid: str, values: Dict[str, Any]) -> "FluidState":
-        values = dict(values)
-        return cls(fluid, str(values.pop("phase", "unknown")), values)
+    def from_dict(cls, fluid, values):
+        """Read a detached fluid report; fluid identity is its enclosing key."""
+        values = deepcopy(dict(values))
+        if values.pop("fluid", fluid) != fluid:
+            raise ValueError("Fluid record identity does not match its key")
+        return cls(fluid, values.pop("phase", "unknown"), values)
 
-    def as_dict(self) -> Dict[str, Any]:
-        return {**self.properties, "phase": self.phase}
+    def as_dict(self):
+        # Existing reports carry identity in the enclosing key or fluid_name.
+        return deepcopy({**self.properties, "phase": self.phase})
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key):
         if key == "fluid":
             return self.fluid
         if key == "phase":
             return self.phase
         return self.properties[key]
 
-    def __setitem__(self, key: str, value: Any) -> None:
-        if key == "fluid":
-            self.fluid = str(value)
-        elif key == "phase":
-            self.phase = str(value)
-        else:
-            self.properties[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        if key in ("fluid", "phase"):
-            raise KeyError(key)
-        del self.properties[key]
-
-    def __iter__(self) -> Iterator[str]:
-        yield from self.properties
+    def __iter__(self):
+        yield "fluid"
         yield "phase"
+        yield from self.properties
 
-    def __len__(self) -> int:
-        return len(self.properties) + 1
+    def __len__(self):
+        return len(self.properties) + 2
 
 
 @dataclass
-class NodeState(MutableMapping[str, Any]):
-    """General state owned by a fluid node."""
+class NodeState(Mapping):
+    """One evaluated node, including its constituent fluid records.
 
-    state: Dict[str, Any] = field(default_factory=dict)
-    fluids: Dict[str, FluidState] = field(default_factory=dict)
+    trial_values contains exactly the local solver unknowns. properties holds
+    derived/prescribed quantities. evaluation_data carries intermediates needed
+    by residuals/events and is excluded from mapping access and public reports.
+    """
+
+    trial_values: dict[str, float] = field(default_factory=dict)
+    properties: dict[str, Any] = field(default_factory=dict)
+    fluids: dict[str, FluidState] = field(default_factory=dict)
+    evaluation_data: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if (self.trial_values.keys() & self.properties.keys()
+                or "fluids" in self.trial_values or "fluids" in self.properties):
+            raise ValueError("Node trial values and properties must have distinct, non-reserved names")
+        self.trial_values = dict(self.trial_values)
+        self.properties = dict(self.properties)
+        self.fluids = dict(self.fluids)
+        self.evaluation_data = dict(self.evaluation_data)
 
     @classmethod
-    def from_dict(cls, values: Dict[str, Any]) -> "NodeState":
-        values = dict(values)
-        fluids = {
-            name: value if isinstance(value, FluidState) else FluidState.from_dict(name, value)
-            for name, value in values.pop("fluids", {}).items()
-        }
-        return cls(values, fluids)
+    def from_dict(cls, values):
+        """Read boundary/report data, placing quantities in properties.
 
-    def as_dict(self) -> Dict[str, Any]:
-        values = dict(self.state)
+        A flat report cannot identify solver unknowns or restore evaluation
+        data. Build trial records explicitly instead of using this method.
+        """
+        values = deepcopy(dict(values))
+        fluids = {name: fluid if isinstance(fluid, FluidState)
+                  else FluidState.from_dict(name, fluid)
+                  for name, fluid in values.pop("fluids", {}).items()}
+        return cls(properties=values, fluids=fluids)
+
+    def as_dict(self):
+        values = deepcopy({**self.trial_values, **self.properties})
         if self.fluids:
-            values["fluids"] = {
-                name: fluid.as_dict() for name, fluid in self.fluids.items()
-            }
+            values["fluids"] = {name: fluid.as_dict() for name, fluid in self.fluids.items()}
         return values
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key):
         if key == "fluids":
             return self.fluids
-        return self.state[key]
+        if key in self.trial_values:
+            return self.trial_values[key]
+        return self.properties[key]
 
-    def __setitem__(self, key: str, value: Any) -> None:
-        if key == "fluids":
-            self.fluids = value
-        else:
-            self.state[key] = value
+    def __iter__(self):
+        yield from self.trial_values
+        yield from self.properties
+        yield "fluids"
 
-    def __delitem__(self, key: str) -> None:
-        if key == "fluids":
-            self.fluids.clear()
-        else:
-            del self.state[key]
-
-    def __iter__(self) -> Iterator[str]:
-        yield from self.state
-        if self.fluids:
-            yield "fluids"
-
-    def __len__(self) -> int:
-        return len(self.state) + bool(self.fluids)
+    def __len__(self):
+        return len(self.trial_values) + len(self.properties) + 1
 
 
 @dataclass
-class BranchState(MutableMapping[str, Any]):
-    """General state and transported flows owned by a fluid branch."""
+class BranchState(Mapping):
+    """One evaluated branch's unknowns and transported streams.
 
-    state: Dict[str, Any] = field(default_factory=dict)
-    flows: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    Each flow holds signed mdot, a fixed donor direction, and a FluidState.
+    mdot/phase_mdot sum transported flows; trial_values retains the raw solver
+    guess even for a closed path. Mapping access reads those raw unknowns.
+    """
+
+    trial_values: dict[str, float] = field(default_factory=dict)
+    flows: dict[str, dict[str, Any]] = field(default_factory=dict)
     dP: float = 0.0
     enabled: bool = True
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    properties: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        reserved = {"dP", "enabled", "flows"}
+        if (self.trial_values.keys() & self.properties.keys()
+                or reserved & (self.trial_values.keys() | self.properties.keys())):
+            raise ValueError("Branch trial values and properties must have distinct, non-reserved names")
+        self.trial_values = dict(self.trial_values)
+        self.properties = dict(self.properties)
+        self.flows = {name: dict(flow) for name, flow in self.flows.items()}
 
     @property
-    def mdot(self) -> float:
-        return sum(float(flow["mdot"]) for flow in self.flows.values())
+    def mdot(self):
+        return sum(float(flow["mdot"]) for flow in self.flows.values()) if self.enabled else 0.0
 
-    def phase_mdot(self, phase: str) -> float:
-        return sum(
-            float(flow["mdot"])
-            for flow in self.flows.values()
-            if flow["fluid"].phase == phase
-        )
+    def phase_mdot(self, phase):
+        return sum(float(flow["mdot"]) for flow in self.flows.values()
+                   if flow["fluid"].phase == phase) if self.enabled else 0.0
 
-    def as_dict(self) -> Dict[str, Any]:
-        return {
-            **self.state,
+    def as_dict(self):
+        return deepcopy({
+            **self.trial_values,
             "dP": self.dP,
             "enabled": self.enabled,
             "flows": {
-                name: {
-                    **{key: value for key, value in flow.items() if key != "fluid"},
-                    "fluid": flow["fluid"].as_dict(),
-                    "fluid_name": flow["fluid"].fluid,
-                }
+                name: {**flow, "fluid": flow["fluid"].as_dict(),
+                       "fluid_name": flow["fluid"].fluid}
                 for name, flow in self.flows.items()
             },
-            **self.metadata,
-        }
+            **self.properties,
+        })
 
-    def __getitem__(self, key: str) -> Any:
-        if key == "flows":
-            return self.flows
-        if key == "dP":
-            return self.dP
-        if key == "enabled":
-            return self.enabled
-        if key == "mdot":
-            return self.mdot
-        if key in self.state:
-            return self.state[key]
-        return self.metadata[key]
+    def __getitem__(self, key):
+        if key in {"flows", "dP", "enabled"}:
+            return getattr(self, key)
+        if key in self.trial_values:
+            return self.trial_values[key]
+        return self.properties[key]
 
-    def __setitem__(self, key: str, value: Any) -> None:
-        if key == "flows":
-            self.flows = value
-        elif key == "dP":
-            self.dP = float(value)
-        elif key == "enabled":
-            self.enabled = bool(value)
-        elif key == "mdot":
-            if len(self.flows) != 1:
-                raise KeyError("Set a named flow when a branch has multiple flows")
-            next(iter(self.flows.values()))["mdot"] = float(value)
-        else:
-            self.state[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        if key in self.state:
-            del self.state[key]
-        elif key in self.metadata:
-            del self.metadata[key]
-        else:
-            raise KeyError(key)
-
-    def __iter__(self) -> Iterator[str]:
-        yield from self.state
+    def __iter__(self):
+        yield from self.trial_values
         yield "dP"
         yield "enabled"
         yield "flows"
-        yield from self.metadata
+        yield from self.properties
 
-    def __len__(self) -> int:
-        return len(self.state) + len(self.metadata) + 3
+    def __len__(self):
+        return len(self.trial_values) + len(self.properties) + 3
+
+
+__all__ = ["FluidState", "NodeState", "BranchState"]

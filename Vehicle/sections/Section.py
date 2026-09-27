@@ -1,12 +1,6 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
-# Legacy analytical aero / unused input container (inactive).
-# @dataclass
-# class SectionInputs:
-#     axial_load: float
-#     bending_moment: float
-#     temp: float
 
 class Section(ABC):
 
@@ -69,10 +63,6 @@ class Section(ABC):
     def get_MOI(self):
         pass
 
-# Legacy analytical aero / unused input container (inactive).
-#     @abstractmethod
-#     def get_CNa(self, M: float, alpha: float) -> np.ndarray:
-#         pass
 
     @abstractmethod
     def get_thermal_oml_area(self) -> np.ndarray:

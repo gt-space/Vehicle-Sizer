@@ -5,8 +5,9 @@ import argparse
 from copy import deepcopy
 from dataclasses import asdict
 import json
-from math import isfinite, pi
+from math import isfinite, pi, sqrt, nextafter
 from pathlib import Path
+from types import SimpleNamespace
 import time
 import traceback
 
@@ -17,6 +18,9 @@ from AeroTables import DragModel
 from Configs.loader import load_config
 from constraints import ConstraintRecord, DesignInfeasible, EvaluationFailure, GeometryError, configured_limits, finalize
 from Fluids.PropSystem import PropSystem
+from Fluids.templates import load_template
+from Fluids.design import initial_conditions
+from Vehicle.Material import MaterialProperties
 from Vehicle.Engine import Engine
 from Vehicle.Vehicle import Vehicle
 from simulation import project_path, property_sources, simulate
@@ -33,13 +37,29 @@ AERO_PATHS = {
 DIMENSIONLESS = {"fineness", "sweep_fraction"}
 
 
+def pump_roles(cfg):
+    """Find optimizer pump variables from the same wiring used by PropSystem."""
+    template = load_template(cfg, validate_pressures=False)
+    roles = {}
+    for branch in template['branches'].values():
+        if branch.get('component', branch.get('model')) != 'pump':
+            continue
+        role = template['circuits'][branch['circuit']]['prop']
+        if role not in ('oxidizer', 'fuel') or role in roles:
+            raise ValueError('Optimizer supports at most one pump per propellant role')
+        roles[role] = branch['pump_id']
+    return roles
+
+
 def variable_paths(cfg, tank_ids):
     paths = dict(AERO_PATHS)
     paths.update(chamber_pressure="prop_system.Pc_target", mixture_ratio="prop_system.MR_target",
                  thrust="prop_system.thrust_target")
+    pumps = pump_roles(cfg)
     for role in ("oxidizer", "fuel"):
-        pump = cfg["prop_system"]["pump_ids"][role]
-        paths[f"{role}_pump_head"] = f"prop_system.pumps.{pump}.pressure_rise_pa"
+        if role in pumps:
+            pump = pumps[role]
+            paths[f"{role}_pump_head"] = f"prop_system.pumps.{pump}.pressure_rise_pa"
         paths[f"{role}_mass"] = f"tanks.{tank_ids[role]}.propellant_mass"
     paths.update(copv_pressure=f"tanks.{tank_ids['pressurant']}.design_pressure",
                  copv_volume=f"tanks.{tank_ids['pressurant']}.volume")
@@ -99,42 +119,53 @@ def primitive_records(cfg, tank_ids):
         raise ValueError("Invalid fixed COPV diameter, wall or ellipse ratio")
     head_volume = 4 * pi * radius**3 / (3 * tank["ellipse_ratio"])
     margins["geometry.copv_cylinder"] = ((tank["volume"] - head_volume) / (pi * radius**2) - 1e-9, "m")
-    for role, leg in (("oxidizer", "ox"), ("fuel", "fuel")):
-        pump = prop["pumps"][prop["pump_ids"][role]]
-        inlet = prop["Pc_target"] * (1 + prop[f"{leg}_inj_stiffness"]) + prop[f"{leg}_inj_pumpout_dp"] - pump["pressure_rise_pa"]
-        margins[f"pump.{role}.inlet_pressure"] = (inlet - 1., "Pa")
+    template = load_template(cfg, validate_pressures=False)
+    for branch in template['branches'].values():
+        if branch.get('component', branch.get('model')) == 'pump':
+            role = template['circuits'][branch['circuit']]['prop']
+            inlet = template['nodes'][branch['from']]['P0']
+            margins[f'pump.{role}.inlet_pressure'] = (inlet - 1., 'Pa')
     return {k: ConstraintRecord(v, "optimizer", "sizing", unit) for k, (v, unit) in margins.items()}
 
 
-def candidate_score(result, settings, *, redundant=()):
-    """Scales change search guidance, never the acceptance thresholds."""
+def candidate_class(result):
+    """Missing/unresolved physics must never outrank a fully assessed flight."""
     if result.accepted:
+        return "feasible"
+    if result.termination == "infeasible_initial_design":
+        return "preflight_rejected"
+    if (not result.completed or not result.burn_complete
+            or not {"goal_apogee", "max_burn_duration"} <= result.constraint_records.keys()
+            or any(r.required and r.margin is None for r in result.constraint_records.values())):
+        return "unresolved"
+    return "completed_infeasible"
+
+
+def candidate_score(result, settings, *, redundant=()):
+    """Disjoint class intervals; scales guide search within a class only."""
+    category = candidate_class(result)
+    if category == "feasible":
         mass = result.initial_mass
         if mass is None or not isfinite(mass) or mass <= 0:
             raise ValueError("Accepted candidate has no finite positive launch mass")
-        return mass / (mass + settings["reference_mass"]), {}
+        return min(mass / (mass + settings["reference_mass"]), nextafter(1., 0.)), {}
     contributions = {}
-    preflight = result.termination == "infeasible_initial_design"
-    if not preflight and not result.completed:
-        contributions["completion"] = settings["completion_penalty"]
     for key, record in result.constraint_records.items():
-        if not record.required or key in redundant:
+        if not record.required or key in redundant or record.margin is None:
             continue
-        if record.margin is None:
-            if preflight or (key == "goal_apogee" and not result.completed):
-                continue
-            contributions[key] = settings["missing_penalty"]
-        else:
-            scale = settings["constraint_scales"].get(key, settings["unit_scales"].get(record.units))
-            if scale is None or not isfinite(scale) or scale <= 0:
-                raise ValueError(f"Missing positive violation scale for {key} ({record.units})")
-            if not isfinite(record.margin):
-                raise ValueError(f"Nonfinite margin for {key}")
-            if record.margin < 0:
-                contributions[key] = -record.margin / scale
-    if not preflight and not result.burn_complete and "max_burn_duration" not in contributions:
-        contributions["burn_completion"] = settings["missing_penalty"]
-    return 1 + sum(contributions.values()), contributions
+        scale = settings["constraint_scales"].get(key, settings["unit_scales"].get(record.units))
+        if scale is None or not isfinite(scale) or scale <= 0:
+            raise ValueError(f"Missing positive violation scale for {key} ({record.units})")
+        if not isfinite(record.margin):
+            raise ValueError(f"Nonfinite margin for {key}")
+        if record.margin < 0:
+            contributions[key] = -record.margin / scale
+    if category == "unresolved":
+        return 3., contributions
+    offset = 2. if category == "preflight_rejected" else 1.
+    violation = sum(contributions.values())
+    score = offset + (1. - 1. / (1. + violation))
+    return min(score, nextafter(offset + 1., offset)), contributions
 
 
 class EvaluationBudget(Exception):
@@ -160,6 +191,82 @@ class Evaluator:
             if not isfinite(value) or not low <= value <= high:
                 raise ValueError(f"Candidate {name} is outside configured bounds")
             set_path(cfg, path, float(value))
+        if self.settings.get("conditional_geometry", False):
+            return self.condition_geometry(cfg, values)
+        return cfg
+
+    def condition_geometry(self, cfg, values):
+        """Map each box coordinate into its candidate-dependent physical interval.
+
+        User bounds remain hard limits. Empty intersections are explicit design
+        rejections, never clipping a derived nozzle or overriding a user bound.
+        """
+        coordinates = dict(zip(self.names, values))
+        def assign(name, minimum=-float("inf"), maximum=float("inf")):
+            lower, upper = self.settings["bounds"][name]
+            lo, hi = max(lower, minimum), min(upper, maximum)
+            if lo > hi:
+                raise GeometryError({f"geometry.bounds.{name}": hi - lo})
+            fraction = (coordinates[name] - lower) / (upper - lower) if upper > lower else 0.
+            value = lo + fraction * (hi - lo)
+            set_path(cfg, self.paths[name], value)
+            return value
+
+        clearance = float(cfg.get("geometry", {}).get("radial_clearance", 0.))
+        fin, engine, prop = cfg["fin_can"], cfg["engine"], cfg["prop_system"]
+        copv = cfg["tanks"][self.settings["tank_ids"]["pressurant"]]
+        margin = 2 * (fin["boattail_wall_thickness"] + clearance) + 1e-9
+        # The nozzle stays derived from the same CEA design calculation.
+        epsilon = self.combustion.expansion_ratio(prop["Pc_target"], prop["MR_target"], engine["exit_pressure"])
+        design = self.combustion.evaluate(chamber_pressure=prop["Pc_target"], mixture_ratio=prop["MR_target"],
+            ambient_pressure=engine["exit_pressure"], expansion_ratio=epsilon,
+            cstar_efficiency=engine["cstar_efficiency"], cf_efficiency=engine["cf_efficiency"])
+        thrust_per_area = prop["Pc_target"] * design.Cf / epsilon
+        exit_low = float(self.model.ranges["exit"][0]) * INCH
+        aft_max = min(self.settings["bounds"]["boattail_aft"][1], self.settings["bounds"]["omld"][1])
+        if aft_max <= margin:
+            raise GeometryError({"engine.nozzle": aft_max - margin})
+        thrust = assign("thrust", pi * exit_low**2 / 4 * thrust_per_area,
+                        pi * (aft_max - margin)**2 / 4 * thrust_per_area)
+        exit_diameter = sqrt(4 * thrust / thrust_per_area / pi)
+        diameter = assign("omld", max(exit_diameter + margin,
+            self.settings["bounds"]["boattail_aft"][0],
+            copv["outer_diameter"] + 2 * (cfg["press_tank"]["airframe_wall_thickness"] + clearance) + 1e-9))
+        length = assign("boattail_length", max(engine["length"], self.settings["bounds"]["root"][0]))
+        aft_min = exit_diameter + margin
+        if engine.get("envelope_diameter") is not None:
+            envelope = engine["envelope_diameter"] + margin
+            if diameter < envelope:
+                raise GeometryError({"engine.envelope": diameter - envelope})
+            aft_min = max(aft_min, diameter + (envelope - diameter) * length / engine["length"])
+        assign("boattail_aft", aft_min, diameter)
+        root = assign("root", maximum=length)
+        assign("tip", maximum=root)
+        radius = (copv["outer_diameter"] - 2 * copv["wall_thickness"]) / 2
+        assign("copv_volume", 4 * pi * radius**3 / (3 * copv["ellipse_ratio"]) + pi * radius**2 * 1e-8)
+
+        if pump_roles(cfg):
+            for role, leg in (("oxidizer", "ox"), ("fuel", "fuel")):
+                outlet = prop["Pc_target"] * (1 + prop[f"{leg}_inj_stiffness"]) + prop[f"{leg}_inj_pumpout_dp"]
+                assign(f"{role}_pump_head", maximum=outlet - 1.)
+        # Match PropTank's pressure-sized wall and usable ellipsoidal-head volume.
+        states = initial_conditions(cfg)
+        for role in ("oxidizer", "fuel"):
+            tank_id = self.settings["tank_ids"][role]
+            tank, state = cfg["tanks"][tank_id], states[tank_id]
+            pressure = Vehicle._max_tank_pressure(SimpleNamespace(cfg=cfg, initial_conditions=states), tank_id)
+            material = MaterialProperties.from_name(tank["material"])
+            efficiency = tank.get("weld_efficiency", cfg["advanced"].get("weld_efficiency", 1.))
+            ratio = 1.5 * pressure / (material.require("yield_strength") * efficiency)
+            wall = tank.get("wall_thickness")
+            if wall is None:
+                wall = max(ratio * diameter / (2 * (1 + ratio)), cfg["advanced"]["t_wall_min"])
+            radius, tube = diameter / 2 - wall, tank["passthrough_diameter"] / 2
+            if radius <= tube + clearance:
+                raise GeometryError({f"{tank_id}.passthrough": radius - tube - clearance})
+            head = 4 * pi / (3 * tank["ellipse_ratio"]) * (radius**2 - tube**2)**1.5
+            rho = self.pure.state_pt(state["fluid"], state["P"], state["T"]).rho
+            assign(f"{role}_mass", (head + pi * (radius**2 - tube**2) * 1e-8) * rho / tank["ullage_factor"])
         return cfg
 
     def evaluate(self, cfg):
@@ -193,36 +300,54 @@ class Evaluator:
         # Tank Pmin already contains the worst outgoing choked margin. Keep
         # standalone branch checks whose source has no tank aggregate.
         if propulsion is None:
-            # Initial constraint rejection happens before the constructor returns.
-            # Resolve only known tank-fed paths from the declared wiring.
-            template = cfg["prop_system"].get("template") if cfg else None
-            if template is not None:
-                return {f"branch.{key}.choked" for key, branch in template["branches"].items()
-                        if template["nodes"][branch["from"]].get("tank_id") is not None}
-            mode = cfg["prop_system"].get("pressurization", "bang_bang") if cfg else "blowdown"
-            return {f"branch.{leg}_{mode.upper().replace('BANG_BANG', 'BANGBANG')}.choked"
-                    for leg in ("OX", "FUEL")} if mode != "blowdown" else set()
+            template = load_template(cfg) if cfg is not None else None
+            return {f"branch.{key}.choked" for key, branch in template['branches'].items()
+                    if template['nodes'][branch['from']].get('tank_id') is not None
+                    and (branch.get('require_choked', False) or
+                         template['nodes'][branch['from']].get('component') == 'pressurant_tank')} if template else set()
         return {f"branch.{key}.choked" for key, branch in propulsion.choked_branches.items()
                 if propulsion.node_definitions[branch["from"]].get("tank_id") is not None}
 
     def __call__(self, values):
         if self.count >= self.settings["max_evaluations"]:
             raise EvaluationBudget
-        cfg = self.decode(values)
         self.count += 1
         started = time.perf_counter()
+        cfg, failure = None, None
         try:
+            cfg = self.decode(values)
             result, redundant = self.evaluate(cfg)
-            score, contributions = candidate_score(result, self.settings, redundant=redundant)
+        except GeometryError as error:
+            result = rejection({k: ConstraintRecord(v, "optimizer", "sizing", "m") for k, v in error.constraints.items()})
+            redundant = ()
+        except EvaluationFailure as error:
+            if error.phase not in ("runtime", "flight initialization"):
+                raise
+            cause = error
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            if isinstance(cause, (KeyError, TypeError, AttributeError, AssertionError)):
+                raise
+            failure = traceback.format_exc()
+            result = error.partial_result or SimResult()
+            result = deepcopy(result)
+            result.apogee = None
+            result.termination = "numerical_failure"
+            redundant = ()
+            (self.output / f"failed_{self.count:04d}.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
+            (self.output / f"failure_{self.count:04d}.txt").write_text(failure)
         except Exception as error:
             (self.output / "failed.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
             (self.output / "failure.txt").write_text(traceback.format_exc())
             if isinstance(error, EvaluationFailure):
                 raise
             raise EvaluationFailure("optimizer evaluation", cfg) from error
-        entry = dict(evaluation=self.count, variables=dict(zip(self.names, map(float, values))),
+        score, contributions = candidate_score(result, self.settings, redundant=redundant)
+        variables = ({name: get_path(cfg, path) for name, path in self.paths.items()} if cfg is not None else {})
+        entry = dict(evaluation=self.count, variables=variables,
+                     search_coordinates=list(map(float, values)), score_class=candidate_class(result), failure=failure,
                      score=score, accepted=result.accepted, mass=result.initial_mass,
-                     termination=result.termination, apogee=result.apogee,
+                     termination=result.termination, apogee=result.apogee, dry_mass=result.dry_mass,
                      burn_duration=result.burn_duration, violations=contributions,
                      constraints={k: asdict(v) for k, v in result.constraint_records.items()},
                      elapsed_seconds=time.perf_counter() - started)
@@ -239,8 +364,7 @@ class Evaluator:
 def prepare(settings, model):
     settings = deepcopy(settings)
     cfg = load_config(project_path(settings["base_config"]))
-    if cfg["prop_system"].get("feed_type") != "pump_fed":
-        raise ValueError("This 18-variable search requires a pump-fed base config")
+    pumps = pump_roles(cfg)
     ids = settings["tank_ids"]
     if set(ids) != {"oxidizer", "fuel", "pressurant"} or len(set(ids.values())) != 3:
         raise ValueError("Optimizer tank roles must reference three distinct tanks")
@@ -248,13 +372,13 @@ def prepare(settings, model):
         expected = "pressurant" if role == "pressurant" else "propellant"
         if cfg["tanks"][tank_id]["type"] != expected:
             raise ValueError(f"{role} must reference a {expected} tank")
-    if len(set(cfg["prop_system"]["pump_ids"].values())) != 2:
+    if len(set(pumps.values())) != len(pumps):
         raise ValueError("Oxidizer and fuel must use distinct pumps")
     copv = cfg["tanks"][ids["pressurant"]]
     copv.pop("mass", None)
     if "volume_liters" in copv:
         copv["volume"] = copv.pop("volume_liters") * 1e-3
-    states = cfg["prop_system"].get("initial_conditions", cfg["prop_system"].get("state0", {}))
+    states = cfg["prop_system"].get("initial_conditions", {})
     for role in ("oxidizer", "fuel"):
         states[ids[role]].pop("P", None)
     for path, value in settings.get("evaluation_overrides", {}).items():
@@ -281,7 +405,9 @@ def prepare(settings, model):
             raise ValueError(f"{name} bounds exceed aero deck {deck[name]}")
         get_path(cfg, paths[name])
         settings["bounds"][name] = (low, high)
-    for name in ("reference_mass", "completion_penalty", "missing_penalty"):
+    if not isinstance(settings.get("conditional_geometry", False), bool):
+        raise ValueError("conditional_geometry must be boolean")
+    for name in ("reference_mass",):
         if not isfinite(settings[name]) or settings[name] <= 0:
             raise ValueError(f"{name} must be finite and positive")
     for name in ("max_evaluations", "maxiter", "popsize"):
@@ -334,7 +460,7 @@ def optimize(settings, output):
     (output / "base.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
     evaluator = Evaluator(cfg, settings, model, pure, combustion, output)
     initial = [float(get_path(cfg, path)) for path in evaluator.paths.values()]
-    x0 = initial if all(lo <= x <= hi for x, (lo, hi) in zip(initial, evaluator.bounds)) else None
+    x0 = initial if not settings.get("conditional_geometry") and all(lo <= x <= hi for x, (lo, hi) in zip(initial, evaluator.bounds)) else None
     try:
         result = differential_evolution(evaluator, evaluator.bounds, seed=settings["seed"],
                                         popsize=settings["popsize"], maxiter=settings["maxiter"],

@@ -1,12 +1,12 @@
 import unittest
 import sys
+from dataclasses import replace
 from unittest.mock import MagicMock
 
 import numpy as np
 from CoolProp.CoolProp import PropsSI
 
 sys.modules.setdefault("matproplib", MagicMock())
-sys.modules.setdefault("Vehicle.utils.heating", MagicMock())
 
 from Vehicle.sections.PressTank import PressTankGeometry
 from Vehicle.sections.PropTank import PropTank, PropTankGeometry
@@ -39,10 +39,11 @@ class TankGeometryTests(unittest.TestCase):
     def test_copv_calculates_length_and_internal_area(self):
         copv = COPV(
             volume=0.02,
-            mass=18.2,
             diameter=0.22,
             wall_thickness=0.0032,
             ellipse_ratio=1.75,
+            material_density=2700.0,
+            mass=18.2,
         )
         radius = 0.5 * copv.inner_diameter
         recovered_volume = (
@@ -51,6 +52,36 @@ class TankGeometryTests(unittest.TestCase):
         )
         self.assertAlmostEqual(recovered_volume, copv.volume)
         self.assertGreater(copv.internal_area, 0.0)
+        self.assertEqual(copv.mass, 18.2)
+
+    def test_copv_mass_uses_wall_and_endcap_volume_when_not_overridden(self):
+        density = 7870.0
+        copv = COPV(
+            volume=0.02,
+            diameter=0.22,
+            wall_thickness=0.0032,
+            ellipse_ratio=1.75,
+            material_density=density,
+        )
+        outer_radius = 0.5 * copv.diameter
+        inner_radius = 0.5 * copv.inner_diameter
+        expected_wall_volume = (
+            np.pi * (outer_radius**2 - inner_radius**2) * copv.cylinder_length
+            + 4.0 / 3.0 * np.pi
+            * (outer_radius**3 - inner_radius**3) / copv.ellipse_ratio
+        )
+
+        self.assertAlmostEqual(copv.shell_volume, expected_wall_volume)
+        self.assertAlmostEqual(copv.mass, density * expected_wall_volume)
+
+        larger = replace(copv, volume=0.04, mass=None)
+        added_length = (larger.volume - copv.volume) / (np.pi * inner_radius**2)
+        self.assertEqual(larger.inner_diameter, copv.inner_diameter)
+        self.assertAlmostEqual(larger.length - copv.length, added_length)
+        self.assertAlmostEqual(
+            larger.mass - copv.mass,
+            density * np.pi * (outer_radius**2 - inner_radius**2) * added_length,
+        )
 
     def test_propellant_mass_ullage_and_endcaps_set_tank_length(self):
         pressure = 2.6e6
@@ -120,6 +151,18 @@ class TankGeometryTests(unittest.TestCase):
         )
 
         self.assertEqual(geometry.internal_area, 0.6)
+
+        empty = geometry.fill_state(0.0)
+        half = geometry.fill_state(0.01)
+        full = geometry.fill_state(0.02)
+        self.assertEqual(empty["liquid_contact_area"], 0.0)
+        self.assertAlmostEqual(full["ullage_contact_area"], 0.0)
+        self.assertGreater(half["fill_height"], 0.0)
+        self.assertLess(half["fill_height"], geometry.length)
+        self.assertAlmostEqual(
+            half["liquid_contact_area"] + half["ullage_contact_area"],
+            geometry.internal_area,
+        )
 
     def test_propellant_axial_mass_is_conserved_and_settles_aft(self):
         geometry = PropTankGeometry(

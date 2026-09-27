@@ -1,0 +1,75 @@
+# Sole source of network wiring and design-pressure relationships.
+circuits:
+  oxidizer:
+    prop: oxidizer
+    tank_id: ox_tank
+  fuel:
+    prop: fuel
+    tank_id: fuel_tank
+  exhaust:
+    prop: exhaust
+nodes:
+  thrust_chamber:
+    component: combustor
+    P0:
+      config: prop_system.Pc_target
+    ambient_node: ambient
+  ambient:
+    component: boundary
+  ox_inj_in:
+    component: junction
+    P0:
+      node: thrust_chamber
+      relative_rise:
+        config: prop_system.ox_inj_stiffness
+  ox_ullage:
+    component: propellant_tank
+    tank_id: ox_tank
+    P0:
+      node: ox_inj_in
+      rise:
+        config: prop_system.ox_tank_inj_dp
+  fuel_inj_in:
+    component: junction
+    P0:
+      node: thrust_chamber
+      relative_rise:
+        config: prop_system.fuel_inj_stiffness
+  fuel_ullage:
+    component: propellant_tank
+    tank_id: fuel_tank
+    P0:
+      node: fuel_inj_in
+      rise:
+        config: prop_system.fuel_tank_inj_dp
+branches:
+  OX_TANK_INJ:
+    component: loss
+    circuit: oxidizer
+    from: ox_ullage
+    to: ox_inj_in
+    from_port: liquid
+  OX_INJ:
+    component: loss
+    circuit: oxidizer
+    from: ox_inj_in
+    to: thrust_chamber
+    to_port: oxidizer
+  FUEL_TANK_INJ:
+    component: loss
+    circuit: fuel
+    from: fuel_ullage
+    to: fuel_inj_in
+    from_port: liquid
+  FUEL_INJ:
+    component: loss
+    circuit: fuel
+    from: fuel_inj_in
+    to: thrust_chamber
+    to_port: fuel
+  NOZZLE:
+    component: nozzle
+    circuit: exhaust
+    from: thrust_chamber
+    to: ambient
+    from_port: nozzle

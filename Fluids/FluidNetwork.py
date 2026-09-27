@@ -1,54 +1,28 @@
-from __future__ import annotations
+"""Component assembly and event-driven IDAS integration.
 
-from copy import deepcopy
+Physics lives in components. This class owns topology, trial routing, numerical
+layouts, discrete transitions and accepted snapshots.
+"""
+from collections import Counter
+from copy import copy, deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
 
 import numpy as np
-from scipy.optimize import least_squares
-from scipy.sparse import csr_matrix
-from constraints import OperatingInfeasible, merge_margins
-from .FluidBranch import (
-    BangBangValveComponent,
-    CompressibleLossModel,
-    FluidBranch,
-    IncompressibleLossModel,
-    LossComponent,
-    NozzleComponent,
-    PumpComponent,
-    TwinPathNozzleModel,
-    CombustionNozzleModel,
-    PumpModel,
-    IdealRegulatorModel,
-    RegulatorComponent,
-)
-from .FluidNode import (
-    BoundaryModel,
-    CombustorComponent,
-    FluidNode,
-    JunctionModel,
-    PressurantTankComponent,
-    PropellantTankComponent,
-    SteadyModel,
-    VolumeComponent,
-    VolumeModel,
-    iter_flows,
-    TwoSpeciesModel,
-    CombustionModel,
-    TwinPathJunctionModel,
-)
-from .FluidState import BranchState, NodeState
-from FluidProperties.PropertyModels import (
-    CombustionPropertySource,
-    PureFluidPropertySource,
-)
-from FluidProperties.LookupTables import LookupBoundsError
+
+from .FluidNode import (BoundaryComponent, JunctionComponent, VolumeComponent,
+                        PropellantTankComponent, CombustorComponent)
+from .FluidBranch import (LossComponent, PumpComponent, RegulatorComponent,
+                          BangBangValveComponent, NozzleComponent)
+from .FluidState import NodeState
+from .errors import TrialDomainError, ResidualAcceptanceError
+from .ida_session import IdaSession, IdaStep
+from .jacobian import install as install_jacobian
 
 
 @dataclass
 class NetworkState:
-    nodes: Dict[str, NodeState] = field(default_factory=dict)
-    branches: Dict[str, BranchState] = field(default_factory=dict)
+    nodes: dict = field(default_factory=dict)
+    branches: dict = field(default_factory=dict)
 
     @property
     def node(self):
@@ -56,1173 +30,852 @@ class NetworkState:
 
 
 class FluidNetwork:
-    """Assemble and solve residuals from component-selected physics models."""
-
-    def __init__(
-        self,
-        nodes: Dict[str, Dict[str, Any]],
-        branches: Dict[str, Dict[str, Any]],
-        fluid_properties: Optional[PureFluidPropertySource] = None,
-        combustion_properties: Optional[CombustionPropertySource] = None,
-        tolerances: Optional[Dict[str, float]] = None,
-        constraint_monitor=None,
-        stop_at_shutdown: bool = False,
-        stop_at_triple_point: bool = False,
-    ) -> None:
-        if not isinstance(stop_at_shutdown, bool):
-            raise ValueError("stop_at_shutdown must be boolean")
-        self.stop_at_shutdown = stop_at_shutdown
-        if not isinstance(stop_at_triple_point, bool):
-            raise ValueError("stop_at_triple_point must be boolean")
-        self.stop_at_triple_point = stop_at_triple_point
+    def __init__(self, nodes, branches, *, fluid_properties,
+                 combustion_properties=None, tolerances=None, constraint_monitor=None,
+                 stop_at_shutdown=False, stop_at_triple_point=False):
+        if not isinstance(stop_at_shutdown, bool) or not isinstance(stop_at_triple_point, bool):
+            raise ValueError('Stopping policies must be boolean')
+        self.stop_at_shutdown, self.stop_at_triple_point = stop_at_shutdown, stop_at_triple_point
         self.frozen = False
-        self._triple_points = {}
-        tolerances = tolerances or {
-            "residual_tolerance": 1.0e-7,
-            "event_time_tolerance": 1.0e-5,
-            "flow_direction_tolerance": 1.0e-10,
-        }
-        self.residual_tolerance = float(tolerances["residual_tolerance"])
-        self.sparse_jacobian = tolerances.get("sparse_jacobian", False)
-        if not isinstance(self.sparse_jacobian, bool):
-            raise ValueError("sparse_jacobian must be boolean")
-        self._jacobian_cache = None
-        self.event_time_tolerance = float(tolerances["event_time_tolerance"])
-        self.flow_direction_tolerance = float(
-            tolerances["flow_direction_tolerance"]
-        )
-        if min(
-            self.residual_tolerance,
-            self.event_time_tolerance,
-            self.flow_direction_tolerance,
-        ) <= 0.0:
-            raise ValueError("Fluid-network tolerances must be positive")
-        self.nodes = {
-            node_id: self._make_node(node_id, definition)
-            for node_id, definition in nodes.items()
-        }
-        for node in self.nodes.values():
-            node.fluid_properties = fluid_properties
-            node.combustion_properties = combustion_properties
-        self.branches = {
-            branch_id: self._make_branch(branch_id, definition)
-            for branch_id, definition in branches.items()
-        }
-        self.state = NetworkState()
-        self.time = 0.0
-        self.events = []
-        self.event_counts = {}
+        self.stop_reason = None
+        self._triple_limits = {}
+        self.node_definitions, self.branch_definitions = deepcopy(nodes), deepcopy(branches)
+        self.fluid_properties, self.combustion_properties = fluid_properties, combustion_properties
+        kinds = {self._kind(b) for b in branches.values()}
+        # Infer control from the selected wiring, including custom/mixed templates.
+        default_rtol = 1e-5 if 'bang_bang_valve' in kinds else 1e-4 if 'regulator' in kinds else 1e-7
+        self.options = dict(rtol=default_rtol, residual_tolerance=1e-5, event_tolerance=1e-8, event_time_tolerance=1e-8,
+                            regulator_pressure_tolerance=0.0, residual_retries=2,
+                            retry_rtol_factor=0.1, retry_rtol_floor=1e-8,
+                            max_events=1000, initialization_horizon=0.001, max_step=np.inf,
+                            suppress_algebraic_error=False, jacobian='colored', verify_jacobian=False)
+        self.options.update(tolerances or {})
+        allowed = {'rtol', 'residual_tolerance', 'event_tolerance', 'event_time_tolerance',
+                   'regulator_pressure_tolerance', 'residual_retries', 'retry_rtol_factor', 'retry_rtol_floor',
+                   'max_events', 'initialization_horizon', 'max_step', 'suppress_algebraic_error',
+                   'atol', 'equation_scales', 'jacobian', 'verify_jacobian'}
+        if set(self.options) - allowed:
+            raise ValueError(f'Unknown solver options: {sorted(set(self.options) - allowed)}')
+        if not isinstance(self.options['suppress_algebraic_error'], bool):
+            raise ValueError('suppress_algebraic_error must be boolean')
+        if self.options['jacobian'] not in ('colored', 'dense'):
+            raise ValueError("jacobian must be 'colored' or 'dense'")
+        if not isinstance(self.options['verify_jacobian'], bool):
+            raise ValueError('verify_jacobian must be boolean')
+        for key in ('rtol', 'residual_tolerance', 'event_tolerance', 'event_time_tolerance', 'initialization_horizon', 'max_events'):
+            if not np.isfinite(self.options[key]) or self.options[key] <= 0:
+                raise ValueError(f'{key} must be positive and finite')
+        if self.options['max_step'] <= 0 or np.isnan(self.options['max_step']):
+            raise ValueError('max_step must be positive')
+        if (not np.isfinite(self.options['regulator_pressure_tolerance'])
+                or self.options['regulator_pressure_tolerance'] < 0):
+            raise ValueError('regulator_pressure_tolerance must be nonnegative and finite')
+        retries = self.options['residual_retries']
+        if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0:
+            raise ValueError('residual_retries must be a nonnegative integer')
+        if not 0 < self.options['retry_rtol_factor'] < 1:
+            raise ValueError('retry_rtol_factor must be between zero and one')
+        if not np.isfinite(self.options['retry_rtol_floor']) or self.options['retry_rtol_floor'] <= 0:
+            raise ValueError('retry_rtol_floor must be positive and finite')
+        # Accuracy used by IDAS can tighten without changing physical event guards.
+        self.effective_rtol = self.options['rtol']
+        self.effective_max_step = self.options['max_step']
+        self.retry_diagnostics = []
+        self.nodes = {k: self._make_node(k, v) for k, v in nodes.items()}
+        self.branches = {k: self._make_branch(k, v) for k, v in branches.items()}
+        if set(self.nodes) & set(self.branches):
+            raise ValueError('Node and branch IDs must be distinct')
+        self.connections = {k: [] for k in self.nodes}
+        for k, branch in self.branches.items():
+            for node, sign in ((branch.from_node, -1), (branch.to_node, 1)):
+                if node not in self.nodes:
+                    raise ValueError(f"Branch '{k}' references unknown node '{node}'")
+                self.connections[node].append((sign, k))
+        self.regulator_modes = {}
+        regulated = set()
+        for k, branch in self.branches.items():
+            if isinstance(branch, RegulatorComponent) and isinstance(self.nodes[branch.to_node], VolumeComponent):
+                if branch.to_node in regulated:
+                    raise ValueError('Multiple ideal regulators on one storage volume are underdetermined')
+                regulated.add(branch.to_node)
+                self.regulator_modes[k] = 'capacity'
+        self.directions = {k: int(v.get('direction', 1)) for k, v in branches.items()}
+        if any(d not in (-1, 1) for d in self.directions.values()):
+            raise ValueError('Branch directions must be -1 or 1')
         self.constraint_monitor = constraint_monitor
-        self._connect()
+        self.state, self.time = NetworkState(), 0.0
+        self.events, self.remainders = [], []
+        self.session = None
+        self.y = self.ydot = None
+        self.bcs, self.heat_rate, self.axial_specific_force = {}, {}, 0.0
+        self.constraints, self.constraint_times = {}, {}
+        self.last_diagnostic = None
 
     @staticmethod
-    def _kind(definition: Dict[str, Any]) -> str:
-        fields = [name for name in ("component", "model") if name in definition]
-        if len(fields) != 1:
-            raise ValueError(
-                "A network definition requires exactly one of component or model"
-            )
-        return str(definition[fields[0]])
+    def _kind(definition):
+        keys = [k for k in ('component', 'model') if k in definition]
+        if len(keys) != 1:
+            raise ValueError('A definition requires exactly one of component or model')
+        return definition[keys[0]]
 
-    @classmethod
-    def _make_node(cls, node_id: str, definition: Dict[str, Any]) -> FluidNode:
-        kind = cls._kind(definition)
-        if kind == "boundary":
-            return FluidNode(node_id, definition, BoundaryModel())
-        if kind == "junction":
-            return FluidNode(node_id, definition, JunctionModel())
-        if kind == "pressurant_tank":
-            return PressurantTankComponent(node_id, definition)
-        if kind == "propellant_tank":
-            return PropellantTankComponent(node_id, definition)
-        if kind == "combustor":
-            return CombustorComponent(node_id, definition)
-        if kind == "volume":
-            return VolumeComponent(node_id, definition, VolumeModel())
-        raise ValueError(f"Unsupported node component/model '{kind}' for '{node_id}'")
+    def _make_node(self, key, definition):
+        kind = self._kind(definition)
+        if kind in ('boundary', 'junction'):
+            return {'boundary': BoundaryComponent, 'junction': JunctionComponent}[kind](key, definition)
+        if kind in ('volume', 'pressurant_tank'):
+            return VolumeComponent(key, definition, fluid_properties=self.fluid_properties,
+                                   phase=definition.get('phase', 'gas'))
+        if kind == 'propellant_tank':
+            return PropellantTankComponent(key, definition, fluid_properties=self.fluid_properties)
+        if kind == 'combustor':
+            return CombustorComponent(key, definition, combustion_properties=self.combustion_properties)
+        raise ValueError(f"Unsupported node kind '{kind}' for '{key}'")
 
-    @classmethod
-    def _make_branch(cls, branch_id: str, definition: Dict[str, Any]) -> FluidBranch:
-        kind = cls._kind(definition)
-        if kind == "incompressible_loss":
-            return FluidBranch(branch_id, definition, IncompressibleLossModel())
-        if kind == "compressible_loss":
-            return FluidBranch(branch_id, definition, CompressibleLossModel())
-        if kind == "loss":
-            return LossComponent(branch_id, definition)
-        if kind == "bang_bang_valve":
-            return BangBangValveComponent(branch_id, definition)
-        if kind == "regulator":
-            return RegulatorComponent(branch_id, definition)
-        if kind == "pump":
-            return PumpComponent(branch_id, definition)
-        if kind == "nozzle":
-            return NozzleComponent(branch_id, definition)
-        raise ValueError(
-            f"Unsupported branch component/model '{kind}' for '{branch_id}'"
-        )
+    def _make_branch(self, key, definition):
+        kind = self._kind(definition)
+        classes = {'loss': LossComponent, 'incompressible_loss': LossComponent,
+                   'compressible_loss': LossComponent, 'pump': PumpComponent,
+                   'regulator': RegulatorComponent, 'bang_bang_valve': BangBangValveComponent,
+                   'nozzle': NozzleComponent}
+        if kind not in classes:
+            raise ValueError(f"Unsupported branch kind '{kind}' for '{key}'")
+        kwargs = {'phase': definition.get('phase', 'gas' if kind == 'compressible_loss' else 'liquid')} if kind in ('loss', 'incompressible_loss', 'compressible_loss', 'pump') else {}
+        branch = classes[kind](key, definition, **kwargs)
+        branch.set_enabled(definition.get('enabled', True))
+        return branch
 
-    def _connect(self) -> None:
-        for branch_id, branch in self.branches.items():
-            if branch.from_node not in self.nodes or branch.to_node not in self.nodes:
-                raise ValueError(f"Branch '{branch_id}' references an unknown node")
-            self.nodes[branch.from_node].outgoing.append(branch_id)
-            self.nodes[branch.to_node].incoming.append(branch_id)
+    def _build_layout(self, guesses):
+        self.variable_index, self.equation_index = {}, {}
+        self.variable_slices, self.equation_slices = {}, {}
+        values, ids, atols, scales = [], [], [], []
+        defaults = {'P': 0.001, 'T': 1e-7, 'T_liq': 1e-7, 'T_ull': 1e-7,
+                    'm': 1e-11, 'm_liq': 1e-11, 'm_ull': 1e-11,
+                    'U': 1e-6, 'U_liq': 1e-6, 'U_ull': 1e-6}
+        for key, component in {**self.nodes, **self.branches}.items():
+            start = len(values)
+            for name in component.variable_names:
+                qualified = f'{key}.{name}'
+                self.variable_index[qualified] = len(values)
+                values.append(float(guesses[key][name]))
+                ids.append(name in component.differential_variable_names)
+                # Absolute flow accuracy of 1 mg/s permits the square-root law
+                # to cross zero without demanding a differentiable mdot(t).
+                default = 1e-6 if name.startswith('mdot') else defaults.get(name, 1e-10)
+                atols.append(self.options.get('atol', {}).get(qualified, default))
+            self.variable_slices[key] = slice(start, len(values))
+            start = len(scales)
+            for name in component.equation_names:
+                qualified = f'{key}.{name}'
+                self.equation_index[qualified] = len(scales)
+                scale = 1.0
+                if key in self.nodes:
+                    if 'energy' in name:
+                        field_name = 'U_liq' if name.startswith('liquid') else 'U_ull' if name.startswith('ullage') else 'U'
+                        scale = max(abs(guesses[key].get(field_name, 1.)), 1.)
+                    elif name == 'volume_closure':
+                        scale = component.volume
+                    elif name == 'mass_closure':
+                        scale = max(abs(guesses[key]['m']), 1e-6)
+                scales.append(self.options.get('equation_scales', {}).get(qualified, scale))
+            self.equation_slices[key] = slice(start, len(scales))
+        if not values or len(values) != len(scales):
+            raise ValueError(f'Network has {len(values)} unknowns and {len(scales)} equations')
+        self.differential = np.asarray(ids, dtype=int)
+        self.atol, self.row_scales = np.asarray(atols), np.asarray(scales)
+        if not np.isfinite(self.row_scales).all() or np.any(self.row_scales <= 0):
+            raise ValueError('Equation scales must be positive and finite')
+        self._trial_variables = tuple((key, tuple(component.variable_names), self.variable_slices[key])
+                                      for key, component in {**self.nodes, **self.branches}.items())
+        self._trial_derivatives = tuple((key, tuple((name, self.variable_index[f'{key}.{name}'])
+                                        for name in node.differential_variable_names))
+                                       for key, node in self.nodes.items())
+        self._transport_plan = None
+        return np.asarray(values)
 
-    def _adjacent(self, node: FluidNode, states: Dict[str, BranchState]):
-        return [
-            (incidence, states[branch_id])
-            for incidence, branch_ids in ((1.0, node.incoming), (-1.0, node.outgoing))
-            for branch_id in branch_ids
-            if branch_id in states
-        ]
+    def _unpack(self, y):
+        return {key: dict(zip(names, y[indices])) for key, names, indices in self._trial_variables}
 
-    def _initial_directions(self) -> Dict[str, Dict[str, int]]:
-        directions = {}
-        for branch_id, branch in self.branches.items():
-            if isinstance(branch.model, TwinPathNozzleModel):
-                previous = next(iter(branch.state.flows.values()), {}).get("direction", 1)
-                directions[branch_id] = {
-                    phase: int(previous) for phase in branch.model.phases
-                }
-            elif branch.state.flows:
-                directions[branch_id] = {
-                    name: int(flow["direction"])
-                    for name, flow in branch.state.flows.items()
-                }
-            else:
-                directions[branch_id] = {"main": 1}
-        return directions
+    def _adjacent(self, key, branches):
+        return [(sign, branches[bid]) for sign, bid in self.connections[key] if bid in branches]
 
-    def _jacobian_sparsity(self, node_layout, branch_layout, counts, directions):
-        """Conservative dependencies for built-in models, including transported state."""
+    def _boundary(self, key, t):
+        value = self.bcs.get(key, {})
+        return value(t) if callable(value) else value
 
-        node_models = (BoundaryModel, JunctionModel, VolumeModel, TwoSpeciesModel,
-                       CombustionModel, TwinPathJunctionModel)
-        branch_models = (IncompressibleLossModel, CompressibleLossModel, PumpModel,
-                         CombustionNozzleModel, TwinPathNozzleModel, IdealRegulatorModel)
-        node_components = (FluidNode, VolumeComponent, PressurantTankComponent,
-                           PropellantTankComponent, CombustorComponent)
-        branch_components = (FluidBranch, LossComponent, PumpComponent,
-                             NozzleComponent, BangBangValveComponent, RegulatorComponent)
-        if any(type(n.model) not in node_models or type(n) not in node_components
-               for n in self.nodes.values()) or any(
-            type(b.model) not in branch_models or type(b) not in branch_components
-            for b in self.branches.values()
-        ):
-            return None  # Unknown physics remains dense rather than assuming false zeros.
-        key = (
-            tuple((k, names, type(self.nodes[k].model),
-                   getattr(self.nodes[k].model, "phases", ()),
-                   self.nodes[k].definition.get("ambient_node"))
-                  for k, (names, _) in node_layout.items()),
-            tuple((k, names, type(self.branches[k].model),
-                   self.branches[k].from_node, self.branches[k].to_node,
-                   self.branches[k].from_port, self.branches[k].to_port,
-                   tuple(directions[k].items())) for k, (names, _) in branch_layout.items()),
-            tuple(counts.items()),
-        )
-        if self._jacobian_cache is not None and self._jacobian_cache[0] == key:
-            return self._jacobian_cache[1]
-        nc = {k: set(range(s.start, s.stop)) for k, (_, s) in node_layout.items()}
-        bc = {k: set(range(s.start, s.stop)) for k, (_, s) in branch_layout.items()}
-        donors = {
-            k: {b.from_node if d > 0 else b.to_node for d in directions[k].values()}
-            for k, b in self.branches.items()
-        }
-        fluid = {k: set(columns) for k, columns in nc.items()}
-        for k, node in self.nodes.items():
-            if isinstance(node.model, (JunctionModel, TwinPathJunctionModel)):
-                fluid[k] = set()
-            if isinstance(node.model, (CombustionModel, TwinPathJunctionModel)):
-                fluid[k].update(nc.get(node.definition.get("ambient_node"), ()))
-                for branch_id in (*node.incoming, *node.outgoing):
-                    fluid[k].update(bc[branch_id])
-        # Forward routed thermodynamic dependencies, not downstream pressure feedback.
-        changed = True
-        while changed:
-            changed = False
-            for k, node in self.nodes.items():
-                if not isinstance(node.model, (JunctionModel, TwinPathJunctionModel)):
-                    continue
-                previous = len(fluid[k])
-                for branch_id in (*node.incoming, *node.outgoing):
-                    if donors[branch_id] - {k}:
-                        fluid[k].update(bc[branch_id])
-                        for donor in donors[branch_id] - {k}:
-                            fluid[k].update(fluid[donor])
-                changed |= len(fluid[k]) != previous
-
-        def flow_columns(branch_id):
-            columns = set(bc[branch_id])
-            for donor in donors[branch_id]:
-                columns.update(fluid[donor])
-            return columns
-
-        def pressure_columns(node_id, port):
-            names, indices = node_layout[node_id]
-            if port is not None:
-                return nc[node_id]  # Includes liquid-level/acceleration port pressure.
-            if "P" in names:
-                return {indices.start + names.index("P")}
-            return nc.get(self.nodes[node_id].definition.get("ambient_node"), set())
-
-        rows, columns = [], []
-        offset = 0
-        for label, (_, size) in counts.items():
-            kind, component_id = label.split(":", 1)
-            if kind == "node":
-                node = self.nodes[component_id]
-                dependencies = set(nc[component_id]) if node.model.is_dynamic else set()
-                for branch_id in (*node.incoming, *node.outgoing):
-                    dependencies.update(flow_columns(branch_id) if node.model.is_dynamic else bc[branch_id])
-            else:
-                branch = self.branches[component_id]
-                dependencies = flow_columns(component_id)
-                dependencies.update(pressure_columns(branch.from_node, branch.from_port))
-                dependencies.update(pressure_columns(branch.to_node, branch.to_port))
-            for row in range(offset, offset + size):
-                rows.extend([row] * len(dependencies))
-                columns.extend(dependencies)
-            offset += size
-        unknowns = sum(len(c) for c in (*nc.values(), *bc.values()))
-        pattern = csr_matrix((np.ones(len(rows), dtype=bool), (rows, columns)),
-                             shape=(offset, unknowns))
-        self._jacobian_cache = (key, pattern)
-        return pattern
-
-    def _solve(
-        self,
-        dt: Optional[float] = None,
-        bcs: Optional[Dict[str, Dict[str, Any]]] = None,
-        heat_rate: Optional[Dict[str, Any]] = None,
-        commit: bool = True,
-        detect_modes: bool = False,
-    ) -> Dict[str, Any]:
-        """Solve all active node states and branch mass flows."""
-
-        bcs = bcs or {}
-        heat_rate = heat_rate or {}
-        x0: List[float] = []
-        x_scale: List[float] = []
-        lower_bounds: List[float] = []
-        upper_bounds: List[float] = []
-        node_layout = {}
-        branch_layout = {}
-
-        for node_id, node in self.nodes.items():
-            connected = any(
-                self.branches[branch_id].enabled
-                for branch_id in (*node.incoming, *node.outgoing)
-            )
-            prescribed = bcs.get(node_id)
-            if isinstance(node.model, SteadyModel) and not connected:
-                prescribed = node.state
-            variables = node.solver_state(dt, prescribed)
-            names = tuple(variables)
-            node_layout[node_id] = (names, slice(len(x0), len(x0) + len(names)))
-            x0.extend(variables.values())
-            bounds = node.bounds(variables)
-            lower_bounds.extend(bounds[name][0] for name in names)
-            upper_bounds.extend(bounds[name][1] for name in names)
-            scales = node.scales(variables)
-            x_scale.extend(scales[name] for name in names)
-
-        for branch_id, branch in self.branches.items():
-            variables = branch.solver_state()
-            names = tuple(variables)
-            branch_layout[branch_id] = (
-                names,
-                slice(len(x0), len(x0) + len(names)),
-            )
-            x0.extend(variables.values())
-            bounds = branch.bounds(variables)
-            lower_bounds.extend(bounds[name][0] for name in names)
-            upper_bounds.extend(bounds[name][1] for name in names)
-            scales = branch.scales(variables)
-            x_scale.extend(scales[name] for name in names)
-
-        def unpack(x: np.ndarray):
-            raw_nodes = {}
-            for node_id, node in self.nodes.items():
-                names, indices = node_layout[node_id]
-                values = {
-                    name: float(value) for name, value in zip(names, x[indices])
-                }
-                raw_nodes[node_id] = {
-                    **node.state,
-                    **values,
-                    **bcs.get(node_id, {}),
-                }
-            raw_branches = {}
-            for branch_id in self.branches:
-                names, indices = branch_layout[branch_id]
-                raw_branches[branch_id] = {
-                    name: float(value) for name, value in zip(names, x[indices])
-                }
-            return raw_nodes, raw_branches
-
-        directions = self._initial_directions()
-        equation_labels = []
-        equation_counts = {}
-
-        def evaluate_candidate(x: np.ndarray):
-            raw_nodes, raw_branches = unpack(x)
-            node_state = {
-                node_id: node.trial_state(
-                    raw_nodes[node_id],
-                    [],
-                    raw_nodes,
-                )
-                for node_id, node in self.nodes.items()
-            }
-            branch_state: Dict[str, BranchState] = {}
-            for branch_id, branch in self.branches.items():
-                if branch.enabled:
-                    continue
-                branch_state[branch_id] = deepcopy(branch.state)
-                branch_state[branch_id].enabled = False
-                for flow in branch_state[branch_id].flows.values():
-                    flow["mdot"] = 0.0
-            ready_nodes = {
-                node_id
-                for node_id, node in self.nodes.items()
-                if not node.model.routes_inlet and not node.model.flow_coupled
-            }
-            pending = {
-                branch_id
-                for branch_id, branch in self.branches.items()
-                if branch.enabled
-            }
-            while pending:
-                progressed = False
-                for node_id, node in self.nodes.items():
-                    if node_id in ready_nodes:
-                        continue
-                    required = {
-                        branch_id
-                        for incidence, branch_ids in ((1, node.incoming), (-1, node.outgoing))
-                        for branch_id in branch_ids
-                        if any(incidence * direction > 0 for direction in directions[branch_id].values())
-                        and self.branches[branch_id].enabled
-                    }
-                    if required <= branch_state.keys():
-                        node_state[node_id] = node.trial_state(
-                            raw_nodes[node_id], self._adjacent(node, branch_state), node_state
-                        )
-                        ready_nodes.add(node_id)
-                        progressed = True
-
-                for branch_id in tuple(pending):
-                    branch = self.branches[branch_id]
-                    donors = {
-                        branch.from_node if direction > 0 else branch.to_node
-                        for direction in directions[branch_id].values()
-                    }
-                    if not donors <= ready_nodes:
-                        continue
-                    source_fluids = {}
-                    for direction in directions[branch_id].values():
-                        donor = branch.from_node if direction > 0 else branch.to_node
-                        port = branch.from_port if direction > 0 else branch.to_port
-                        source_fluids.update(
-                            self.nodes[donor].outlet(
-                                node_state[donor],
-                                self._adjacent(self.nodes[donor], branch_state),
-                                port,
-                            )
-                        )
-                    branch_state[branch_id] = branch.evaluate(
-                        raw_branches[branch_id], node_state, source_fluids, directions[branch_id]
-                    )
-                    pending.remove(branch_id)
-                    progressed = True
-                if not progressed:
-                    raise ValueError(
-                        "Fluid transport contains an algebraic cycle without a state-owning node: "
-                        + ", ".join(sorted(pending))
-                    )
-
-            equations: List[float] = []
-            equation_labels.clear()
-            equation_counts.clear()
-            for node_id, node in self.nodes.items():
-                names, _ = node_layout[node_id]
-                if names:
-                    values = node.residual(
-                        raw_nodes[node_id],
-                        node.state,
-                        node_state[node_id],
-                        self._adjacent(node, branch_state),
-                        dt,
-                        heat_rate,
-                    )
-                    equations.extend(values)
-                    equation_labels.extend(
-                        f"node:{node_id}[{index}]" for index in range(len(values))
-                    )
-                    equation_counts[f"node:{node_id}"] = (len(names), len(values))
-            for branch_id, branch in self.branches.items():
-                values = branch.residual(branch_state[branch_id], node_state)
-                equations.extend(values)
-                equation_labels.extend(
-                    f"branch:{branch_id}[{index}]" for index in range(len(values))
-                )
-                equation_counts[f"branch:{branch_id}"] = (
-                    len(branch_layout[branch_id][0]), len(values)
-                )
-
-            if len(equations) != len(x0):
-                raise RuntimeError(
-                    "Fluid network has unequal unknown and residual counts: "
-                    + ", ".join(
-                        f"{name}={unknowns}/{residuals}"
-                        for name, (unknowns, residuals) in equation_counts.items()
-                        if unknowns != residuals
-                    )
-                )
-
-            return (
-                np.asarray(equations, dtype=float),
-                raw_nodes,
-                node_state,
-                branch_state,
-            )
-
-        def residual(x: np.ndarray) -> np.ndarray:
-            return evaluate_candidate(x)[0]
-
-        if detect_modes:
-            _, _, initial_nodes, initial_branches = evaluate_candidate(np.asarray(x0, dtype=float))
-            changed = self._apply_mode_transitions(initial_branches, initial_nodes)
-            if self.stop_at_shutdown and self._is_shutdown():
-                return self._freeze_shutdown(initial_nodes, initial_branches, bcs, commit)
-            if changed:
-                return self._solve(dt, bcs, heat_rate, commit)
-
-        scales = np.asarray(x_scale, dtype=float)
-        lower = np.asarray(lower_bounds, dtype=float) / scales
-        upper = np.asarray(upper_bounds, dtype=float) / scales
-        initial_values = np.asarray(x0, dtype=float)
-        # Liquid loss/pump equations permit signed pressure trials without a
-        # property lookup at that pressure. Check the converged inlet pressure
-        # before commit; bounding it at zero can trap an impossible design in
-        # thousands of least-squares iterations instead of identifying it.
-        evaluate_candidate(initial_values)
-        liquid_inlets = {branch.from_node for branch in self.branches.values()
-                         if branch.enabled and isinstance(branch.model, PumpModel)
-                         and isinstance(self.nodes[branch.from_node].model, JunctionModel)}
-        for node_id in liquid_inlets:
-            lower[node_layout[node_id][1]] = -np.inf
-        solved_values = initial_values.copy()
-        solve_message = "no algebraic unknowns"
-        for _ in range(len(self.branches) + 2):
-            if x0:
-
-                def scaled_residual(values: np.ndarray) -> np.ndarray:
-                    return residual(values * scales)
-
-                sparsity = None
-                # Scalar problems gain nothing from sparse differentiation; SciPy's
-                # sparse trust-region path also requires a two-dimensional subspace.
-                if self.sparse_jacobian and len(solved_values) > 1:
-                    evaluate_candidate(solved_values)
-                    sparsity = self._jacobian_sparsity(
-                        node_layout, branch_layout, equation_counts, directions
-                    )
-                solution = least_squares(
-                    scaled_residual,
-                    solved_values / scales,
-                    method="trf",
-                    bounds=(lower, upper),
-                    xtol=min(self.residual_tolerance, 1.0e-12),
-                    ftol=min(self.residual_tolerance, 1.0e-12),
-                    gtol=min(self.residual_tolerance, 1.0e-12),
-                    # Try the alternate method promptly when TRF makes slow
-                    # progress near a regulator's pressure-reversal boundary.
-                    max_nfev=100,
-                    jac_sparsity=sparsity,
-                    tr_options=(
-                        {"atol": min(self.residual_tolerance, 1.0e-12),
-                         "btol": min(self.residual_tolerance, 1.0e-12),
-                         "maxiter": 10 * len(solved_values)}
-                        if sparsity is not None else {}
-                    ),
-                )
-                solved_values = solution.x * scales
-                solve_message = solution.message
-            (
-                final_residual,
-                raw_nodes,
-                node_state,
-                branch_state,
-            ) = evaluate_candidate(solved_values)
-            residual_norm = float(np.max(np.abs(final_residual))) if final_residual.size else 0.0
-            for retry in range(3) if x0 else ():
-                if np.isfinite(residual_norm) and residual_norm <= self.residual_tolerance:
-                    break
-                if retry == 0:
-                    seed = initial_values
-                elif retry == 1:
-                    seed = self._transition_seed(
-                        solved_values, node_layout, node_state, branch_layout, branch_state
-                    )
-                else:
-                    seed = solved_values
-                if seed is None:
-                    continue
-                fallback = least_squares(
-                    scaled_residual,
-                    seed / scales,
-                    method="trf" if retry == 2 else "dogbox",
-                    bounds=(lower, upper),
-                    xtol=min(self.residual_tolerance, 1.0e-12),
-                    ftol=min(self.residual_tolerance, 1.0e-12),
-                    gtol=min(self.residual_tolerance, 1.0e-12),
-                    max_nfev=5000,
-                )
-                fallback_values = fallback.x * scales
-                fallback_candidate = evaluate_candidate(fallback_values)
-                fallback_norm = float(np.max(np.abs(fallback_candidate[0])))
-                if np.isfinite(fallback_norm) and (
-                    not np.isfinite(residual_norm)
-                    or fallback_norm < residual_norm
-                ):
-                    solved_values = fallback_values
-                    (final_residual, raw_nodes, node_state, branch_state) = fallback_candidate
-                    residual_norm = fallback_norm
-                    solve_message = fallback.message
-            if (
-                not np.isfinite(residual_norm)
-                or residual_norm > self.residual_tolerance
-            ):
-                worst = int(np.argmax(np.abs(final_residual)))
-                limits = []
-                for node_id, (names, indices) in node_layout.items():
-                    node = self.nodes[node_id]
-                    if isinstance(node.model, VolumeModel) and "quality" in names:
-                        pressure = float(node_state[node_id]["P"])
-                        low, high = node.bounds(raw_nodes[node_id])["P"]
-                        if np.isclose(pressure, low, rtol=1e-8, atol=0.0) or np.isclose(
-                            pressure, high, rtol=1e-8, atol=0.0
-                        ):
-                            limits.append(
-                                f"{node_id} saturation pressure {pressure:.6g} Pa "
-                                f"at property-domain limit [{low:.6g}, {high:.6g}] Pa"
-                            )
-                raise RuntimeError(
-                    "Fluid network update failed: "
-                    f"{solve_message}; scaled residual={residual_norm:.3e} "
-                    f"at {equation_labels[worst]}"
-                    + ("; " + "; ".join(limits) if limits else "")
-                )
-            changed = False
-            for branch_id, state in branch_state.items():
-                branch = self.branches[branch_id]
-                if isinstance(branch.model, TwinPathNozzleModel):
-                    solved = {
-                        phase: state.phase_mdot(phase)
-                        for phase in branch.model.phases
-                    }
-                else:
-                    solved = {"main": state.mdot}
-                for name, mdot in solved.items():
-                    if abs(mdot) > self.flow_direction_tolerance:
-                        direction = 1 if mdot > 0.0 else -1
-                        if directions[branch_id][name] != direction:
-                            directions[branch_id][name] = direction
-                            changed = True
-            if not changed:
-                break
+    def _check_property_domain(self, key, node, values):
+        if node.mode == 'two_phase':
+            fluids = [(node.definition['liquid_fluid'], 'T_liq'), (node.definition['gas_fluid'], 'T_ull')]
+        elif node.mode == 'saturated':
+            lo, hi = node.fluid_properties.saturation_bounds(node.fluid_name)
+            if not lo <= values['P'] <= hi:
+                raise TrialDomainError(f'{key}.P outside saturation domain')
+            return
         else:
-            raise RuntimeError("Fluid flow directions did not settle")
+            fluids = [(node.fluid_name, 'T')]
+        for fluid, temperature in fluids:
+            pb, tb = node.fluid_properties.state_bounds(fluid)
+            if not pb[0] <= values['P'] <= pb[1] or not tb[0] <= values[temperature] <= tb[1]:
+                raise TrialDomainError(f'{key}: trial outside {fluid} PT domain')
 
-        invalid_pressures = {f"node.{key}.Pmin": float(node_state[key]["P"])
-                             for key in liquid_inlets if node_state[key]["P"] < 0.0}
-        if invalid_pressures:
-            raise OperatingInfeasible(invalid_pressures, self.time + (dt or 0.0))
+    def _transport_operations(self):
+        """Order property transport once per layout/direction/activation change.
 
-        output_nodes = {
-            node_id: node.output_state(node_state[node_id])
-            for node_id, node in self.nodes.items()
-        }
-        candidate = NetworkState(
-            nodes=output_nodes,
-            branches=branch_state,
-        )
-        if commit:
-            self._commit_candidate(candidate, bcs)
-
-        return self._output(candidate)
-
-    def _output(self, candidate):
-        return {
-            "state": candidate,
-            "node": {name: state.as_dict() for name, state in candidate.nodes.items()},
-            "branch": {name: state.as_dict() for name, state in candidate.branches.items()},
-            "td_state": {
-                name: state.state
-                for name, state in candidate.nodes.items()
-                if self.nodes[name].model.is_dynamic
-            },
-            "mdot": {
-                branch_id: self.branches[branch_id].total_mdot(state)
-                for branch_id, state in candidate.branches.items()
-            },
-        }
-
-    def _is_shutdown(self):
-        chambers = [node for node in self.nodes.values() if isinstance(node, CombustorComponent)]
-        return bool(chambers) and all(node.mode == "shutdown" for node in chambers)
-
-    def _freeze_shutdown(self, node_states, branch_states, bcs, commit):
-        """Close the feed paths at cutoff without solving post-shutdown hydraulics."""
-        candidate = NetworkState(
-            nodes={key: node.output_state({**node_states[key], **node.state, **bcs.get(key, {})})
-                   for key, node in self.nodes.items()},
-            branches=deepcopy(branch_states),
-        )
-        for state in candidate.branches.values():
-            state.enabled = False
-            for flow in state.flows.values():
-                flow["mdot"] = 0.0
-            for name in state.state:
-                if name.startswith("mdot_"):
-                    state.state[name] = 0.0
-            state.metadata.update(thrust=0.0, pump_active=False)
-        if commit:
-            for branch in self.branches.values():
-                branch.enabled = False
-            self._commit_candidate(candidate, bcs)
-        return self._output(candidate)
-
-    def _transition_seed(self, values, node_layout, node_states, branch_layout, branch_states):
-        """Escape transition plateaus without changing equations or bounds.
-
-        A passive gas junction cannot sustain pressure outside all its neighbors.
-        After a pump loses its liquid supply, stale pressure guesses can land on
-        just such a plateau. Move only those guesses to the neighboring midpoint;
-        the subsequent solve must still meet the original residual tolerance.
+        During mode selection this is a live iterator, so downstream operations
+        see phase/shutdown changes made by the preceding evaluation.
         """
-        seed = values.copy()
-        changed = False
-        # An ideal regulator's interior residual depends only on pressure. At a
-        # zero-time transition, conserved tank mass/energy can fix pressure just
-        # off target, leaving no flow derivative to reach the required limit.
-        for branch_id, branch in self.branches.items():
-            if not isinstance(branch, RegulatorComponent) or not branch.enabled:
-                continue
-            target = float(branch.parameters["target_pressure"])
-            error = (target - node_states[branch.to_node]["P"]) / target
-            if abs(error) <= 16 * np.finfo(float).eps:
-                continue
-            _, indices = branch_layout[branch_id]
-            flow = branch_states[branch_id]["max_mdot"] if error > 0 else 0.0
-            if np.any(seed[indices] != flow):
-                seed[indices] = flow
-                changed = True
-        for node_id, node in self.nodes.items():
-            names, indices = node_layout[node_id]
-            if not isinstance(node.model, JunctionModel) or names != ("P",):
-                continue
-            branches = [self.branches[key] for key in (*node.incoming, *node.outgoing)
-                        if self.branches[key].enabled]
-            if not branches or any(type(branch.model) is not CompressibleLossModel for branch in branches):
-                continue
-            pressures = [float(node_states[branch.from_node if branch.to_node == node_id
-                                          else branch.to_node]["P"]) for branch in branches]
-            low, high = min(pressures), max(pressures)
-            pressure = float(values[indices][0])
-            if low <= pressure <= high:
-                continue
-            seed[indices] = 0.5 * low + 0.5 * high
-            changed = True
-        return seed if changed else None
-
-    def _commit_candidate(
-        self,
-        candidate: NetworkState,
-        bcs: Dict[str, Dict[str, Any]],
-    ) -> None:
-        """Commit an already-converged candidate without solving it again."""
-
-        for node_id, node in self.nodes.items():
-            if node_id not in bcs:
-                node.commit(candidate.nodes[node_id], candidate.nodes[node_id])
-            else:
-                node.evaluated = candidate.nodes[node_id]
-        for branch_id, branch in self.branches.items():
-            branch.commit(candidate.branches[branch_id])
-        self.state = candidate
-
-    def _event_values(self, state: NetworkState) -> Dict[tuple, float]:
-        if self.frozen:
-            return {}
-        values = {}
-        for node_id, node in self.nodes.items():
-            if self.stop_at_triple_point and node.model.is_dynamic:
-                evaluated = state.node[node_id]
-                for fluid in evaluated.fluids:
-                    properties = node.require_fluid_properties()
-                    if not properties.supports_saturation(fluid):
-                        continue
-                    if fluid not in self._triple_points:
-                        pressure = properties.saturation_bounds(fluid)[0]
-                        self._triple_points[fluid] = (
-                            pressure, properties.saturation_at_p(fluid, pressure).T
-                        )
-                    pressure, temperature = self._triple_points[fluid]
-                    if "quality" in node.state:
-                        margin = float(evaluated["P"]) / pressure - 1.0
-                    else:
-                        field = ("T_ull" if fluid == node.definition.get("gas_fluid")
-                                 else "T_liq") if "T_ull" in evaluated else "T"
-                        margin = float(evaluated[field]) / temperature - 1.0
-                    values[("node", node_id, f"triple_point:{fluid}")] = margin
-            values.update(
-                {
-                    ("node", node_id, name): value
-                    for name, value in node.event_values(
-                        state.node[node_id]
-                    ).items()
-                }
-            )
-        for branch_id, branch in self.branches.items():
-            values.update(
-                {
-                    ("branch", branch_id, name): value
-                    for name, value in branch.event_values(state.node).items()
-                }
-            )
-        return values
-
-    @staticmethod
-    def _crossed(start: Dict[tuple, float], end: Dict[tuple, float]) -> List[tuple]:
-        return [
-            event
-            for event, start_value in start.items()
-            if start_value > 0.0 and end.get(event, start_value) <= 0.0
-        ]
-
-    def _predict_event_values(self, dt, bcs, heat_rate):
-        """Explicit Euler proposal from local balance residuals; never commit it."""
-
-        predicted = deepcopy(self.state)
-        snapshot = self._snapshot()
-        try:
-            for node_id, node in self.nodes.items():
-                if not node.model.is_dynamic or node_id in bcs:
+        ready = {key for key, node in self.nodes.items()
+                 if isinstance(node, (BoundaryComponent, VolumeComponent))}
+        pending = set(self.branches)
+        while pending or len(ready) < len(self.nodes):
+            progress = False
+            for key in sorted(pending):
+                branch, direction = self.branches[key], self.directions[key]
+                donor, port = ((branch.from_node, branch.from_port) if direction > 0
+                               else (branch.to_node, branch.to_port))
+                if branch.active and donor not in ready:
                     continue
-                variables = node.solver_state(0.0, None)
-                if not variables:
+                yield ('branch', key, donor, port, dict(main=direction, gas=direction, liquid=direction))
+                pending.remove(key)
+                progress = True
+            for key in self.nodes:
+                if key in ready:
                     continue
-                adjacent = self._adjacent(node, self.state.branches)
-                names = tuple(variables)
-                scales = node.scales(variables)
-                bounds = node.bounds(variables)
-
-                def residual(values, duration):
-                    trial = {**node.state, **values}
-                    evaluated = node.trial_state(trial, adjacent, self.state.node)
-                    return node.residual(
-                        trial, node.state, evaluated, adjacent, duration, heat_rate
-                    )
-
-                try:
-                    base = residual(variables, 0.0)
-                    forcing = residual(variables, 1.0) - base
-                    columns = []
-                    for name in names:
-                        delta = 1.0e-6 * scales[name]
-                        low, high = bounds[name]
-                        if variables[name] + delta > high:
-                            delta = -delta
-                        if not low <= variables[name] + delta <= high:
-                            raise ValueError("No admissible predictor perturbation")
-                        perturbed = {**variables, name: variables[name] + delta}
-                        columns.append((residual(perturbed, 0.0) - base) / delta)
-                    rates = np.linalg.solve(np.column_stack(columns), -forcing)
-                    if np.all(np.isfinite(rates)):
-                        predicted.node[node_id].update(
-                            {name: variables[name] + dt * rate
-                             for name, rate in zip(names, rates)}
-                        )
-                except (ValueError, np.linalg.LinAlgError):
-                    # Prediction is optional; implicit event bracketing is the fallback.
+                incoming = tuple((sign, bid) for sign, bid in self.connections[key]
+                                 if self.branches[bid].active and sign * self.directions[bid] > 0)
+                if any(bid in pending for _, bid in incoming):
                     continue
-            return self._event_values(predicted)
-        finally:
-            self._restore(snapshot)
+                yield ('node', key, incoming)
+                ready.add(key)
+                progress = True
+            if not progress:
+                missing = sorted(set(self.nodes) - ready)
+                raise ValueError(f'Unsupported transport cycle or missing donor: nodes={missing}, branches={sorted(pending)}')
 
-    def _event_step(self, dt, bcs, heat_rate):
-        """Return the earliest event-aligned step and its converged candidate."""
-
-        start_values = self._event_values(self.state)
-        lower = 0.0
-        lower_values = start_values
-        lower_result = None
-        upper = float(dt)
-        upper_values = None
-        upper_result = None
-        last_failure = None
-        predicted = self._predict_event_values(dt, bcs, heat_rate)
-        estimates = [
-            dt * start / (start - predicted[event])
-            for event, start in start_values.items()
-            if start > 0.0 and predicted.get(event, start) <= 0.0
-        ]
-        step = max(np.finfo(float).eps * dt, min(estimates, default=upper))
-        if dt - step <= self.event_time_tolerance:
-            step = float(dt)
-        while True:
-            try:
-                result = self._solve(step, bcs, heat_rate, commit=False)
-            except (LookupBoundsError, OperatingInfeasible):
-                raise
-            except (ValueError, RuntimeError) as error:
-                last_failure = error
-                upper = step
-                upper_values = None
-                upper_result = None
-                if upper <= self.event_time_tolerance and lower_result is None:
-                    raise
-            else:
-                values = self._event_values(result["state"])
-                estimates = [
-                    (step * start / (start - values[event]), event)
-                    for event, start in start_values.items()
-                    if start > 0.0 and values.get(event, start) < start
-                ]
-                if estimates:
-                    estimate, event = min(estimates)
-                    if abs(estimate - step) <= self.event_time_tolerance:
-                        return step, result, event
-                if self._crossed(start_values, values):
-                    upper, upper_values = step, values
-                    upper_result = result
-                else:
-                    lower, lower_values, lower_result = step, values, result
-                    if step == dt:
-                        return step, result, None
-
-            if upper - lower <= self.event_time_tolerance:
-                if upper_result is not None:
-                    crossed = self._crossed(start_values, upper_values)
-                    event = min(
-                        crossed,
-                        key=lambda key: lower_values[key] / (lower_values[key] - upper_values[key]),
-                    )
-                    return upper, upper_result, event
-                if lower_result is None:
-                    raise RuntimeError("Cannot resolve a fluid event within the time tolerance")
-                # A failed upper trial is only an event if a measured margin
-                # projects to zero within the event-time tolerance of this state.
-                projected = [
-                    (lower * start / (start - lower_values[event]), event)
-                    for event, start in start_values.items()
-                    if start > 0.0 and lower_values.get(event, start) < start
-                ]
-                near = [item for item in projected if item[0] <= upper + self.event_time_tolerance]
-                if not near and lower <= self.event_time_tolerance:
-                    raise RuntimeError(
-                        f"Fluid network cannot advance at t={self.time:.9g} s "
-                        f"within event_time_tolerance={self.event_time_tolerance:g} s "
-                        "without a resolvable event"
-                    ) from last_failure
-                return lower, lower_result, min(near)[1] if near else None
-
-            if upper_values is not None:
-                estimates = [
-                    lower + (upper - lower) * value / (value - upper_values[event])
-                    for event, value in lower_values.items()
-                    if value > 0.0 and upper_values.get(event, value) <= 0.0
-                ]
-            else:
-                estimates = [
-                    lower * start / (start - lower_values[event])
-                    for event, start in start_values.items()
-                    if start > 0.0 and lower_values.get(event, start) < start
-                ]
-            estimate = min(estimates, default=(lower + upper) / 2.0)
-            # A failed upper trial must shrink geometrically; clipping a remote
-            # event estimate by a fixed epsilon can otherwise take millions of
-            # retries. Keep fast interpolation near a measured event crossing.
-            margin = 0.1 * (upper - lower)
-            if last_failure is None or upper_values is not None:
-                margin = min(self.event_time_tolerance * 0.1, margin)
-            step = float(np.clip(estimate, lower + margin, upper - margin))
-
-    def _apply_event(self, event: tuple) -> bool:
-        kind, component_id, name = event
-        component = (
-            self.nodes[component_id]
-            if kind == "node"
-            else self.branches[component_id]
-        )
-        was_open = getattr(component, "is_open", None)
-        if kind == "node" and name.startswith("triple_point:"):
-            self.frozen = True
-            for node in self.nodes.values():
-                if isinstance(node, CombustorComponent):
-                    node.mode = "shutdown"
-                    node.shutdown_reason = node.shutdown_reason or "triple_point"
-                    node.state.update(mode="shutdown", shutdown_reason=node.shutdown_reason,
-                                      cstar=0.0, Cf=0.0, mdot_oxidizer=0.0, mdot_fuel=0.0)
-            self._freeze_shutdown(self.state.node, self.state.branches, {}, commit=True)
-            changed = True
+    def evaluate_trial(self, t, y, *, select_modes=False):
+        """Fresh trial records using cached routing; modes change only outside IDA."""
+        if select_modes:
+            self._transport_plan = None
+            operations = self._transport_operations()
         else:
-            changed = component.apply_event(name)
-        if changed:
-            key = f"{kind}:{component_id}:{name}"
-            self.event_counts[key] = self.event_counts.get(key, 0) + 1
-            record = {"time_s": self.time, "kind": kind, "component": component_id,
-                      "event": name, "count": self.event_counts[key]}
-            if was_open is not None:
-                record.update(was_open=bool(was_open), is_open=bool(component.is_open))
-            self.events.append(record)
-        if changed and kind == "node" and not self.frozen:
-            evaluated = component.trial_state(component.state, [], {})
-            component.evaluated = component.output_state(evaluated)
-            self.state.nodes[component_id] = component.evaluated
-        return changed
-
-    @staticmethod
-    def _mutable_state(component, names):
-        return {
-            name: deepcopy(getattr(component, name))
-            for name in names
-            if hasattr(component, name)
-        }
-
-    def _snapshot(self):
-        return (
-            deepcopy(self.state),
-            {
-                node_id: (
-                    self._mutable_state(
-                        node,
-                        (
-                            "state",
-                            "evaluated",
-                            "model",
-                            "mode",
-                            "shutdown_reason",
-                            "_condensation_armed",
-                        ),
-                    ),
-                    node.definition.get("fluid"),
-                    "fluid" in node.definition,
-                )
-                for node_id, node in self.nodes.items()
-            },
-            {
-                branch_id: self._mutable_state(
-                    branch,
-                    (
-                        "state",
-                        "model",
-                        "fluid",
-                        "enabled",
-                        "is_open",
-                        "_open_state",
-                    ),
-                )
-                for branch_id, branch in self.branches.items()
-            },
-            self.time, deepcopy(self.events), self.event_counts.copy(), self.frozen,
-        )
-
-    def _restore(self, snapshot) -> None:
-        (self.state, node_states, branch_states,
-         self.time, self.events, self.event_counts, self.frozen) = snapshot
-        for node_id, (state, fluid, had_fluid) in node_states.items():
-            self.nodes[node_id].__dict__.update(state)
-            if had_fluid:
-                self.nodes[node_id].definition["fluid"] = fluid
+            signature = tuple((key, branch.active, self.directions[key]) for key, branch in self.branches.items())
+            if self._transport_plan is None or self._transport_plan[0] != signature:
+                self._transport_plan = (signature, tuple(self._transport_operations()))
+            operations = self._transport_plan[1]
+        values = self._unpack(y)
+        nodes = {key: NodeState(trial_values=values[key]) for key in self.nodes}
+        branches = {}
+        for key, node in self.nodes.items():
+            if isinstance(node, (BoundaryComponent, VolumeComponent)):
+                if isinstance(node, VolumeComponent):
+                    self._check_property_domain(key, node, values[key])
+                nodes[key] = node.evaluate(values[key], axial_specific_force=self.axial_specific_force,
+                                           boundary_values=self._boundary(key, t))
+            elif not node.variable_names and isinstance(node, CombustorComponent):
+                nodes[key].properties['P'] = self._boundary(node.definition['ambient_node'], t).get(
+                    'P', self.nodes[node.definition['ambient_node']].definition['P'])
+        for operation in operations:
+            key = operation[1]
+            if operation[0] == 'branch':
+                _, _, donor, port, directions = operation
+                branch = self.branches[key]
+                source = self.nodes[donor].outlet(nodes[donor], self._adjacent(donor, branches), port) if branch.active else {}
+                if select_modes and branch.active and not isinstance(branch, NozzleComponent):
+                    if len(source) != 1:
+                        raise ValueError(f"Branch '{key}' needs one donor fluid")
+                    branch.set_phase(next(iter(source.values())).phase)
+                    if set(values[key]) != set(branch.variable_names):
+                        return None
+                branches[key] = branch.evaluate(values[key], nodes, source, directions)
             else:
-                self.nodes[node_id].definition.pop("fluid", None)
-        for branch_id, state in branch_states.items():
-            self.branches[branch_id].__dict__.update(state)
+                node = self.nodes[key]
+                adjacent = [(sign, branches[bid]) for sign, bid in operation[2]]
+                extra = {}
+                if isinstance(node, CombustorComponent):
+                    if select_modes:
+                        phases = {flow['fluid'].phase for _, b in adjacent for flow in b.flows.values()}
+                        reactants = {flow['fluid'].fluid for _, b in adjacent for flow in b.flows.values()
+                                     if flow['fluid'].phase == 'liquid'}
+                        if node.mode == 'shutdown' or not {node.definition['oxidizer_fluid'], node.definition['fuel_fluid']} <= reactants:
+                            previous = node.mode
+                            changed = node.set_mode('shutdown', phases, reason=node.shutdown_reason or 'reactant_unavailable')
+                            if changed:
+                                self.events.append(dict(time_s=self.time, kind='node', component=key,
+                                                        name='shutdown' if previous == 'combusting' else 'phase_change',
+                                                        phases=tuple(sorted(phases)), reason=node.shutdown_reason))
+                            for nozzle in self.branches.values():
+                                if isinstance(nozzle, NozzleComponent) and nozzle.from_node == key:
+                                    nozzle.set_mode(False, phases)
+                            if (set(values[key]) != set(node.variable_names)
+                                    or any(set(values[k]) != set(b.variable_names) for k, b in self.branches.items())):
+                                return None
+                    extra['reference_state'] = self.state.nodes.get(key)
+                nodes[key] = node.evaluate(values[key], adjacent, nodes, **extra)
+        adjacent = {key: self._adjacent(key, branches) for key in self.nodes}
+        for key, node in self.nodes.items():
+            if isinstance(node, VolumeComponent):
+                allowed = set(nodes[key].fluids)
+                for sign, branch in adjacent[key]:
+                    for flow in branch.flows.values():
+                        if sign * flow['direction'] > 0 and flow['fluid'].fluid not in allowed:
+                            raise ValueError(f"Storage '{key}' cannot mix incoming {flow['fluid'].fluid} with {sorted(allowed)}")
+        return nodes, branches, adjacent
 
-    def update(
-        self,
-        dt: Optional[float] = None,
-        bcs: Optional[Dict[str, Dict[str, Any]]] = None,
-        heat_rate: Optional[Dict[str, Any]] = None,
-        commit: bool = True,
-        axial_specific_force: float = 0.0,
-    ) -> Dict[str, Any]:
-        """Propagate the network and apply component mode transitions."""
+    def _derivatives(self, ydot):
+        return {key: {name: ydot[index] for name, index in indices}
+                for key, indices in self._trial_derivatives}
 
-        axial_specific_force = float(axial_specific_force)
-        if not np.isfinite(axial_specific_force):
-            raise ValueError("Axial specific force must be finite")
-        for node in self.nodes.values():
-            node.axial_specific_force = axial_specific_force
+    def residual(self, t, y, ydot, out):
+        try:
+            nodes, branches, adjacent = self.evaluate_trial(t, y)
+            derivatives = self._derivatives(ydot)
+            for key, node in self.nodes.items():
+                heat = self.heat_rate.get(key, {})
+                if callable(heat):
+                    heat = heat(t)
+                out[self.equation_slices[key]] = node.residual(nodes[key], derivatives[key], adjacent[key], heat_rate=heat)
+            for key, branch in self.branches.items():
+                if key in self.regulator_modes and branch.active:
+                    mode, q = self.regulator_modes[key], branches[key].mdot
+                    if mode == 'regulating':
+                        target = branch.to_node
+                        rows = [self.nodes[target].pressure_rate(nodes[target], derivatives[target]) / branch.target]
+                    else:
+                        expected = branches[key]['max_mdot'] if mode == 'capacity' else 0.
+                        rows = [(q - expected) / branch.flow_scale]
+                else:
+                    rows = branch.residual(branches[key], nodes)
+                out[self.equation_slices[key]] = rows
+            out[:] /= self.row_scales
+        except TrialDomainError as error:
+            raise TrialDomainError(f'Network trial at t={t:g}: {error}') from error
 
-        if not commit:
-            snapshot = self._snapshot()
-            try:
-                return self.update(
-                    dt,
-                    bcs,
-                    heat_rate,
-                    commit=True,
-                    axial_specific_force=axial_specific_force,
-                )
-            finally:
-                self._restore(snapshot)
-        if dt is not None and (not np.isfinite(dt) or dt < 0.0):
-            raise ValueError("Fluid-network dt must be finite and nonnegative")
-        self.events = []
+    def _event_margins(self, t, y, ydot):
+        values = self._unpack(y)
         margins = {}
-        constraint_times = {}
-        if self.frozen:
-            self.time += dt or 0.0
-            return {**self._event_output(self._output(self.state)),
-                    "constraints": margins, "constraint_times": constraint_times}
+        # Storage events use raw P/T/inventories, not a full property evaluation.
+        for key, node in self.nodes.items():
+            if isinstance(node, VolumeComponent):
+                for name, value in node.event_values(NodeState(trial_values=values[key])).items():
+                    # End the supported model slightly inside hard property limits.
+                    # This leaves a valid neighborhood for root interpolation.
+                    if name.endswith(('_low', '_high')):
+                        variable = 'P' if 'pressure' in name else 'T_liq' if name.startswith('liquid_') else 'T_ull' if name.startswith('ullage_') else 'T'
+                        index = self.variable_index.get(f'{key}.{variable}')
+                        if index is not None:
+                            value -= 10 * (self.atol[index] + self.options['rtol'] * abs(y[index]))
+                    margins[('node', key, name)] = value
+                if self.stop_at_triple_point:
+                    names = ((node.definition['liquid_fluid'], 'T_liq'), (node.definition['gas_fluid'], 'T_ull')) if node.mode == 'two_phase' else ((node.fluid_name, 'T'),)
+                    for fluid, temperature in names:
+                        if not self.fluid_properties.supports_saturation(fluid):
+                            continue
+                        if fluid not in self._triple_limits:
+                            low, _ = self.fluid_properties.saturation_bounds(fluid)
+                            self._triple_limits[fluid] = (low, self.fluid_properties.saturation_at_p(fluid, low).T)
+                        low_p, low_t = self._triple_limits[fluid]
+                        variable, limit = ('P', low_p) if node.mode == 'saturated' else (temperature, low_t)
+                        index = self.variable_index[f'{key}.{variable}']
+                        buffer = 10 * (self.atol[index] + self.options['rtol'] * abs(y[index]))
+                        margins[('node', key, f'triple_point:{fluid}')] = (values[key][variable] - limit - buffer) / limit
+        raw = {key: NodeState(trial_values=values[key]) for key in self.nodes}
+        for key, node in self.nodes.items():
+            if isinstance(node, BoundaryComponent):
+                raw[key] = node.evaluate({}, boundary_values=self._boundary(key, t))
+        needs_trial = bool(self.regulator_modes) or any(isinstance(n, CombustorComponent) and n.mode == 'combusting' for n in self.nodes.values())
+        evaluated = self.evaluate_trial(t, y) if needs_trial else None
+        for key, branch in self.branches.items():
+            if isinstance(branch, BangBangValveComponent):
+                margins.update({('branch', key, name): v for name, v in branch.event_values(raw).items()})
+            elif key in self.regulator_modes and branch.active:
+                mode = self.regulator_modes[key]
+                if mode == 'regulating':
+                    b = evaluated[1][key]
+                    margins[('branch', key, 'close_limit')] = b.mdot / branch.flow_scale
+                    margins[('branch', key, 'capacity_limit')] = (b['max_mdot'] - b.mdot) / branch.flow_scale
+                else:
+                    delta = (raw[branch.to_node]['P'] - branch.target) / branch.target
+                    margins[('branch', key, 'regulate')] = delta if mode == 'closed' else -delta
+            elif branch.active and isinstance(branch, (LossComponent, PumpComponent)) and not isinstance(branch, RegulatorComponent):
+                margins[('branch', key, 'reverse')] = self.directions[key] * values[key]['mdot']
+        if evaluated:
+            for key, node in self.nodes.items():
+                if isinstance(node, CombustorComponent):
+                    margins.update({('node', key, name): v for name, v in node.event_values(evaluated[0][key]).items()})
+        return margins
 
-        def active():
-            chambers = [node_id for node_id, node in self.nodes.items() if isinstance(node, CombustorComponent)]
-            return not chambers or any(self.state.nodes.get(key, {}).get("mode") != "shutdown" for key in chambers)
+    def root_values(self, t, y, ydot, out):
+        margins = self._event_margins(t, y, ydot)
+        for i, event in enumerate(self.root_names):
+            # Conditional saturation roots keep their identity throughout a segment.
+            out[i] = margins.get(event, 1.)
 
-        def record(candidate, enabled=True):
-            if self.constraint_monitor is not None and enabled:
-                merge_margins(margins, self.constraint_monitor(candidate),
-                              times=constraint_times, time=self.time)
+    def _seed_consistent(self):
+        """Bounded starting guess for large equation changes, never a time step.
 
-        if dt is None:
-            result = self._solve(dt, bcs, heat_rate, commit=True, detect_modes=True)
-            record(result["state"])
-            for event, value in self._event_values(self.state).items():
-                if event[2].startswith("triple_point:") and value <= 0.0:
-                    self._apply_event(event)
-                    result = self._output(self.state)
-                    break
-            return {**self._event_output(result), "constraints": margins, "constraint_times": constraint_times}
-        bcs = bcs or {}
-        heat_rate = heat_rate or {}
-        if not self.state.node:
-            self._solve(None, bcs, heat_rate, commit=True, detect_modes=True)
-        record(self.state, active())
-        result = self._settle_transitions(bcs, heat_rate)
-        record(self.state, active())
+        Only algebraic y and differential ydot are adjusted. IDAS still performs
+        the final consistency solve. This avoids extrapolating combustion guesses
+        through the much lower passive-discharge pressure after shutdown.
+        """
+        from scipy.optimize import least_squares
 
-        start_time = self.time
-        remaining = dt
-        while remaining > 0.0 and not self.frozen and not (self.stop_at_shutdown and self._is_shutdown()):
-            check = active()
-            step, result, event = self._event_step(remaining, bcs, heat_rate)
-            self._commit_candidate(result["state"], bcs)
-            remaining -= step
-            self.time = start_time + dt - remaining
-            record(result["state"], check)
+        algebraic = np.flatnonzero(1 - self.differential)
+        differential = np.flatnonzero(self.differential)
+        names = list(self.variable_index)
+        initial = np.r_[self.y[algebraic], self.ydot[differential]]
+        scale = np.maximum(np.abs(initial), 1.)
+        lower, upper = np.full(initial.size, -np.inf), np.full(initial.size, np.inf)
+        for j, i in enumerate(algebraic):
+            key, name = names[i].rsplit('.', 1)
+            if name == 'P':
+                lower[j] = 1.
+                scale[j] = max(abs(initial[j]), 1e5)
+                if isinstance(self.nodes.get(key), CombustorComponent):
+                    ambient = self.nodes[key].definition['ambient_node']
+                    lower[j] = self.nodes[ambient].evaluate({}, boundary_values=self._boundary(ambient, self.time))['P']
+            elif name.startswith('T'):
+                lower[j], scale[j] = 1., 300.
+            elif name in ('gas_area_fraction', 'quality'):
+                lower[j], upper[j], scale[j] = 0., 1., 1.
+            elif name.startswith('mdot'):
+                scale[j] = max(abs(initial[j]), .01)
+            node = self.nodes.get(key)
+            if isinstance(node, VolumeComponent):
+                if node.mode == 'saturated' and name == 'P':
+                    lower[j], upper[j] = self.fluid_properties.saturation_bounds(node.fluid_name)
+                elif node.mode != 'saturated':
+                    fluids = ((node.definition['liquid_fluid'], 'T_liq'), (node.definition['gas_fluid'], 'T_ull')) if node.mode == 'two_phase' else ((node.fluid_name, 'T'),)
+                    for fluid, temperature in fluids:
+                        pb, tb = self.fluid_properties.state_bounds(fluid)
+                        if name == 'P':
+                            lower[j], upper[j] = max(lower[j], pb[0]), min(upper[j], pb[1])
+                        elif name == temperature:
+                            lower[j], upper[j] = max(lower[j], tb[0]), min(upper[j], tb[1])
+        for j, i in enumerate(differential, start=len(algebraic)):
+            scale[j] = max(abs(self.y[i]), .01)
+        x0 = np.maximum(np.minimum(initial, upper), lower) / scale
 
-            if event is not None:
-                settled = self._settle_transitions(
-                    bcs,
-                    heat_rate,
-                    refresh=self._apply_event(event),
-                )
-                if settled is not None:
-                    result = settled
-                    record(result["state"], check)
-        if result is None:
-            result = self._solve(None, bcs, heat_rate, commit=True)
-            record(result["state"], active())
-        self.time = start_time + dt
-        return {**self._event_output(result), "constraints": margins, "constraint_times": constraint_times}
+        def equations(x):
+            y, dy = self.y.copy(), self.ydot.copy()
+            y[algebraic] = x[:len(algebraic)] * scale[:len(algebraic)]
+            dy[differential] = x[len(algebraic):] * scale[len(algebraic):]
+            out = np.empty_like(y)
+            self.residual(self.time, y, dy, out)
+            return out
 
-    def _event_output(self, result):
-        return {**result, "events": tuple(dict(event) for event in self.events),
-                "event_counts": self.event_counts.copy()}
+        result = least_squares(equations, x0, bounds=(lower / scale, upper / scale),
+                               xtol=1e-12, ftol=1e-12, gtol=1e-12, max_nfev=400)
+        if np.max(np.abs(result.fun)) > self.options['residual_tolerance']:
+            worst = list(self.equation_index)[int(np.argmax(np.abs(result.fun)))]
+            raise RuntimeError(f'Bounded initialization failed at {worst}: {result.message}')
+        self.y[algebraic] = result.x[:len(algebraic)] * scale[:len(algebraic)]
+        self.ydot[differential] = result.x[len(algebraic):] * scale[len(algebraic):]
 
-    def _apply_due_events(self) -> bool:
-        changed = False
-        due = [
-            event
-            for event, value in self._event_values(self.state).items()
-            if value <= 0.0
-        ]
-        for event in due:
-            changed = self._apply_event(event) or changed
+    def _new_session(self, *, seed=False):
+        if seed or not self.differential.any():
+            self.close()
+            self._seed_consistent()
+        margins = self._event_margins(self.time, self.y, self.ydot)
+        self.root_names = tuple(sorted(margins))
+        # Reuse allocations only when the ID vectors, roots and Jacobian
+        # structure still describe these equations. Boundary values may change;
+        # IDAReInit resets history and CalcIC still restores consistency.
+        signature = (tuple(self.variable_index), tuple(self.equation_index), tuple(self.differential),
+                     tuple(self.atol), tuple(self.row_scales), self.root_names,
+                     tuple((key, getattr(node, 'mode', None)) for key, node in self.nodes.items()),
+                     tuple((key, branch.active, self.directions[key], getattr(branch, 'phase', None),
+                            tuple(getattr(branch, 'phases', ()))) for key, branch in self.branches.items()),
+                     tuple(self.regulator_modes.items()), bool(self.axial_specific_force),
+                     self.options['jacobian'], self.options['verify_jacobian'], self.options['suppress_algebraic_error'])
+        if self.session is not None and getattr(self, '_session_signature', None) == signature:
+            step = self.session.restart(IdaStep(self.time, self.y, self.ydot, np.empty(0, dtype=int), 0),
+                                        horizon=self.options['initialization_horizon'],
+                                        rtol=self.effective_rtol, max_step=self.effective_max_step)
+            self.y, self.ydot = step.y, step.ydot
+            return
+        self.close()
+        self.session = IdaSession(self.residual, self.y, self.ydot, self.differential,
+                                  time=self.time, rtol=self.effective_rtol, atol=self.atol,
+                                  roots=self.root_values if self.root_names else None,
+                                  root_directions=(-1,) * len(self.root_names),
+                                  suppress_algebraic_error=self.options['suppress_algebraic_error'] and self.differential.any())
+        if self.options['jacobian'] == 'colored':
+            install_jacobian(self.session, self, verify=self.options['verify_jacobian'])
+        if np.isfinite(self.effective_max_step):
+            self.session._check(self.session.idas.IDASetMaxStep(self.session.mem, self.effective_max_step), 'max step')
+        step = self.session.consistent(self.options['initialization_horizon'])
+        self.y, self.ydot = step.y, step.ydot
+        self._session_signature = signature
+
+    def _guesses_for_modes(self, values):
+        result = {}
+        for key, component in {**self.nodes, **self.branches}.items():
+            old = values[key]
+            result[key] = {}
+            for name in component.variable_names:
+                if name in old:
+                    value = old[name]
+                elif name.startswith('mdot_'):
+                    value = max(old.get('mdot', 0.01), 1e-8) / max(len(getattr(component, 'phases', ())), 1)
+                elif name == 'gas_area_fraction':
+                    value = 0.5
+                elif name == 'P':
+                    value = component.definition['P0']
+                else:
+                    raise ValueError(f'Missing event mapping for {key}.{name}')
+                result[key][name] = value
+        return result
+
+    def _prepare_modes(self, values):
+        for _ in range(10):
+            self.y = self._build_layout(self._guesses_for_modes(values))
+            values = self._unpack(self.y)
+            result = self.evaluate_trial(self.time, self.y, select_modes=True)
+            if result is not None:
+                return
+        raise RuntimeError('Dependent component modes did not settle')
+
+    def initialize(self, *, time=0.0, bcs=None, heat_rate=None):
+        if self.y is not None:
+            raise ValueError('Network is already initialized')
+        checkpoint = self._checkpoint()
+        failures = []
+        for attempt in range(self.options['residual_retries'] + 1):
+            try:
+                result = self._initialize_once(time=time, bcs=bcs, heat_rate=heat_rate)
+                self.retry_diagnostics.extend(failures)
+                return result
+            except ResidualAcceptanceError as error:
+                if attempt == self.options['residual_retries']:
+                    self.restore(checkpoint)
+                    raise
+                floor = min(self.options['retry_rtol_floor'], self.effective_rtol)
+                self.effective_rtol = max(floor, self.effective_rtol * self.options['retry_rtol_factor'])
+                failures.append(dict(diagnostic=str(error), initialization_retry=True,
+                                     rtol=self.effective_rtol, max_step=self.effective_max_step))
+            except Exception:
+                self.restore(checkpoint)
+                raise
+
+    def _initialize_once(self, *, time=0.0, bcs=None, heat_rate=None):
+        if self.y is not None:
+            raise ValueError('Network is already initialized')
+        if not np.isfinite(time):
+            raise ValueError('Initial time must be finite')
+        checkpoint = self._checkpoint()
+        self.time, self.bcs, self.heat_rate = float(time), deepcopy(bcs or {}), deepcopy(heat_rate or {})
+        values = {key: node.initial_values() for key, node in self.nodes.items()}
+        for key, branch in self.branches.items():
+            values[key] = {'mdot': float(branch.parameters.get('mdot0', branch.parameters.get('design_mdot', 0.01)))}
+            if key in self.regulator_modes:
+                p = values[branch.to_node]['P']
+                self.regulator_modes[key] = 'regulating' if abs(p - branch.target) <= branch.target * 1e-10 else 'closed' if p > branch.target else 'capacity'
+        try:
+            self._prepare_modes(values)
+            self.ydot = np.zeros_like(self.y)
+            self._new_session()
+            self._accept()
+            if self.stop_at_shutdown and any(isinstance(n, CombustorComponent) and n.mode == 'shutdown' for n in self.nodes.values()):
+                self._freeze('engine_shutdown')
+            self._settle_initial_events()
+            self._accept()
+        except Exception:
+            self.close()
+            self.__dict__ = checkpoint
+            self.session = None
+            raise
+        return self._output()
+
+    def _settle_initial_events(self):
+        for _ in range(30):
             if self.frozen:
-                break
-        return changed
+                return
+            margins = self._event_margins(self.time, self.y, self.ydot)
+            events = [key for key, value in margins.items() if value < -self._settling_tolerance(key)
+                      or (value <= 0 and key[2] in ('dryout', 'switch', 'oxidizer_unavailable', 'fuel_unavailable'))]
+            if not events:
+                return
+            self.apply_events(self.time, self.y, self.ydot, events)
+        raise RuntimeError('Initial/event mode iteration did not settle')
 
-    def _apply_mode_transitions(self, branch_states=None, node_states=None) -> bool:
-        changed = False
-        branch_states = self.state.branches if branch_states is None else branch_states
-        node_states = self.state.node if node_states is None else node_states
-        for node in self.nodes.values():
-            if not isinstance(node, CombustorComponent):
+    def _settling_tolerance(self, event):
+        """Pressure roundoff must not immediately undo a capacity/closure event."""
+        tolerance = self.options['event_tolerance']
+        if event[0] == 'branch' and event[2] == 'regulate':
+            branch = self.branches[event[1]]
+            index = self.variable_index[f'{branch.to_node}.P']
+            tolerance = max(tolerance, self.options['regulator_pressure_tolerance'],
+                            self.options['rtol'] + self.atol[index] / branch.target)
+        return tolerance
+
+    def apply_events(self, t, y, ydot, events):
+        """Atomically map modes/inventories, initialize and validate a restart."""
+        checkpoint = self._checkpoint()
+        try:
+            self._apply_events(t, y, ydot, events)
+            self._accept()
+        except Exception:
+            self.close()
+            self.__dict__ = checkpoint
+            self.session = None
+            raise
+
+    def _apply_events(self, t, y, ydot, events):
+        self.time = float(t)
+        before, event_start = deepcopy(self.state), len(self.events)
+        terminal = [event for event in events if event[2].startswith('triple_point:')]
+        if terminal:
+            for kind, key, name in sorted(set(terminal)):
+                self.events.append(dict(time_s=t, kind=kind, component=key, name=name))
+            self._freeze('triple_point')
+            self._record_shutdown(before, event_start)
+            return
+        values = self._unpack(y)
+        for kind, key, name in sorted(set(events)):
+            record = {'time_s': self.time, 'kind': kind, 'component': key, 'name': name}
+            if kind == 'node':
+                node, old = self.nodes[key], values[key]
+                if name == 'dryout':
+                    if node.mode != 'two_phase':
+                        continue
+                    remainder = dict(time_s=t, node=key, fluid=node.definition['liquid_fluid'],
+                                     mass=old['m_liq'], energy=old['U_liq'])
+                    if remainder['mass'] < 0 or remainder['mass'] > 1.01 * node.dry_mass:
+                        raise RuntimeError('Dryout mapping exceeded the numerical remainder budget')
+                    self.remainders.append(remainder)
+                    record['numerical_remainder'] = deepcopy(remainder)
+                    values[key] = dict(m=old['m_ull'], U=old['U_ull'], P=old['P'], T=old['T_ull'])
+                    node.set_mode('gas')
+                elif name in ('oxidizer_unavailable', 'fuel_unavailable'):
+                    node.set_mode('shutdown', (), reason=name)
+                elif name in ('condense', 'evaporate', 'liquid_limit'):
+                    if name == 'condense':
+                        values[key] = dict(m=old['m'], U=old['U'], P=old['P'], quality=1.)
+                        node.set_mode('saturated')
+                    else:
+                        sat = node.fluid_properties.saturation_at_p(node.fluid_name, old['P'])
+                        values[key] = dict(m=old['m'], U=old['U'], P=old['P'], T=sat.T)
+                        node.set_mode('gas' if name == 'evaporate' else 'liquid')
+                else:
+                    raise RuntimeError(f'Property/model domain limit at t={t:g}: {key}.{name}')
+            else:
+                branch = self.branches[key]
+                if name == 'switch':
+                    record['was_open'] = branch.is_open
+                    branch.set_open(not branch.is_open)
+                    record['is_open'] = branch.is_open
+                elif name == 'reverse':
+                    self.directions[key] *= -1
+                elif name in ('regulate', 'close_limit', 'capacity_limit'):
+                    self.regulator_modes[key] = {'regulate': 'regulating', 'close_limit': 'closed', 'capacity_limit': 'capacity'}[name]
+                else:
+                    raise ValueError(f'Unknown event: {kind}.{key}.{name}')
+            self.events.append(record)
+        self._prepare_modes(values)
+        self._record_shutdown(before, event_start)
+        self.ydot = np.zeros_like(self.y)
+        if self.stop_at_shutdown and any(isinstance(n, CombustorComponent) and n.mode == 'shutdown' for n in self.nodes.values()):
+            # Evaluate only storage reports; a stopped system needs no post-event
+            # hydraulic solve, and must not consume another interval's inventory.
+            mapped = self._unpack(self.y)
+            for key, node in self.nodes.items():
+                if isinstance(node, VolumeComponent):
+                    self.state.nodes[key] = node.output_state(node.evaluate(mapped[key], axial_specific_force=self.axial_specific_force))
+            self._freeze('engine_shutdown')
+            return
+        self._new_session(seed=any(isinstance(n, CombustorComponent) and n.mode == 'shutdown' for n in self.nodes.values()))
+        after_nodes, _, _ = self.evaluate_trial(self.time, self.y)
+        # IDACalcIC must not change a conserved inventory during any restart.
+        for key, node in self.nodes.items():
+            for name in node.differential_variable_names:
+                if name in values[key] and after_nodes[key][name] != values[key][name]:
+                    raise RuntimeError(f'Restart changed inventory {key}.{name}')
+
+    def _record_shutdown(self, before, event_start):
+        """Keep the left-hand endpoint before shutdown erases thrust/flow."""
+        for key, node in self.nodes.items():
+            if (isinstance(node, CombustorComponent) and node.mode == 'shutdown'
+                    and before.nodes[key]['mode'] == 'combusting'):
+                record = next((e for e in self.events[event_start:]
+                               if e['component'] == key and e['name'] == 'shutdown'), None)
+                if record is None:
+                    record = dict(time_s=self.time, kind='node', component=key,
+                                  name='shutdown', reason=node.shutdown_reason)
+                    self.events.append(record)
+                record['before'] = dict(
+                    node={k: n.as_dict() for k, n in before.nodes.items()},
+                    branch={k: b.as_dict() for k, b in before.branches.items()},
+                    mdot={k: b.mdot for k, b in before.branches.items()})
+
+    def _accept(self):
+        if self.frozen:
+            return
+        nodes, branches, adjacent = self.evaluate_trial(self.time, self.y)
+        # IDA returns interpolated derivatives at roots. At a square-root flow
+        # crossing those can have a larger defect than y itself. Reconstruct
+        # instantaneous inventory rates from the unchanged conservation laws;
+        # do not alter inventories or IDA's internal history.
+        for key, node in self.nodes.items():
+            names = node.differential_variable_names
+            if not names:
                 continue
-            inflows = self._adjacent(node, branch_states)
-            mode_changed = node.update_mode(inflows)
-            if mode_changed:
-                changed = True
-            phases = getattr(node.model, "phases", ())
-            for branch_id in node.outgoing:
-                branch = self.branches[branch_id]
-                if isinstance(branch, NozzleComponent):
-                    nozzle_changed = branch.set_mode(
-                        node.mode == "combusting", phases
-                    )
-                    if nozzle_changed:
-                        changed = True
-                    if nozzle_changed and node.mode == "shutdown":
-                        active_inflows = [
-                            flow
-                            for incidence, flow in iter_flows(inflows)
-                            if incidence * int(flow["direction"]) > 0
-                            and abs(float(flow["mdot"])) > self.flow_direction_tolerance
-                        ]
-                        branch.initialize_shutdown(
-                            active_inflows,
-                            float(node.state["P"]),
-                            float(
-                                node_states[node.definition["ambient_node"]]["P"]
-                            ),
-                        )
-        return changed
+            heat = self.heat_rate.get(key, {})
+            if callable(heat):
+                heat = heat(self.time)
+            zero = dict.fromkeys(names, 0.)
+            rhs = -node.residual(nodes[key], zero, adjacent[key], heat_rate=heat)[:len(names)]
+            matrix = np.column_stack([node.residual(nodes[key], dict(zip(names, column)))[:len(names)]
+                                      for column in np.eye(len(names))])
+            rates = np.linalg.solve(matrix, rhs)
+            for name, rate in zip(names, rates):
+                self.ydot[self.variable_index[f'{key}.{name}']] = rate
+        residual = np.empty_like(self.y)
+        self.residual(self.time, self.y, self.ydot, residual)
+        worst = int(np.argmax(np.abs(residual)))
+        if not np.isfinite(residual).all() or abs(residual[worst]) > self.options['residual_tolerance']:
+            name = list(self.equation_index)[worst]
+            raise ResidualAcceptanceError(f'Accepted residual {name}={residual[worst]:.3e} exceeds tolerance')
+        for key, branch in self.branches.items():
+            if key in self.regulator_modes and self.regulator_modes[key] == 'regulating':
+                error = abs(nodes[branch.to_node]['P'] / branch.target - 1.)
+                if error > max(20 * self.options['rtol'], 1e-6):
+                    raise RuntimeError(f'Regulator pressure drift at {key}: {error:.3e}')
+            if 'gas_area_fraction' in branches[key].trial_values:
+                fraction = branches[key]['gas_area_fraction']
+                if not -1e-8 <= fraction <= 1 + 1e-8:
+                    raise RuntimeError(f'Invalid nozzle area split at {key}')
+        self.state = NetworkState({k: n.output_state(nodes[k]) for k, n in self.nodes.items()}, deepcopy(branches))
+        if self.constraint_monitor:
+            for name, margin in self.constraint_monitor(deepcopy(self.state)).items():
+                if margin < self.constraints.get(name, np.inf):
+                    self.constraints[name], self.constraint_times[name] = margin, self.time
 
-    def _settle_transitions(self, bcs, heat_rate, refresh=False):
-        """Solve between discrete events and their dependent mode changes."""
+    def _freeze(self, reason):
+        self.close()
+        self.frozen, self.stop_reason = True, reason
+        for key, node in self.nodes.items():
+            if isinstance(node, CombustorComponent):
+                node.set_mode('shutdown', (), reason=node.shutdown_reason or reason)
+                record = self.state.nodes[key]
+                record.properties.update(mode='shutdown', shutdown_reason=node.shutdown_reason,
+                                         cstar=0., Cf=0., mdot_oxidizer=0., mdot_fuel=0.)
+        for record in self.state.branches.values():
+            record.enabled = False
+            record.flows = {}
+            for name in record.trial_values:
+                if name.startswith('mdot'):
+                    record.trial_values[name] = 0.
+            record.properties.update(thrust=0., pump_active=False)
 
+    def _checkpoint(self):
+        # Providers can hold native resources; share these read-only services.
+        memo = {id(p): p for p in (self.fluid_properties, self.combustion_properties, self.constraint_monitor) if p is not None}
+        return deepcopy({k: v for k, v in self.__dict__.items() if k != 'session'}, memo)
+
+    def update(self, dt=None, bcs=None, heat_rate=None, commit=True, axial_specific_force=0.0):
+        duration = 0.0 if dt is None else float(dt)
+        if not np.isfinite(duration) or duration < 0 or not np.isfinite(axial_specific_force):
+            raise ValueError('Require finite nonnegative duration and finite acceleration')
+        if not commit:
+            preview = copy(self)
+            preview.__dict__ = self._checkpoint()
+            preview.session = None
+            try:
+                return preview.update(duration, bcs, heat_rate, True, axial_specific_force)
+            finally:
+                preview.close()
+        checkpoint = self._checkpoint()
+        rtol, max_step = self.effective_rtol, self.effective_max_step
+        failures = []
+        for attempt in range(self.options['residual_retries'] + 1):
+            try:
+                output = self._advance_interval(duration, bcs, heat_rate, axial_specific_force)
+                self.retry_diagnostics.extend(failures)
+                return output
+            except Exception as error:
+                diagnostic = f'Fluid network failed at t={self.time:g}: {error}'
+                retry = (isinstance(error, ResidualAcceptanceError) and duration > 0
+                         and attempt < self.options['residual_retries'])
+                self.restore(checkpoint)
+                self.last_diagnostic = diagnostic
+                if not retry:
+                    raise RuntimeError(f'{diagnostic} (after {attempt} retries)') from error
+                floor = min(self.options['retry_rtol_floor'], rtol)
+                rtol = max(floor, rtol * self.options['retry_rtol_factor'])
+                max_step = min(max_step, duration * .1 * .5**attempt)
+                self.effective_rtol, self.effective_max_step = rtol, max_step
+                failures.append(dict(diagnostic=diagnostic, rtol=rtol, max_step=max_step))
+
+    def restore(self, checkpoint):
+        """Restore a reusable checkpoint; discarded native history is never copied."""
+        self.close()
+        memo = {id(p): p for p in (self.fluid_properties, self.combustion_properties,
+                                   self.constraint_monitor) if p is not None}
+        self.__dict__ = deepcopy(checkpoint, memo)
+        self.session = None
+
+    def _advance_interval(self, duration, bcs, heat_rate, axial_specific_force):
         if self.frozen:
-            return self._output(self.state)
-        if self.stop_at_shutdown and self._is_shutdown():
-            return self._output(self.state)
-        result = (
-            self._solve(
-                0.0,
-                bcs,
-                heat_rate,
-                commit=True,
-                detect_modes=True,
-            )
-            if refresh
-            else None
-        )
-        while True:
-            if self.stop_at_shutdown and self._is_shutdown():
-                return result
-            events_changed = self._apply_due_events()
-            if self.frozen:
-                return self._output(self.state)
-            if events_changed:
-                result = self._solve(
-                    0.0,
-                    bcs,
-                    heat_rate,
-                    commit=True,
-                    detect_modes=True,
-                )
-            if self.stop_at_shutdown and self._is_shutdown():
-                return result
-            modes_changed = self._apply_mode_transitions()
-            if modes_changed:
-                result = self._solve(0.0, bcs, heat_rate, commit=True,
-                                     detect_modes=self.stop_at_shutdown)
-            if not events_changed and not modes_changed:
-                return result
+            self.time += duration
+            return self._output()
+        changed = ((bcs is not None and bcs != self.bcs)
+                   or (heat_rate is not None and heat_rate != self.heat_rate)
+                   or axial_specific_force != self.axial_specific_force)
+        self.axial_specific_force = float(axial_specific_force)
+        if bcs is not None:
+            self.bcs = deepcopy(bcs)
+        if heat_rate is not None:
+            self.heat_rate = deepcopy(heat_rate)
+        if self.y is None:
+            self.initialize(time=self.time, bcs=self.bcs, heat_rate=self.heat_rate)
+        elif self.session is None or changed:
+            self._new_session()
+            self._settle_initial_events()
+        endpoint, start_events = self.time + duration, len(self.events)
+        while self.time < endpoint and not self.frozen:
+            step = self.session.advance(endpoint)
+            self.time, self.y, self.ydot = step.time, step.y, step.ydot
+            if step.roots.any():
+                self._accept()  # Record the limiting pre-event state as well.
+                events = [self.root_names[i] for i in np.flatnonzero(step.roots)]
+                for key, node in self.nodes.items():
+                    if isinstance(node, PropellantTankComponent) and node.mode == 'two_phase':
+                        i = self.variable_index[f'{key}.m_liq']
+                        margin = self.y[i] - node.dry_mass
+                        tolerance = min(.01 * node.dry_mass,
+                                        max(10 * self.atol[i], abs(self.ydot[i]) * self.options['event_time_tolerance']))
+                        if self.ydot[i] < 0 and margin <= tolerance:
+                            events.append(('node', key, 'dryout'))
+                # SUNDIALS reports coincident roots; mode preparation handles
+                # downstream phase/chamber changes caused by those events.
+                self.apply_events(self.time, self.y, self.ydot, events)
+                self._settle_initial_events()
+                if len(self.events) - start_events > self.options['max_events']:
+                    raise RuntimeError('Event budget exceeded; possible mode cycling')
+            self._accept()
+        if self.frozen:
+            self.time = endpoint
+        self._accept()
+        return self._output()
+
+    def _output(self):
+        state = deepcopy(self.state)
+        return dict(time=self.time, state=state,
+                    frozen=self.frozen, stop_reason=self.stop_reason,
+                    node={k: v.as_dict() for k, v in state.nodes.items()},
+                    branch={k: v.as_dict() for k, v in state.branches.items()},
+                    td_state={k: v.as_dict() for k, v in state.nodes.items() if isinstance(self.nodes[k], VolumeComponent)},
+                    mdot={k: v.mdot for k, v in state.branches.items()},
+                    events=deepcopy(tuple(self.events)), numerical_remainders=deepcopy(tuple(self.remainders)),
+                    event_counts=dict(Counter(f"{e['kind']}:{e['component']}:{e['name']}" for e in self.events)),
+                    constraints=dict(self.constraints), constraint_times=dict(self.constraint_times))
+
+    def close(self):
+        if self.session is not None:
+            self.session.close()
+            self.session = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()

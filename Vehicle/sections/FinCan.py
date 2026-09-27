@@ -3,7 +3,6 @@ from ..Material import mp
 from .Section import Section
 from ..Engine import Engine
 from ..utils import distribute as dist
-# from ..utils import aero  # Legacy analytical aero disabled.
 from ..utils import geometry as geo
 
 class FinCan(Section):
@@ -162,19 +161,6 @@ class FinCan(Section):
         self.Ixx = np.sum(self.mass * r**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
-# Legacy analytical aero / unused input container (inactive).
-#     def get_CNa(self, M: float, alpha: float):
-#         Cr = self.root_chord
-#         Ct = self.tip_chord
-#         s = self.span
-#         N = self.fin_count
-#         R_ref = self.cfg["vehicle"]["OMLD"] * 0.5
-#
-#         fin_CNa = aero.fins_CNa(M, N, s, Cr, Ct, R_ref)
-#         reference_area = np.pi * R_ref**2
-#         aft_area = np.pi * (0.5 * self.boattail_aft_diameter) ** 2
-#         tail_CNa = aero.taper_CNa(M, alpha, aft_area, reference_area)
-#         self.CNa = dist.weighted(fin_CNa, self.lat_area_fins) + dist.weighted(tail_CNa, self.lat_area_body)
 
     def get_thermal_oml_area(self) -> np.ndarray:
         return self.surf_area.copy()
