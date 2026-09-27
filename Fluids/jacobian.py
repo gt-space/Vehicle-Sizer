@@ -4,7 +4,7 @@ No physics changes. Construct a new pattern for every session/mode layout.
 Keep dense native linear algebra; reduce expensive Python residual calls.
 """
 import numpy as np
-from .FluidNode import BoundaryComponent, VolumeComponent, CombustorComponent
+from .FluidNode import BoundaryComponent, VolumeComponent, CombustorComponent, JunctionComponent
 from .errors import TrialDomainError
 
 
@@ -31,13 +31,13 @@ def pattern(network):
             if not all(donor in fluid for _, donor in incoming):
                 continue
             node = network.nodes[key]
-            fluid[key] = set()
+            fluid[key] = own[key].copy() if isinstance(node, JunctionComponent) else set()
             if isinstance(node, CombustorComponent) and node.mode == 'combusting':
                 fluid[key] |= own[key] | pressure[node.definition['ambient_node']]
             for bid, donor in incoming:
                 if isinstance(node, CombustorComponent) and node.mode == 'combusting':
                     fluid[key] |= own[bid]
-                else:
+                elif not isinstance(node, JunctionComponent):
                     fluid[key] |= fluid[donor]
             pending.remove(key)
             progress = True
@@ -51,7 +51,7 @@ def pattern(network):
             if not b.active:
                 continue
             deps |= own[bid]
-            if isinstance(node, VolumeComponent):
+            if isinstance(node, (VolumeComponent, JunctionComponent)):
                 donor = b.from_node if network.directions[bid] > 0 else b.to_node
                 deps |= fluid[donor]
         mask[network.equation_slices[key], sorted(deps)] = True

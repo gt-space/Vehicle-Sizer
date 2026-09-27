@@ -44,10 +44,12 @@ class FinCan(Section):
         # Nozzle interference is returned as a signed construction constraint.
 
     def get_mass(self):
-        motor_mass = 2
+        hardware_mass = float(self.cfg["fin_can"]["hardware_mass"])
+        if not np.isfinite(hardware_mass) or hardware_mass < 0:
+            raise ValueError("Fin-can hardware_mass must be finite and nonnegative")
         self.fin_shell_mass = self._get_fin_mass()
         self.boattail_shell_mass = self._get_boattail_mass_vector()
-        hardware_mass = dist.uniform(self.fin_shell_mass + motor_mass, self.n)
+        hardware_mass = dist.uniform(self.fin_shell_mass + hardware_mass, self.n)
         self.mass = (
             hardware_mass
             + self.boattail_shell_mass
@@ -55,7 +57,7 @@ class FinCan(Section):
 
     def _get_fin_mass(self) -> float:
         V = self.fin_area * self.fin_thickness * self.fin_count
-        mat = mp.db.get_material(self.cfg["fin_can"]["material"])
+        mat = mp.get_material(self.cfg["fin_can"]["material"])
         rho = mat.get("density")
         m = rho * V
         return m
@@ -72,7 +74,7 @@ class FinCan(Section):
         V_i = (1/3) * np.pi * self.length * (r_s_i**2 + r_s_i * r_f_i + r_f_i**2)
 
         V = V_o - V_i
-        mat = mp.db.get_material(self.cfg["fin_can"]["material"])
+        mat = mp.get_material(self.cfg["fin_can"]["material"])
         rho = mat.get("density")
         return rho * V
 
@@ -82,7 +84,7 @@ class FinCan(Section):
         
         r_f_o = 0.5 * self.boattail_aft_diameter
 
-        mat = mp.db.get_material(self.cfg["fin_can"]["material"])
+        mat = mp.get_material(self.cfg["fin_can"]["material"])
         rho = mat.get("density")
 
         x_local = self.local_centers
@@ -101,8 +103,8 @@ class FinCan(Section):
         r_o = r_s_o + (x_local / self.length) * (r_f_o - r_s_o)
         r_i = r_o - t
 
-        mat = mp.db.get_material(self.cfg["fin_can"]["material"])
-        E = mat.get("elastic_modulus_0deg", 300.0)
+        mat = mp.get_material(self.cfg["fin_can"]["material"])
+        E = mat.get("elastic_modulus", T=300.0)
         self.EI = E * geo.annulus_second_moment(r_o, r_i)
 
     def get_area(self):

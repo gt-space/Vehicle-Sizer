@@ -17,6 +17,8 @@ def history_rows(history: list) -> list[dict]:
     rows = []
     for state in history:
         kin = state["kinematics"]
+        speed = np.hypot(kin.vx, kin.vz)
+        gamma = np.arctan2(kin.vz, kin.vx) if speed > 1.0e-8 else kin.theta
         atmosphere = state["atmosphere"]
         aero = state["plant"].aero
         propulsion = state["plant"].fluids.propulsion
@@ -25,17 +27,32 @@ def history_rows(history: list) -> list[dict]:
         mass = state["mass_properties"]
         row = {
             "time_s": kin.t,
+
+            "x_m": kin.x,
             "altitude_m": kin.h,
-            "velocity_m_s": kin.v,
+
+            "vx_m_s": kin.vx,
+            "vz_m_s": kin.vz,
+            "speed_m_s": speed,
+            "velocity_m_s": kin.vz,
+
             "acceleration_m_s2": forces["acceleration"],
+
+            "flight_path_angle_deg": np.degrees(gamma),
+            "pitch_angle_deg": np.degrees(kin.theta),
             "angle_of_attack_deg": np.degrees(kin.alpha),
-            "angular_rate_rad_s": kin.w,
+
+            "pitch_rate_rad_s": kin.q,
+            "angular_rate_rad_s": kin.q,
+
             "mass_kg": mass["total_mass"],
             "cg_m": mass["cg"],
-            "Ixx_kg_m2": mass["Ixx"],
+            "Iyy_kg_m2": mass["Iyy"],
+
             "ambient_pressure_Pa": atmosphere.p,
             "mach": atmosphere.Ma,
             "dynamic_pressure_Pa": atmosphere.q,
+
             "Cd": aero.Cd,
             "drag_N": forces["drag"],
             "Ca": aero.Ca,
@@ -43,12 +60,14 @@ def history_rows(history: list) -> list[dict]:
             "Cn": aero.Cn,
             "normal_force_N": aero.N,
             "cp_m": aero.cp,
+
             "thrust_N": propulsion.thrust,
             "chamber_pressure_Pa": propulsion.Pc,
             "mixture_ratio": propulsion.MR,
             "oxidizer_mdot_kg_s": propulsion.mdot_ox,
             "fuel_mdot_kg_s": propulsion.mdot_fuel,
             "nozzle_mdot_kg_s": propulsion.mdot_nozzle,
+
             "engine_mode": propulsion.mode,
             "engine_on": state["engine_on"],
             "on_rail": state["on_rail"],
@@ -109,7 +128,7 @@ def main() -> None:
         "config",
         nargs="?",
         type=Path,
-        default=ROOT / "Configs" / "flight_pump_fed_regulator.yaml",
+        default=ROOT / "Configs" / "flight_pressure_fed_regulator.yaml"
     )
     parser.add_argument("--dt", type=float)
     parser.add_argument("--t-end", type=float)

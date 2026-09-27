@@ -11,10 +11,11 @@ from types import SimpleNamespace
 import time
 import traceback
 
-from scipy.optimize import differential_evolution
+from scipy.optimize._differentialevolution import DifferentialEvolutionSolver
 import yaml
 
 from AeroTables import DragModel
+from AeroTables.dragmodel import _end as aero_endpoint
 from Configs.loader import load_config
 from constraints import ConstraintRecord, DesignInfeasible, EvaluationFailure, GeometryError, configured_limits, finalize
 from Fluids.PropSystem import PropSystem
@@ -82,7 +83,11 @@ def set_path(cfg, path, value):
 def aero_bounds(model):
     """Independent box bounds in SI; coupled bounds remain candidate checks."""
     def endpoint(value, index):
-        return endpoint(model.ranges[value][index], index) if isinstance(value, str) else float(value)
+        if isinstance(value, str):
+            return endpoint(model.ranges[value][index], index)
+        if isinstance(value, (list, tuple)):
+            return float(value[0]) * endpoint(value[1], index)
+        return float(value)
     return {name: tuple(endpoint(v, i) * (1 if name in DIMENSIONLESS else INCH)
                         for i, v in enumerate(model.ranges[name])) for name in AERO_PATHS}
 
@@ -95,10 +100,14 @@ def rejection(records):
 def domain_records(candidate, model):
     records = {}
     for name, limits in model.ranges.items():
-        low, high = [candidate[v] if isinstance(v, str) else v for v in limits]
+        low, high = [aero_endpoint(v, candidate) for v in limits]
         factor = 1 if name in DIMENSIONLESS else INCH
+        margin = min(candidate[name] - low, high - candidate[name])
+        # Match DragModel.check's boundary tolerance after SI/inch conversion.
+        if -1e-9 <= margin < 0:
+            margin = 0.0
         records[f"aero.{name}"] = ConstraintRecord(
-            min(candidate[name] - low, high - candidate[name]) * factor,
+            margin * factor,
             "AeroTables", "sizing", "1" if name in DIMENSIONLESS else "m")
     return records
 
@@ -172,6 +181,13 @@ class EvaluationBudget(Exception):
     pass
 
 
+class GenerationBudgetSolver(DifferentialEvolutionSolver):
+    """Run to maxiter/evaluation budget; equal rejection scores are not convergence."""
+
+    def converged(self):
+        return False
+
+
 class Evaluator:
     def __init__(self, cfg, settings, model, pure, combustion, output):
         self.cfg, self.settings = deepcopy(cfg), settings
@@ -232,6 +248,11 @@ class Evaluator:
         diameter = assign("omld", max(exit_diameter + margin,
             self.settings["bounds"]["boattail_aft"][0],
             copv["outer_diameter"] + 2 * (cfg["press_tank"]["airframe_wall_thickness"] + clearance) + 1e-9))
+        # Span remains a physical length. Its permitted interval moves with D;
+        # intersect it with the user's bounds before mapping the search coordinate.
+        span_low, span_high = (aero_endpoint(bound, {"omld": diameter / INCH}) * INCH
+                               for bound in self.model.ranges["span"])
+        assign("span", span_low, span_high)
         length = assign("boattail_length", max(engine["length"], self.settings["bounds"]["root"][0]))
         aft_min = exit_diameter + margin
         if engine.get("envelope_diameter") is not None:
@@ -388,9 +409,6 @@ def prepare(settings, model):
         raise ValueError("Search requires goal_apogee and max_burn_duration")
     if cfg["environment"]["max_altitude"] <= limits["goal_apogee"]:
         raise ValueError("Atmosphere max_altitude must exceed goal_apogee")
-    schedule = cfg["aero"]["aoa_schedule"]
-    if schedule[0][0] > 0 or schedule[-1][0] < cfg["simulation"]["t_end"]:
-        raise ValueError("AoA schedule must cover the evaluation horizon")
     paths = variable_paths(cfg, ids)
     if set(settings["bounds"]) != set(paths):
         raise ValueError(f"Bounds must contain exactly: {list(paths)}")
@@ -462,10 +480,11 @@ def optimize(settings, output):
     initial = [float(get_path(cfg, path)) for path in evaluator.paths.values()]
     x0 = initial if not settings.get("conditional_geometry") and all(lo <= x <= hi for x, (lo, hi) in zip(initial, evaluator.bounds)) else None
     try:
-        result = differential_evolution(evaluator, evaluator.bounds, seed=settings["seed"],
-                                        popsize=settings["popsize"], maxiter=settings["maxiter"],
-                                        x0=x0, polish=False, workers=1)
-        stop = str(result.message)
+        with GenerationBudgetSolver(evaluator, evaluator.bounds, rng=settings["seed"],
+                                    popsize=settings["popsize"], maxiter=settings["maxiter"],
+                                    x0=x0, polish=False, workers=1) as solver:
+            solver.solve()
+        stop = "generation budget exhausted"
     except EvaluationBudget:
         stop = "evaluation budget exhausted"
     verified = verify_best(evaluator) if evaluator.best is not None else None

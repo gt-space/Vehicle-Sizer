@@ -1,12 +1,8 @@
 import unittest
-import sys
 from dataclasses import replace
-from unittest.mock import MagicMock
 
 import numpy as np
 from CoolProp.CoolProp import PropsSI
-
-sys.modules.setdefault("matproplib", MagicMock())
 
 from Vehicle.sections.PressTank import PressTankGeometry
 from Vehicle.sections.PropTank import PropTank, PropTankGeometry
@@ -93,7 +89,7 @@ class TankGeometryTests(unittest.TestCase):
             prop_mass=density * liquid_volume,
             liquid_density=density,
             material=MaterialProperties(
-                "aluminum_6061_t6", 2700.0, 276.0e6, 77.0e9
+                "aluminum_6061", 2700.0, 276.0e6, 77.0e9
             ),
             wall_thickness=0.0032,
             max_pressure=2.7e6,

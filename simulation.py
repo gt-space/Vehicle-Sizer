@@ -1,6 +1,7 @@
 """Side-effect-free simulation entry point: no plots, output files or progress by default."""
 from __future__ import annotations
 from copy import deepcopy
+from math import pi
 from pathlib import Path
 
 from AeroTables import DragModel
@@ -126,7 +127,13 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
                          pump_sizing=getattr(propulsion, "pump_sizing", error.pump_sizing),
                          max_altitude=float(cfg["launch"]["altitude"]),
                          final_altitude=float(cfg["launch"]["altitude"]),
-                         final_velocity=float(cfg["launch"]["velocity"]))
+                         final_velocity=float(cfg["launch"]["velocity"]),
+                         final_x=0.0,
+                         final_vx=0.0,
+                         final_vz=float(cfg["launch"]["velocity"]),
+                         final_speed=abs(float(cfg["launch"]["velocity"])),
+                         final_pitch_angle=pi / 2,
+                         final_pitch_rate=0.0)
         return finalize(result, limits)
     context["phase"] = "flight initialization"
     heating = cfg.get("thermal", {}).get("external_heating", False)
@@ -149,11 +156,20 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
             max_altitude=float(cfg["launch"]["altitude"]),
             final_altitude=float(cfg["launch"]["altitude"]),
             final_velocity=float(cfg["launch"]["velocity"]),
+            final_x=0.0,
+            final_vx=0.0,
+            final_vz=float(cfg["launch"]["velocity"]),
+            final_speed=abs(float(cfg["launch"]["velocity"])),
+            final_pitch_angle=pi / 2,
+            final_pitch_rate=0.0,
             geometry_constraints=dict(vehicle.geometry_constraints),
         )
         result.termination = "infeasible_operating_state"
         merge_margins(result.constraints, error.constraints,
                       times=result.constraint_times, time=error.time)
+        if "max_aoa_deg" in error.constraints:
+            limit = limits.get("max_aoa_deg", 15.0)
+            result.max_aoa_deg = max(result.max_aoa_deg, limit - error.constraints["max_aoa_deg"])
     else:
         result = flight.result
     result.pump_sizing = deepcopy(propulsion.pump_sizing)

@@ -132,7 +132,7 @@ class AeroTests(unittest.TestCase):
         self.assertAlmostEqual(self.aero.aoa(5.0), np.deg2rad(5.0))
 
     def test_evaluate_returns_wind_and_body_axis_forces(self):
-        kin = KinematicsState(5.0, 0.1, 0.0, 100.0, 0.0, np.deg2rad(5.0), 100.0, 1.0)
+        kin = KinematicsState(t=5.0, dt=0.1, x=0., h=0.0, vx=0., vz=100.0, theta=np.pi/2, q=0.0, alpha=np.deg2rad(5.0), m=100.0, Iyy=1.0)
         atmosphere = AtmosState(288.0, 101325.0, 1.2, 1.8e-5, 340.0, 100.0, 0.55)
 
         result = self.aero.evaluate(kin, atmosphere, engine_on=True)

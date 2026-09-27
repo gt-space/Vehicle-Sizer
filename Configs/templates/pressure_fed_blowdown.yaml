@@ -18,6 +18,11 @@ nodes:
     component: boundary
   ox_inj_in:
     component: junction
+    fluid: {config: prop_system.initial_conditions.ox_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: ox_inj_in}
+      T: {config: prop_system.initial_conditions.ox_tank.T}
     P0:
       node: thrust_chamber
       relative_rise:
@@ -31,6 +36,11 @@ nodes:
         config: prop_system.ox_tank_inj_dp
   fuel_inj_in:
     component: junction
+    fluid: {config: prop_system.initial_conditions.fuel_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: fuel_inj_in}
+      T: {config: prop_system.initial_conditions.fuel_tank.T}
     P0:
       node: thrust_chamber
       relative_rise:

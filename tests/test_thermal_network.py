@@ -17,7 +17,7 @@ class WetSection:
     station = np.arange(4.0)
     dx = 1.0
     wall_thickness = 0.01
-    wall_material = "aluminum_6061_t6"
+    wall_material = "aluminum_6061"
     emissivity = 0.0
     cfg = {}
 
@@ -90,7 +90,7 @@ def fluid_output():
 
 
 def inputs():
-    kin = KinematicsState(0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0)
+    kin = KinematicsState(t=0.0, dt=1.0, x=0., h=0.0, vx=0., vz=0.0, theta=np.pi/2, q=0.0, alpha=0.0, m=1.0, Iyy=1.0)
     atm = AtmosState(300.0, 101325.0, 1.2, 1.8e-5, 340.0, 0.0, 0.0)
     return kin, atm, AeroOut(0.0, 0.0)
 
@@ -103,7 +103,7 @@ def test_wet_node_rounds_fill_to_cells_and_commits_once(*_):
             "initial_temperature": 300.0,
             "sink_temperature": 300.0,
             "material_overrides": {
-                "aluminum_6061_t6": {
+                "aluminum_6061": {
                     "specific_heat": 900.0,
                     "thermal_conductivity": 150.0,
                 }
@@ -140,7 +140,7 @@ def test_insulated_wet_node_uses_the_universal_zero_watt_interface(*_):
             "initial_temperature": 300.0,
             "sink_temperature": 300.0,
             "material_overrides": {
-                "aluminum_6061_t6": {
+                "aluminum_6061": {
                     "specific_heat": 900.0,
                     "thermal_conductivity": 150.0,
                 }

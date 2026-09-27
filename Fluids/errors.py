@@ -1,4 +1,4 @@
-"""Error classification shared by the SUNDIALS component models."""
+"""Error classification shared by fluid and flight numerical models."""
 
 
 class TrialDomainError(ValueError):

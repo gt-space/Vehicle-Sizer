@@ -250,7 +250,7 @@ def test_property_limit_is_named_and_rolls_back():
 
 
 def test_transport_cycle_is_explicit():
-    nodes = {k: dict(component='junction', P0=2e5) for k in ('a', 'b')}
+    nodes = {k: dict(component='junction', fluid='gas', phase='gas', state0=dict(P=2e5,T=300.)) for k in ('a', 'b')}
     with FluidNetwork(nodes, {'ab': loss('a', 'b'), 'ba': loss('b', 'a')}, fluid_properties=Properties()) as net:
         with pytest.raises(ValueError, match='transport cycle'):
             net.initialize()
@@ -429,7 +429,7 @@ def test_junction_routes_current_donor_with_algebraic_only_network():
     gas = Properties().state_pt('gas', 5e5, 300.).as_dict()
     gas['phase'] = 'gas'
     nodes = {'supply': dict(component='boundary', P=5e5, fluids={'gas': gas}),
-             'junction': dict(component='junction', P0=3e5),
+             'junction': dict(component='junction', fluid='gas', phase='gas', state0=dict(P=3e5,T=300.)),
              'ambient': dict(component='boundary', P=1e5)}
     branches = {'inlet': loss('supply', 'junction'), 'outlet': loss('junction', 'ambient')}
     with FluidNetwork(nodes, branches, fluid_properties=Properties()) as net:
@@ -437,7 +437,7 @@ def test_junction_routes_current_donor_with_algebraic_only_network():
         assert not net.differential.any()
         assert result['mdot']['inlet'] == pytest.approx(result['mdot']['outlet'], rel=1e-7)
         assert 1e5 < result['node']['junction']['P'] < 5e5
-        assert result['node']['junction']['fluids']['gas']['T'] == 300.
+        assert result['node']['junction']['fluids']['gas']['T'] == pytest.approx(300.)
 
 
 def test_initially_out_of_band_valve_settles_before_integration():
@@ -626,3 +626,64 @@ def test_checkpoint_can_be_restored_repeatedly_across_shutdown():
             net.restore(checkpoint)
             assert not net.frozen and net.events == [] and net.time == 0
             assert net.nodes['ox'].mode == 'two_phase'
+
+
+@pytest.mark.parametrize('reverse_order', [False, True])
+def test_algebraic_mixer_conserves_connected_enthalpy_flux(reverse_order):
+    props = Properties()
+    def supply(temperature):
+        return dict(component='boundary',P=5e5,fluids={
+            'gas':dict(phase='gas',**props.state_pt('gas',5e5,temperature).as_dict())})
+    nodes = {'cold':supply(300.),'hot':supply(600.),
+             'mix':dict(component='junction',fluid='gas',phase='gas',state0=dict(P=3e5,T=350.)),
+             'ambient':dict(component='boundary',P=1e5)}
+    branches = {'cold_in':loss('cold','mix'), 'hot_in':loss('hot','mix'),
+                'out':loss('mix','ambient',2e-5)}
+    if reverse_order:
+        branches = dict(reversed(list(branches.items())))
+    with FluidNetwork(nodes,branches,fluid_properties=props,
+                      tolerances={'verify_jacobian':True}) as net:
+        result = net.initialize()
+        cold,hot,out = (result['mdot'][k] for k in ('cold_in','hot_in','out'))
+        temperature = result['node']['mix']['T']
+        assert 300 < temperature < 600
+        assert out == pytest.approx(cold+hot,rel=1e-7)
+        assert temperature == pytest.approx((cold*300+hot*600)/(cold+hot),rel=1e-7)
+        assert net.session.structured_verified
+        later = net.update(.1)
+        assert later['node']['mix']['T'] == pytest.approx(temperature,rel=1e-7)
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_junction_zero_throughput_is_initialized_explicitly(enabled):
+    props = Properties()
+    gas = dict(phase='gas',**props.state_pt('gas',2e5,300.).as_dict())
+    nodes = {'left':dict(component='boundary',P=2e5,fluids={'gas':gas}),
+             'mix':dict(component='junction',fluid='gas',phase='gas',state0=dict(P=2e5,T=310.)),
+             'right':dict(component='boundary',P=2e5,fluids={'gas':gas})}
+    branches = {'in':loss('left','mix',enabled=enabled,mdot0=0.),
+                'out':loss('mix','right',enabled=enabled,mdot0=0.)}
+    with FluidNetwork(nodes,branches,fluid_properties=props) as net:
+        result = net.initialize()
+        assert result['mdot']['in'] == pytest.approx(0.,abs=1e-10)
+        assert result['mdot']['out'] == pytest.approx(0.,abs=1e-10)
+        assert result['node']['mix']['T'] == pytest.approx(310.)
+
+
+def test_junction_reversal_reinitializes_energy_balance():
+    props = Properties()
+    def supply(temperature):
+        return dict(component='boundary',P=5e5,fluids={
+            'gas':dict(phase='gas',**props.state_pt('gas',5e5,temperature).as_dict())})
+    nodes = {'left':supply(300.),'right':supply(500.),
+             'mix':dict(component='junction',fluid='gas',phase='gas',state0=dict(P=4e5,T=350.))}
+    branches = {'in':loss('left','mix'), 'out':loss('mix','right')}
+    boundaries = {'left':lambda t:{'P':5e5-2e5*t}, 'right':{'P':4e5}}
+    with FluidNetwork(nodes,branches,fluid_properties=props,
+                      tolerances={'max_step':.02,'verify_jacobian':True}) as net:
+        first = net.initialize(bcs=boundaries)
+        assert first['node']['mix']['T'] == pytest.approx(300.)
+        result = net.update(1.,bcs=boundaries)
+        assert result['mdot']['in'] < 0 and result['mdot']['out'] < 0
+        assert result['node']['mix']['T'] == pytest.approx(500.)
+        assert any(e['name']=='reverse' for e in result['events'])

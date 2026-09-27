@@ -17,6 +17,9 @@ class Nosecone(Section):
         self.length = self.L_total - cfg["avi_bay"]["length"]
         self.set_grid()
         self.wall_material = cfg["nosecone"]["material"]
+        self.wall_thickness = float(cfg["nosecone"]["wall_thickness"])
+        if not np.isfinite(self.wall_thickness) or self.wall_thickness <= 0:
+            raise ValueError("Nosecone wall_thickness must be finite and positive")
         self.emissivity = 0.85
 
     def get_mass(self):
@@ -27,16 +30,15 @@ class Nosecone(Section):
     def _get_shell_mass(self) -> np.ndarray:
         x = (np.arange(self.n) + 0.5) * self.dx
         self.radius = self._get_profile(x)
-        self.wall_thickness = 0.0032
         self.surf_area = 2 * np.pi * self.radius * self.dx
         V = self.surf_area * self.wall_thickness
-        return mp.db.get_material(self.wall_material).get("density") * V
+        return mp.get_material(self.wall_material).get("density") * V
 
     def get_EI(self):
         x = (np.arange(self.n) + 0.5) * self.dx
         r_o = self._get_profile(x)
         r_i = np.maximum(r_o - self.wall_thickness, 0.0)
-        E = mp.db.get_material(self.wall_material).get("elastic_modulus_0deg", 300.0)
+        E = mp.get_material(self.wall_material).get("elastic_modulus", T=300.0)
         self.EI = E * geo.annulus_second_moment(r_o, r_i)
 
     def get_area(self):

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import numpy as np
 
 import simulation
 from constraints import (DesignInfeasible, EvaluationFailure, GeometryError, OperatingInfeasible,
@@ -87,6 +88,16 @@ def test_geometry_build_rejection_and_runtime_failure_are_distinct():
         assert not result.completed and not result.accepted
         record = result.constraint_records["node.fuel_pump_in.Pmin"]
         assert (record.margin, record.phase, record.units, record.time) == (-3239., "runtime", "Pa", 2.)
+        cfg['constraints'] = {'max_aoa_deg': 15.}
+        operating = OperatingInfeasible({'max_aoa_deg': -1.}, time=3.)
+        with patch.object(flight, 'run', side_effect=operating, create=True):
+            result = simulation.simulate(cfg, pure_properties=object(),
+                                         combustion_properties=object(), aero_model=object())
+        assert result.termination == 'infeasible_operating_state'
+        assert result.max_aoa_deg == 16.
+        assert result.constraints['max_aoa_deg'] == -1.
+        assert not result.accepted
+
 
 
 def test_nonfinite_constraint_is_fatal_not_an_infeasible_margin():
@@ -117,7 +128,7 @@ def test_twr_interpolates_first_exit_and_does_not_reenter():
     flight = make_flight()
     flight.cfg["launch"]["rail_height"] = 5
     result = SimResult()
-    start = KinematicsState(0, 1, 0, 1, 0, 0, 10, 1)
+    start = KinematicsState(t=0, dt=1, x=0., h=0, vx=0., vz=1, theta=np.pi/2, q=0, alpha=0, m=10, Iyy=1)
     end = replace(start, t=1, h=10)
     flight._record_twr(result, start, 2)
     flight._record_twr(result, end, 0, start, 2)

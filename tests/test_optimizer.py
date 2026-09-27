@@ -239,3 +239,30 @@ def test_conditional_geometry_rejects_empty_user_interval(settings, tmp_path):
     evaluator = opt.Evaluator(cfg, settings, model, pure, combustion, tmp_path)
     with pytest.raises(opt.GeometryError):
         evaluator.decode(np.mean(evaluator.bounds, axis=1))
+
+
+@pytest.mark.parametrize('flat', [True, False])
+@pytest.mark.parametrize('generations', [0, 3])
+def test_generation_budget_does_not_converge_on_rejections(flat, generations):
+    def score(x):
+        return 3. if flat else 2.99 + 1e-6 * sum(x)
+    with opt.GenerationBudgetSolver(score, [(0.,1.)]*2, rng=42,
+            popsize=4, maxiter=generations, polish=False) as solver:
+        result = solver.solve()
+    assert result.nit == generations
+    assert result.nfev == 8 * (generations + 1)
+    assert not result.success  # Exhausting a budget is not convergence.
+
+
+def test_evaluation_budget_interrupts_a_generation():
+    calls = []
+    def score(x):
+        if len(calls) == 11:
+            raise opt.EvaluationBudget
+        calls.append(x.copy())
+        return 3.
+    with opt.GenerationBudgetSolver(score, [(0.,1.)]*2, rng=42,
+            popsize=4, maxiter=100, polish=False) as solver:
+        with pytest.raises(opt.EvaluationBudget):
+            solver.solve()
+    assert len(calls) == 11

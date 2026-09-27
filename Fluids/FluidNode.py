@@ -162,24 +162,65 @@ class BoundaryComponent(FluidNode):
 
 
 class JunctionComponent(FluidNode):
-    variable_names = ("P",)
-    equation_names = ("mass_rate",)
+    """Zero-volume single-fluid/phase mixer with algebraic P/T balances."""
+    variable_names = ("P", "T")
+    equation_names = ("mass_rate", "energy_rate")
+
+    def __init__(self, node_id, definition, *, fluid_properties):
+        super().__init__(node_id, definition, fluid_properties=fluid_properties)
+        self.fluid_name = definition['fluid']
+        self.mode = definition['phase']
+        if self.mode not in ('liquid', 'gas'):
+            raise ValueError('Junction requires a single liquid or gas phase')
+        self._check_trial_values(self.initial_values())
+        self.reference_T = self.initial_values()['T']
+
+    def select_fluid(self, adjacent):
+        """Called only between solves; follow donor replacement after dryout/reversal."""
+        incoming = [flow['fluid'] for sign, flow in iter_flows(adjacent)
+                    if sign * flow['direction'] > 0]
+        identities = {(fluid.fluid, fluid.phase) for fluid in incoming}
+        if len(identities) > 1:
+            raise ValueError(f"Junction '{self.id}' cannot mix different fluids or phases")
+        if identities and identities != {(self.fluid_name, self.mode)}:
+            self.fluid_name, self.mode = identities.pop()
+            if self.mode not in ('liquid', 'gas'):
+                raise ValueError('Junction requires a single liquid or gas phase')
+            self.reference_T = float(incoming[0]['T'])
+            return self.reference_T
+        return None
 
     def initial_values(self):
-        return {"P": float(self.definition["P0"])}
+        return {name: float(self.definition['state0'][name]) for name in self.variable_names}
 
     def evaluate(self, trial_values, adjacent=(), node_states_by_id=None, *,
                  axial_specific_force=0.0, boundary_values=None):
         self._check_trial_values(trial_values)
-        sources = _incoming(adjacent)
-        if len(sources) != 1:
-            raise ValueError(f"Junction '{self.id}' requires one incoming fluid")
-        # Fluid records are read-only within a trial. Accepted/output snapshots
-        # are detached by the network; no need to copy at each junction.
-        return NodeState(trial_values=trial_values, fluids=sources)
+        incoming = {(flow['fluid'].fluid, flow['fluid'].phase)
+                    for sign, flow in iter_flows(adjacent) if sign * flow['direction'] > 0}
+        if incoming - {(self.fluid_name, self.mode)}:
+            raise ValueError(f"Junction '{self.id}' donor changed; select modes between solves")
+        p, t = trial_values['P'], trial_values['T']
+        pb, tb = self.fluid_properties.state_bounds(self.fluid_name)
+        if not pb[0] <= p <= pb[1] or not tb[0] <= t <= tb[1]:
+            raise TrialDomainError(f"Junction '{self.id}' outside {self.fluid_name} PT domain")
+        properties = self.fluid_properties.state_pt(self.fluid_name, p, t).as_dict()
+        return NodeState(trial_values=trial_values,
+                         fluids={self.fluid_name: FluidState(self.fluid_name, self.mode, properties)})
 
     def residual(self, node_state, trial_derivatives, adjacent=(), *, heat_rate=None):
-        return np.array([net_mdot(adjacent)])
+        mass, energy = fluxes(adjacent)
+        heat = sum((heat_rate or {}).values())
+        if not any(branch.enabled for _, branch in adjacent):
+            mass = (node_state['P'] - self.initial_values()['P']) / self.initial_values()['P']
+        if not any(sign * flow['direction'] > 0 and flow['mdot'] != 0
+                   for sign, flow in iter_flows(adjacent)):
+            if heat:
+                raise ValueError('A zero-volume junction cannot store heat without throughflow')
+            # With no throughput the energy balance is identically zero.
+            # Fix the otherwise undetermined temperature; this stores no energy.
+            energy = node_state.fluids[self.fluid_name]['cp'] * (node_state['T'] - self.reference_T)
+        return np.array([mass, energy + heat])
 
 
 class VolumeComponent(FluidNode):

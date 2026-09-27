@@ -4,18 +4,20 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from constraints import ConstraintRecord, feasibility
 
-
 @dataclass
 class KinematicsState:
+    """Planar state in SI units; theta is measured counterclockwise from horizontal."""
     t: float
     dt: float
-    h: float
-    v: float
-    w: float
-    alpha: float
+    x: float # horizontal movement in plane
+    h: float # altitude direction, z
+    vx: float # horizontal speed
+    vz: float # vertical speed
+    theta: float # pitch angle (about y-axis)
+    q: float # pitch rate
+    alpha: float # angle of attack
     m: float
-    Ixx: float
-
+    Iyy: float # mass moment of inertia about y-axis
 
 @dataclass
 class AtmosState:
@@ -95,8 +97,8 @@ class PlantOut:
 class SimResult:
     """Scalar optimizer output; SI units, stability in body diameters.
 
-    Extrema are sampled at flight endpoints. Apogee uses interpolation of the
-    first upward-to-downward velocity crossing, not event-split integration.
+    Extrema are sampled at flight endpoints. Apogee is approached from ascent
+    with event-split integration to avoid evaluating descent-only aerodynamics.
     A missing apogee or incomplete burn must not be treated as an achieved target.
     Unavailable masses on preflight rejection are None. Use accepted, not
     feasible alone, to select completed designs that meet the mission limits.
@@ -108,12 +110,19 @@ class SimResult:
     dry_mass: Optional[float] = None
     final_mass: Optional[float] = None
     max_q: float = 0.0
+    max_aoa_deg: float = 0.0
     min_stability_calibers: Optional[float] = None
     burn_duration: float = 0.0
     burn_complete: bool = False
     final_time: float = 0.0
     final_altitude: float = 0.0
     final_velocity: float = 0.0
+    final_x: float = 0.0
+    final_vx: float = 0.0
+    final_vz: float = 0.0
+    final_speed: float = 0.0
+    final_pitch_angle: float = 0.0
+    final_pitch_rate: float = 0.0
     termination: str = "time_limit"
     geometry_constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     constraints: Dict[str, Optional[float]] = field(default_factory=dict)

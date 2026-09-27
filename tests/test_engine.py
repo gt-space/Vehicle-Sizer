@@ -1,10 +1,6 @@
 import unittest
-import sys
-from unittest.mock import MagicMock
 
 import numpy as np
-
-sys.modules.setdefault("matproplib", MagicMock())
 
 from Vehicle.Engine import Engine
 

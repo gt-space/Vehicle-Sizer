@@ -49,7 +49,6 @@ from pathlib import Path
 import h5py
 import numpy as np
 from scipy.interpolate import PchipInterpolator, RegularGridInterpolator
-from scipy.integrate import trapezoid
 
 NOSES = ("vonkarman", "ogive", "conical")
 FINISHES = ("10um", "20um", "30um")
@@ -108,8 +107,27 @@ def _chebyshev_features(U, powers):
     return F
 
 
+def _grid_nodes(g, axes):
+    """A grid's unit-cube nodes per axis. "levels" is one number when every axis
+    has the same resolution, or one per axis when they do not."""
+    L = np.atleast_1d(g.attrs["levels"]).astype(int)
+    if L.size == 1:
+        L = np.repeat(L, len(axes))
+    return [np.linspace(0.0, 1.0, int(n)) for n in L]
+
+
+def _end(end, v):
+    """An axis bound: a number, another variable's value, or a multiple of one
+    ("span between 0.5 and 1.2 diameters" is stored as [0.5, "omld"])."""
+    if isinstance(end, str):
+        return v[end]
+    if isinstance(end, (list, tuple)):
+        return float(end[0]) * v[end[1]]
+    return float(end)
+
+
 def _trap(y, x):
-    return float(trapezoid(y, x))
+    return float(np.trapezoid(y, x))
 
 
 class DragModel:
@@ -126,7 +144,7 @@ class DragModel:
             # space's floor, so the block coordinate was measured from there rather
             # than from the vehicle's own exit. Stored with the model either way.
             bt_low = self.ranges["boattail_aft"][0]
-            self.boattail_floor = (float(bt_low) if not isinstance(bt_low, str)
+            self.boattail_floor = (float(bt_low) if not isinstance(bt_low, (str, list, tuple))
                                    else float(f.attrs.get("boattail_floor", 8.0)))
             self.info = {k: str(f.attrs[k]) for k in ("created", "solver", "notes") if k in f.attrs}
             self.reference = json.loads(f.attrs["reference_vehicle"]) if "reference_vehicle" in f.attrs else None
@@ -139,10 +157,10 @@ class DragModel:
             self.body = {k: {"coef": g["coef"][()], "powers": g["powers"][()], "axes": json.loads(g.attrs["axes"])} for k, g in f["body"].items()}
             self.fins, self.ref = {}, {}
             for finish, g in f["fins"].items():
-                axes = json.loads(g.attrs["axes"]); L = int(g.attrs["levels"])
+                axes = json.loads(g.attrs["axes"])
                 # fixed-area files hold the fin increment over the reference curve
                 table = g["delta"][()] if "delta" in g else g["cd"][()]
-                self.fins[finish] = {"axes": axes, "interp": RegularGridInterpolator([np.linspace(0, 1, L)] * len(axes), table, method="linear")}
+                self.fins[finish] = {"axes": axes, "interp": RegularGridInterpolator(_grid_nodes(g, axes), table, method="linear")}
             for finish, g in f["ref"].items():
                 self.ref[finish] = PchipInterpolator(g["u"][()], g["cd"][()], axis=0)
             self.bodyparts = {}
@@ -151,9 +169,9 @@ class DragModel:
                     self.bodyparts[nose] = {"coef": g["coef"][()], "powers": g["powers"][()], "axes": json.loads(g.attrs["axes"]), "columns": json.loads(g.attrs["columns"])}
             self.finparts = None
             if "finparts" in f:
-                g = f["finparts/grid"]; axes = json.loads(g.attrs["axes"]); L = int(g.attrs["levels"])
+                g = f["finparts/grid"]; axes = json.loads(g.attrs["axes"])
                 self.finparts = {"axes": axes, "columns": json.loads(g.attrs["columns"]),
-                                 "interp": RegularGridInterpolator([np.linspace(0, 1, L)] * len(axes), g["vals"][()], method="linear"),
+                                 "interp": RegularGridInterpolator(_grid_nodes(g, axes), g["vals"][()], method="linear"),
                                  "ref_length": float(g.attrs["ref_length"]), "ref_boattail_length": float(g.attrs["ref_boattail_length"])}
             # Short-tube correction for the fin slopes: a factor over (tube/D, D, span,
             # root, tip, sweep) per Mach, exactly 1 at the top tube node and above.
@@ -184,9 +202,7 @@ class DragModel:
         if v["boattail_aft"] > v["omld"] + 1e-9:
             raise ValueError(f"boattail_aft = {v['boattail_aft']} is larger than omld = {v['omld']}")
         for name in VARIABLES:
-            lo, hi = self.ranges[name]
-            lo = v[lo] if isinstance(lo, str) else lo
-            hi = v[hi] if isinstance(hi, str) else hi
+            lo, hi = (_end(e, v) for e in self.ranges[name])
             if not (lo - 1e-9 <= v[name] <= hi + 1e-9):
                 raise ValueError(f"{name} = {v[name]} is outside [{lo}, {hi}]")
 
@@ -200,8 +216,7 @@ class DragModel:
             lo, hi = self.ranges[name]
             if name == "boattail_aft":
                 lo = self.boattail_floor          # never the vehicle's own exit
-            lo = v[lo] if isinstance(lo, str) else lo
-            hi = v[hi] if isinstance(hi, str) else hi
+            lo, hi = _end(lo, v), _end(hi, v)
             u.append((v[name] - lo) / (hi - lo))
         return np.clip(np.array(u, float), 0.0, 1.0)
 
@@ -298,7 +313,9 @@ class DragModel:
             # The fin grid is solved on the reference body's tube; below 13 diameters
             # RASAero II's supersonic fin and carry-over slopes grow, by a factor
             # that depends on the fin. Scale them by the solved correction.
-            q = np.clip(np.array([td if a == "tube_d" else v[a] for a in st["axes"]], float), st["lo"], st["hi"])
+            # the grid indexes the span as a ratio of the diameter, like the space does
+            coord = {"tube_d": td, "span_cal": v["span"] / v["omld"]}
+            q = np.clip(np.array([coord.get(a, v.get(a)) for a in st["axes"]], float), st["lo"], st["hi"])
             k = st["interp"](q[None, :])[0]                                           # (73, 2)
             for j, c in enumerate(st["columns"]):
                 vals[:, f["columns"].index(c)] *= k[:, j]

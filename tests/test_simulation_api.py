@@ -55,15 +55,15 @@ def test_coast_reports_interpolated_apogee_not_time_limit_maximum():
     assert result.apogee_time <= result.final_time
 
 
-def test_cosine_loss_projects_thrust_not_body_load():
+def test_pitch_projects_thrust_not_body_load():
     flight = make_flight()
     atmosphere = FakeEnvironment.atmosphere(10, 10)
     fluid = FakePropSystem().update(None, atmosphere, None)
-    kin = KinematicsState(0, 1, 10, 10, 0, np.pi / 3, 16, 2)
+    kin = KinematicsState(t=0, dt=1, x=0., h=10, vx=0., vz=10, theta=np.pi/6, q=0, alpha=0.0, m=16, Iyy=2)
     plant = PlantOut(FakeAero.evaluate(kin, atmosphere, True), None, fluid)
     force = flight.forces(kin, plant, kin.m)
     assert force["thrust"] == 300
-    assert force["vertical_thrust"] == pytest.approx(150)
+    assert force["Fz"] + force["gravity"] == pytest.approx(150)
     assert force["net"] == pytest.approx(150 - force["gravity"])
 
 

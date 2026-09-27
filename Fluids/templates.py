@@ -86,4 +86,7 @@ def load_template(cfg, *, validate_pressures=True):
     for key, node in nodes.items():
         if "P0" in node:
             pressure(key)
+        state = node.get('state0', {})
+        if isinstance(state.get('P'), dict) and set(state['P']) == {'node'}:
+            state['P'] = pressure(state['P']['node'])
     return template

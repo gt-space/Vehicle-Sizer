@@ -95,7 +95,7 @@ def test_template_sets_default_rtol_and_config_overrides(control, expected):
 def test_custom_template_renames_nodes_and_adds_a_loss_without_code_changes():
     cfg=config('pump_fed')
     template=load_template(cfg)
-    template['nodes']['extra_junction']={'component':'junction','P0':2.8e6}
+    template['nodes']['extra_junction']={'component':'junction','P0':2.8e6, 'fluid':'Oxygen', 'phase':'liquid', 'state0':{'P':2.8e6,'T':90.}}
     template['nodes']['ox_pump_out']['P0']=3e6
     template['nodes']['ox_pump_in']['P0']=2e6
     template['nodes']['ox_ullage']['P0']=2.2e6

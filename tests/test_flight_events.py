@@ -101,7 +101,7 @@ def test_rail_trials_do_not_commit_mass_heat_or_result_samples(monkeypatch):
 
         @staticmethod
         def evaluate(kin, atmosphere, engine_on):
-            return AeroOut(Cd=0., D=0. if kin.alpha == 0 else 50.)
+            return AeroOut(Cd=0., D=0. if kin.alpha == 0 else 50., cp=1.5)
     thermal = IntegratingThermal()
     sim = flight(monkeypatch, rail=2.18, thermal=thermal, aero=DiscontinuousAero())
     history = sim.run(v0=10., compute_loads=False)
@@ -112,7 +112,7 @@ def test_rail_trials_do_not_commit_mass_heat_or_result_samples(monkeypatch):
     assert sim.prop_system.time == pytest.approx(1.)
     assert history[-1]['plant'].fluids.node['tank']['mass'] == pytest.approx(4.)
     assert sim.result.burn_duration == pytest.approx(1.)
-    assert all(h['kinematics'].alpha == .1 for h in history)
+    assert all(abs(h['kinematics'].alpha) < 1e-12 for h in history)
 
 
 def test_exhausted_localization_restores_interval_and_thermal(monkeypatch):
@@ -170,3 +170,126 @@ def test_event_snapshots_do_not_break_csv_export(monkeypatch, tmp_path):
     assert records[0]['event'] == 'shutdown'
     assert float(records[0]['time_s']) == .35
     assert 'before' not in records[0]
+
+
+def test_apogee_is_localized_before_reversed_airflow_query(monkeypatch):
+    class AscentOnly(ZeroAlpha):
+        @staticmethod
+        def evaluate(kin, atmosphere, engine_on):
+            assert abs(np.degrees(kin.alpha)) <= 15
+            return ZeroAlpha.evaluate(kin, atmosphere, engine_on)
+
+    sim = flight(monkeypatch, cutoff=0., aero=AscentOnly())
+    history = sim.run(v0=.5, compute_loads=False)
+    assert sim.result.apogee_time == pytest.approx(.5, abs=1e-6)
+    assert sim.result.apogee == pytest.approx(.125, abs=1e-6)
+    assert history[-1]['kinematics'].vz >= 0
+    assert sim.result.termination == 'apogee'
+
+
+@pytest.mark.parametrize('angle', [-16., 16.])
+def test_aoa_exceedance_is_a_signed_operating_constraint(monkeypatch, angle):
+    from constraints import OperatingInfeasible, finalize
+    from Fluids.errors import TrialDomainError
+    from simulation_types import KinematicsState, SimResult
+    sim = flight(monkeypatch)
+    kin = KinematicsState(t=2., dt=1., x=0., h=10., vx=0., vz=10.,
+                          theta=np.pi/2 + np.radians(angle), q=0.,
+                          alpha=np.radians(angle), m=16., Iyy=3.)
+    with pytest.raises(TrialDomainError):
+        sim.trial_aero(kin, FakeEnvironment.atmosphere(kin.h, kin.vz), True)
+    with pytest.raises(OperatingInfeasible) as caught:
+        sim.check_commit(kin, kin)
+    assert caught.value.constraints['max_aoa_deg'] == pytest.approx(-1.)
+    assert caught.value.time == 2.
+    result = finalize(SimResult(termination='infeasible_operating_state',
+                               constraints=caught.value.constraints,
+                               constraint_times={'max_aoa_deg': 2.}), {'max_aoa_deg': 15.})
+    record = result.constraint_records['max_aoa_deg']
+    assert record.margin == pytest.approx(-1.)
+    assert (record.source, record.units, record.time) == ('Flight.Flight', 'deg', 2.)
+    assert result.feasible is False and not result.accepted
+
+
+@pytest.mark.parametrize('stage', ['predictor', 'corrector'])
+def test_invalid_aero_trial_retries_without_committing(monkeypatch, stage):
+    thermal = IntegratingThermal()
+    seen = []
+
+    class GuardedAero(ZeroAlpha):
+        @staticmethod
+        def evaluate(kin, atmosphere, engine_on):
+            seen.append(abs(np.degrees(kin.alpha)))
+            assert seen[-1] <= 15
+            return ZeroAlpha.evaluate(kin, atmosphere, engine_on)
+
+    sim = flight(monkeypatch, thermal=thermal, aero=GuardedAero())
+    name = 'predict_kinematics' if stage == 'predictor' else 'correct_kinematics'
+    original = getattr(sim, name)
+
+    def overshoot(kin, *args):
+        endpoint = original(kin, *args)
+        return replace(endpoint, theta=np.pi/2 + np.radians(20)) if kin.dt > .5 else endpoint
+
+    monkeypatch.setattr(sim, name, overshoot)
+    history = sim.run(v0=10., compute_loads=False)
+    assert [row['kinematics'].t for row in history] == pytest.approx([.5, 1.])
+    assert sim.prop_system.time == pytest.approx(1.)
+    assert sim.result.burn_duration == pytest.approx(1.)
+    assert thermal.temperature == pytest.approx(301.)
+    assert len(thermal.commits) == 2
+    assert max(seen) <= 15
+
+
+def test_trial_recovery_is_bounded_and_restores_state(monkeypatch):
+    thermal = IntegratingThermal()
+    sim = flight(monkeypatch, thermal=thermal)
+    sim.cfg['advanced'] = {'flight': {'trial_max_retries': 2}}
+    original = sim.correct_kinematics
+    calls = []
+
+    def invalid(kin, *args):
+        calls.append(kin.dt)
+        return replace(original(kin, *args), theta=np.pi/2 + np.radians(20))
+
+    monkeypatch.setattr(sim, 'correct_kinematics', invalid)
+    with pytest.raises(RuntimeError, match='trial recovery exhausted'):
+        sim.run(v0=10., compute_loads=False)
+    assert calls == pytest.approx([1., .5, .25])
+    assert sim.prop_system.time == 0
+    assert sim.result.history == [] and sim.result.burn_duration == 0
+    assert thermal.temperature == 300. and thermal.commits == []
+
+
+def test_mission_aoa_limit_is_checked_only_after_convergence(monkeypatch):
+    from constraints import OperatingInfeasible
+    from simulation_types import KinematicsState
+    sim = flight(monkeypatch)
+    sim.cfg['constraints'] = {'max_aoa_deg': 5.}
+    kin = KinematicsState(1., .1, 0., 10., 0., 10., np.pi/2 + np.radians(10),
+                          0., np.radians(10), 16., 3.)
+    sim.trial_aero(kin, sim._atmosphere(kin), True)
+    with pytest.raises(OperatingInfeasible):
+        sim.check_commit(kin, kin)
+    # Descent is a stopping condition before the reversed-flow AoA check.
+    event = sim.check_commit(kin, replace(kin, t=1.1, vz=-1., alpha=np.pi))
+    assert event['event'] == 'apogee'
+
+
+def test_converged_violation_rolls_back_before_commit(monkeypatch):
+    from constraints import OperatingInfeasible
+    thermal = IntegratingThermal()
+    sim = flight(monkeypatch, thermal=thermal)
+    sim.cfg['constraints'] = {'max_aoa_deg': 5.}
+    original = sim.correct_kinematics
+
+    def corrected(kin, *args):
+        return replace(original(kin, *args), theta=np.pi/2 + np.radians(10))
+
+    monkeypatch.setattr(sim, 'correct_kinematics', corrected)
+    with pytest.raises(OperatingInfeasible) as error:
+        sim.run(v0=10., compute_loads=False)
+    assert error.value.constraints['max_aoa_deg'] < 0
+    assert sim.prop_system.time == 0
+    assert thermal.temperature == 300. and thermal.commits == []
+    assert sim.result.history == [] and sim.result.burn_duration == 0

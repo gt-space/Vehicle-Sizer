@@ -120,8 +120,10 @@ class FluidNetwork:
 
     def _make_node(self, key, definition):
         kind = self._kind(definition)
-        if kind in ('boundary', 'junction'):
-            return {'boundary': BoundaryComponent, 'junction': JunctionComponent}[kind](key, definition)
+        if kind == 'boundary':
+            return BoundaryComponent(key, definition)
+        if kind == 'junction':
+            return JunctionComponent(key, definition, fluid_properties=self.fluid_properties)
         if kind in ('volume', 'pressurant_tank'):
             return VolumeComponent(key, definition, fluid_properties=self.fluid_properties,
                                    phase=definition.get('phase', 'gas'))
@@ -172,6 +174,8 @@ class FluidNetwork:
                     if 'energy' in name:
                         field_name = 'U_liq' if name.startswith('liquid') else 'U_ull' if name.startswith('ullage') else 'U'
                         scale = max(abs(guesses[key].get(field_name, 1.)), 1.)
+                        if isinstance(component, JunctionComponent):
+                            scale = 1e6  # W; independently configurable per junction
                     elif name == 'volume_closure':
                         scale = component.volume
                     elif name == 'mass_closure':
@@ -290,6 +294,11 @@ class FluidNetwork:
                 node = self.nodes[key]
                 adjacent = [(sign, branches[bid]) for sign, bid in operation[2]]
                 extra = {}
+                if isinstance(node, JunctionComponent) and select_modes:
+                    temperature = node.select_fluid(adjacent)
+                    if temperature is not None:
+                        values[key]['T'] = temperature
+                        self.y[self.variable_index[f'{key}.T']] = temperature
                 if isinstance(node, CombustorComponent):
                     if select_modes:
                         phases = {flow['fluid'].phase for _, b in adjacent for flow in b.flows.values()}
@@ -439,7 +448,7 @@ class FluidNetwork:
             elif name.startswith('mdot'):
                 scale[j] = max(abs(initial[j]), .01)
             node = self.nodes.get(key)
-            if isinstance(node, VolumeComponent):
+            if isinstance(node, (VolumeComponent, JunctionComponent)):
                 if node.mode == 'saturated' and name == 'P':
                     lower[j], upper[j] = self.fluid_properties.saturation_bounds(node.fluid_name)
                 elif node.mode != 'saturated':
@@ -530,6 +539,7 @@ class FluidNetwork:
             self.y = self._build_layout(self._guesses_for_modes(values))
             values = self._unpack(self.y)
             result = self.evaluate_trial(self.time, self.y, select_modes=True)
+            values = self._unpack(self.y)
             if result is not None:
                 return
         raise RuntimeError('Dependent component modes did not settle')

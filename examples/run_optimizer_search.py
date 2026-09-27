@@ -249,19 +249,22 @@ def main(args):
         if available < len(vectors):
             raise opt.EvaluationBudget
         return [rows[i]['score'] for i, _ in tasks]
-    from scipy.optimize._differentialevolution import DifferentialEvolutionSolver
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        with DifferentialEvolutionSolver(lambda x: 0, bounds, rng=np.random.RandomState(settings['seed']),
-                popsize=settings['popsize'], polish=False, workers=mapped, updating='deferred', tol=0, atol=0) as solver:
+        def generation_finished(intermediate_result):
+            nonlocal generation
+            generation = intermediate_result.nit
+            with (output/'generations.jsonl').open('a') as stream:
+                stream.write(json.dumps(dict(generation=intermediate_result.nit, evaluations=count,
+                    best_score=float(intermediate_result.population_energies.min()),
+                    median_score=float(np.median(intermediate_result.population_energies))))+'\n')
+
+        with opt.GenerationBudgetSolver(lambda x: 0, bounds, rng=np.random.RandomState(settings['seed']),
+                popsize=settings['popsize'], maxiter=settings['maxiter'], polish=False,
+                workers=mapped, updating='deferred', callback=generation_finished) as solver:
             generation = 0
             try:
-                while count < budget:
-                    next(solver)
-                    generation += 1
-                    with (output/'generations.jsonl').open('a') as stream:
-                        stream.write(json.dumps(dict(generation=generation, evaluations=count,
-                            best_score=float(solver.population_energies.min()),
-                            median_score=float(np.median(solver.population_energies))))+'\n')
+                result = solver.solve()
+                generation = result.nit
             except opt.EvaluationBudget:
                 pass
     ordered = [rows[i] for i in sorted(rows)]
@@ -290,6 +293,8 @@ def main(args):
         if verified:
             (output/'verified.yaml').write_text(yaml.safe_dump(verify_cfg, sort_keys=False))
     summary = dict(evaluations=len(ordered), counts=dict(Counter(r['termination'] for r in ordered)),
+                   generations=generation,
+                   stop='evaluation budget exhausted' if count >= budget else 'generation budget exhausted',
                    classes=dict(Counter(r['score_class'] for r in ordered)), accepted=len(accepted),
                    best_index=best['index'], best_score=best['score'], verified=verified,
                    elapsed_this_invocation=time.perf_counter()-started,

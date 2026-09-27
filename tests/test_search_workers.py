@@ -1,10 +1,31 @@
 """Worker deadlines and recycling survive actual subprocess exits."""
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from examples import run_optimizer_search as search
+
+
+@pytest.mark.parametrize('budget,expected,generations', [(100, 32, 3), (11, 11, 0)])
+def test_parallel_search_honors_budgets_with_flat_scores(tmp_path, monkeypatch, budget, expected, generations):
+    # Exercise the real DE driver and map/callback, without expensive simulations.
+    settings = dict(seed=42, maxiter=3, max_evaluations=budget, popsize=4,
+                    tank_ids={}, bounds={'a': [0., 1.], 'b': [0., 1.]})
+    (tmp_path/'base.yaml').write_text('{}')
+    (tmp_path/'search.yaml').write_text(search.yaml.safe_dump(settings))
+    (tmp_path/'fingerprints.json').write_text('{}')
+    monkeypatch.setattr(search, 'fingerprints', lambda: {})
+    monkeypatch.setattr(search.opt, 'variable_paths', lambda *args: {'a': 'a', 'b': 'b'})
+    monkeypatch.setattr(search, 'launch_batch', lambda output, tasks, timeout: [
+        dict(index=i, score=3., score_class='unresolved', accepted=False,
+             termination='test_rejection', wall_seconds=0.) for i, _ in tasks])
+    search.main(SimpleNamespace(output=tmp_path, workers=2, candidates_per_worker=3, timeout=1.))
+    summary = json.loads((tmp_path/'summary.json').read_text())
+    assert summary['evaluations'] == expected
+    assert summary['generations'] == generations
+    assert summary['stop'] == ('evaluation budget exhausted' if budget == 11 else 'generation budget exhausted')
 
 
 def test_changed_sources_reject_search_resumption(tmp_path, monkeypatch):

@@ -6,7 +6,7 @@ tank_ids:
   pressurant: press_tank
 seed: 42
 max_evaluations: 2000
-maxiter: 100
+maxiter: 100                  # Generation budget; flat failure scores do not stop the search
 popsize: 4
 reference_mass: 250.0
 conditional_geometry: true
@@ -14,11 +14,6 @@ verification_dt_factor: 0.5
 evaluation_overrides:
   simulation.t_end: 600.0
   environment.max_altitude: 300000.0
-  aero.aoa_schedule:
-  - - 0.0
-    - 5.0
-  - - 600.0
-    - 5.0
 bounds:
   omld:
   - 0.22636
@@ -32,9 +27,9 @@ bounds:
   boattail_length:
   - 0.5715
   - 0.635
-  span:
-  - 0.1524
-  - 0.2286
+  span: # m; mapped inside 0.5–1.2 times each candidate diameter
+  - 0.1016
+  - 0.48768
   root:
   - 0.381
   - 0.508
@@ -69,12 +64,14 @@ bounds:
   - 40.0
   - 150.0
 constraint_scales:
+  max_aoa_deg: 1.0
   goal_apogee: 10000.0
   max_burn_duration: 5.0
   max_q: 10000.0
   min_stability_calibers: 1.0
   min_rail_twr: 0.2
 unit_scales:
+  deg: 1.0
   m: 0.01
   Pa: 1000000.0
   K: 10.0

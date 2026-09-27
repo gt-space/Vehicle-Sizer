@@ -69,7 +69,7 @@ def feasibility(margins):
 
 
 UNITS = {"max_q": "Pa", "max_burn_duration": "s", "goal_apogee": "m",
-         "min_stability_calibers": "calibers", "min_rail_twr": "1"}
+         "min_stability_calibers": "calibers", "min_rail_twr": "1", "max_aoa_deg": "deg"}
 
 
 def configured_limits(cfg):
@@ -80,6 +80,8 @@ def configured_limits(cfg):
     validate_margins(limits)
     if any(value < 0 for value in limits.values()):
         raise ValueError("Constraint limits must be nonnegative")
+    if limits.get("max_aoa_deg", 15.0) > 15.0:
+        raise ValueError("max_aoa_deg cannot exceed the 15 degree flight limit")
     return limits
 
 
@@ -97,6 +99,10 @@ def finalize(result, limits):
                     margin = limit - result.burn_duration
             elif key == "max_q":
                 margin = limit - result.max_q
+            elif key == "max_aoa_deg":
+                # Preserve an early rejection before its trial state is committed.
+                margin = min(limit - result.max_aoa_deg,
+                             result.constraints.get(key, float("inf")))
             else:
                 value = getattr(result, key)
                 margin = None if value is None else value - limit
@@ -108,7 +114,7 @@ def finalize(result, limits):
     for key, margin in result.constraints.items():
         phase = "mission" if key in {"goal_apogee", "max_burn_duration"} else (
             "sizing" if key not in limits and (sizing_only or key.startswith("pump.")) else "runtime")
-        source = "Flight.Flight" if key in limits else "Fluids.PropSystem"
+        source = "Flight.Flight" if key in UNITS else "Fluids.PropSystem"
         units = UNITS.get(key, "kW" if key.endswith("max_power") else "K" if key.endswith("Tmin") else "Pa")
         records[key] = ConstraintRecord(margin, source, phase, units,
                                         time=result.min_rail_twr_time if key == "min_rail_twr" else result.constraint_times.get(key))

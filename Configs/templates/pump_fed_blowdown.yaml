@@ -18,18 +18,33 @@ nodes:
     component: boundary
   ox_inj_in:
     component: junction
+    fluid: {config: prop_system.initial_conditions.ox_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: ox_inj_in}
+      T: {config: prop_system.initial_conditions.ox_tank.T}
     P0:
       node: thrust_chamber
       relative_rise:
         config: prop_system.ox_inj_stiffness
   ox_pump_out:
     component: junction
+    fluid: {config: prop_system.initial_conditions.ox_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: ox_pump_out}
+      T: {config: prop_system.initial_conditions.ox_tank.T}
     P0:
       node: ox_inj_in
       rise:
         config: prop_system.ox_inj_pumpout_dp
   ox_pump_in:
     component: junction
+    fluid: {config: prop_system.initial_conditions.ox_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: ox_pump_in}
+      T: {config: prop_system.initial_conditions.ox_tank.T}
     P0:
       node: ox_pump_out
       drop:
@@ -43,18 +58,33 @@ nodes:
         config: prop_system.ox_pumpin_tank_dp
   fuel_inj_in:
     component: junction
+    fluid: {config: prop_system.initial_conditions.fuel_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: fuel_inj_in}
+      T: {config: prop_system.initial_conditions.fuel_tank.T}
     P0:
       node: thrust_chamber
       relative_rise:
         config: prop_system.fuel_inj_stiffness
   fuel_pump_out:
     component: junction
+    fluid: {config: prop_system.initial_conditions.fuel_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: fuel_pump_out}
+      T: {config: prop_system.initial_conditions.fuel_tank.T}
     P0:
       node: fuel_inj_in
       rise:
         config: prop_system.fuel_inj_pumpout_dp
   fuel_pump_in:
     component: junction
+    fluid: {config: prop_system.initial_conditions.fuel_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: fuel_pump_in}
+      T: {config: prop_system.initial_conditions.fuel_tank.T}
     P0:
       node: fuel_pump_out
       drop:

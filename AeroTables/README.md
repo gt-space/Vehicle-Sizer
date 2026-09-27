@@ -62,11 +62,17 @@ every stored held-out vehicle and prints the error against RASAero II.
 | `boattail_aft` | boattail aft diameter, in | 7.5 to omld |
 | `exit` | engine exit diameter, in | 5.9 to boattail_aft |
 | `boattail_length` | in | 20 to 25 |
-| `span` | exposed semispan, in | 6 to 9 |
+| `span` | exposed semispan, in | **0.5 to 1.2 x omld** |
 | `root` | fin root chord, in | 15 to 20 |
 | `tip` | fin tip chord, in | 4 to 8 |
 | `sweep_fraction` | sweep distance as a fraction of root minus tip | 0.5 to 1.0 |
 | `thickness` | fin thickness, in | 0.25 to 0.5 |
+
+Fin span is given in inches like every other length, but its range travels
+with the body diameter: from half a diameter to 1.2 diameters. On an 8 in
+body that is 4 to 9.6 in, on a 16 in body 8 to 19.2 in. Fin chords and
+thickness are plain inch ranges, so fin aspect ratio varies across the
+diameter range.
 
 `nose`: `vonkarman`, `ogive`, `conical`. `finish`: `10um` (10.16 micron
 camouflage paint, the spec), `20um`, `30um` (30.48 micron rough camouflage).
@@ -85,10 +91,17 @@ reference curve:
 
 * `body` is a degree-5 polynomial (252 coefficients per Mach and alpha point)
   fitted to 4,096 RASAero II runs, one per nose shape and finish.
-* `fins` is a grid of RASAero II runs at 5 levels per variable (15,625 runs),
-  one per finish, read by linear interpolation. A polynomial does not work
-  here because RASAero II's fin drag charts have discontinuities near Mach
-  1.1 to 1.4; the grid follows them.
+* `fins` is a grid of RASAero II runs, one per finish, read by linear
+  interpolation. A polynomial does not work here because RASAero II's fin drag
+  charts have discontinuities near Mach 1.1 to 1.4; the grid follows them. The
+  levels are not equal across the axes, because the axes do not deserve equal
+  resolution: diameter, span and sweep get 7 levels and root, tip and
+  thickness 4, which is 21,952 runs. Measured on a full 7-level grid, dropping
+  one axis from 7 levels to 4 costs 0.23 points of median CD error for
+  diameter, 0.18 for span, 0.10 for sweep, 0.05 for root, 0.03 for tip, and
+  nothing at all for thickness, which the fin response is linear in. This grid
+  reaches 0.46% median where 5 levels everywhere (15,625 runs) reads 0.75% and
+  7 levels everywhere (117,649 runs) reads 0.40%.
 * `ref` is RASAero II at the reference vehicle as a function of diameter.
 * Every coefficient RASAero II returns is on the vehicle's own area,
   pi D^2 / 4, so it carries a 1/D^2 that has nothing to do with shape. Over
@@ -180,19 +193,22 @@ of the other eight, 4,529 in all. `python dragmodel.py` recomputes these.
 
 | | median | 95th percentile | worst |
 |---|---|---|---|
-| CD, power off, alpha 0 | 0.24 to 0.27% | 0.68 to 0.73% | 1.5 to 1.6% |
-| CD, power off, alpha 15 | | 0.80 to 0.89% | |
-| CD, power on, alpha 0 | | 0.75 to 0.87% | 1.7 to 1.9% |
-| CN, alpha 5 to 15 | | 1.3 to 1.4% | 2.6 to 2.7% |
-| CP, all alpha | | 1.9 to 2.1 in | 6.5 to 7.6 in |
-| CA split: each component's share of CD | 0.2 points | | 1.3 points |
+| CD, power off, alpha 0 | 0.44 to 0.48% | 1.05 to 1.16% | 1.6 to 2.2% |
+| CD, power off, alpha 15 | | 1.00 to 1.12% | |
+| CD, power on, alpha 0 | | 1.23 to 1.35% | 1.8 to 2.3% |
+| CN, alpha 5 to 15 | | 1.5 to 1.6% | 2.6 to 3.0% |
+| CP, all alpha | | 1.5 to 1.7 in | 5.3 to 6.8 in |
+| CA split: each component's share of CD | 0.4 points | | 1.5 points |
 
 The CD error is almost all in the fin grid near Mach 1.1 to 1.4, where
-RASAero II's fin charts change regime and a 5-level grid read linearly cannot
-follow them exactly. A 7-level fin grid would cut it by about a third
-(0.50% at the 95th percentile, 1.0% worst, measured on the Von Karman 10
-micron stratum) at 7.5 times the fin runs. The distribution along the body
-integrates to the model's CN and CP by construction.
+RASAero II's fin charts change regime and a grid read linearly cannot follow
+them exactly. It roughly doubled when the span range widened from 6 to 9 in
+to half a diameter through 1.2 diameters: the same kind of grid now covers a
+span band three times wider in relative terms. Refining the grid where it
+pays (above) recovered about half of that; going all the way to 7 levels on
+every axis would buy another 0.06 points of median for five times the runs.
+The distribution along the body integrates to the model's CN and CP by
+construction.
 
 **Short, wide bodies are corrected.** Above Mach 1, RASAero II's fin and
 carry-over normal-force slopes grow once the cylindrical tube between the

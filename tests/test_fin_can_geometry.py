@@ -21,7 +21,7 @@ class FinCanGeometryTests(unittest.TestCase):
                 "boattail_aft_diameter": 0.2667,
                 "boattail_length": 0.5588,
                 "boattail_wall_thickness": 0.00318,
-                "material": "carbon_fiber_standard",
+                "material": "carbon_fiber",
             },
         }
         exit_area = np.pi * (0.2286 / 2.0) ** 2

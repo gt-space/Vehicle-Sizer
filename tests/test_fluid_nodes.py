@@ -102,24 +102,26 @@ def test_shared_keyword_contract_for_node_and_branch_trial_evaluation():
             component._check_trial_values({"wrong_name": 1.0})
 
 
-def test_junction_shares_trial_donor_but_detaches_output():
+def test_junction_evaluates_mixed_state_and_detaches_output():
     boundary = BoundaryComponent("supply", {"P": 2e5, "fluids": {
-        "Nitrogen": {"phase": "gas", "h": 100., "T": 300.}}})
+        "Nitrogen": {"phase": "gas", "h": 300000., "T": 300.}}})
     supply = boundary.evaluate({}, boundary_values={"P": 3e5})
     assert supply["P"] == 3e5 and boundary.definition["P"] == 2e5
-    junction = JunctionComponent("junction", {"P0": 1e5})
+    junction = JunctionComponent("junction", {'fluid':'Nitrogen', 'phase':'gas',
+                                 'state0':{'P':1e5,'T':300.}}, fluid_properties=AnalyticProperties())
     # Reverse flow in a branch nominally leaving the junction is an inlet.
     adjacent = [(-1, branch(supply.fluids["Nitrogen"], -2., -1)),
                 (-1, branch(supply.fluids["Nitrogen"], 2.)),
                 (1, branch(supply.fluids["Nitrogen"], 100., enabled=False))]
-    trial = junction.evaluate({"P": 1.5e5}, adjacent)
+    trial = junction.evaluate({"P": 1.5e5, 'T':300.}, adjacent)
     np.testing.assert_allclose(junction.residual(trial, {}, adjacent), 0)
     assert junction.differential_variable_names == ()
     assert list(junction.outlet(trial)) == ["Nitrogen"]
-    assert trial.fluids["Nitrogen"] is supply.fluids["Nitrogen"]
+    assert trial.fluids["Nitrogen"] is not supply.fluids["Nitrogen"]
+    assert trial.fluids['Nitrogen']['P'] == 1.5e5
     output = junction.output_state(trial)
     output.fluids["Nitrogen"].properties["h"] = -999
-    assert supply.fluids["Nitrogen"].properties["h"] == 100.
+    assert supply.fluids["Nitrogen"].properties["h"] == 300000.
     assert boundary.residual(supply, {}).size == 0
 
 
@@ -453,3 +455,33 @@ def test_algebraic_response_reports_invalid_trials(failure):
         dl['drho_dP'] = -mg * dg['drho_dP'] / gas.rho**2 * liquid.rho**2 / ml * (1-1e-12)
     with pytest.raises(TrialDomainError, match='thermodynamic response'):
         node._thermodynamic_response(ml, mg, liquid, gas, dl, dg)
+
+
+def test_junction_mixing_energy_and_zero_flow():
+    props = AnalyticProperties()
+    node = JunctionComponent('mix', dict(fluid='Nitrogen', phase='gas',
+        state0=dict(P=2e5,T=300.)), fluid_properties=props)
+    cold = FluidState('Nitrogen','gas',props.state_pt('Nitrogen',3e5,300.).as_dict())
+    hot = FluidState('Nitrogen','gas',props.state_pt('Nitrogen',4e5,600.).as_dict())
+    incoming = [(1,branch(cold,2.)), (1,branch(hot,1.))]
+    mixed = node.evaluate(dict(P=2e5,T=400.), incoming)
+    outgoing = (-1,branch(mixed.fluids['Nitrogen'],3.))
+    for donors in (incoming, incoming[::-1]):
+        np.testing.assert_allclose(node.residual(mixed,{},[*donors,outgoing]),[0,0],atol=1e-8)
+    wrong = node.evaluate(dict(P=2e5,T=500.), incoming)
+    assert abs(node.residual(wrong,{},[*incoming,(-1,branch(wrong.fluids['Nitrogen'],3.))])[1]) > 1e5
+    # Isolated P/T are prescribed, with no fictitious inventory or flow.
+    isolated = node.evaluate(node.initial_values())
+    np.testing.assert_allclose(node.residual(isolated,{}),[0,0])
+    assert node.differential_variable_names == ()
+    with pytest.raises(ValueError,match='cannot store heat'):
+        node.residual(isolated,{},heat_rate={'gas':1.})
+    different = FluidState('water','liquid',props.state_pt('water',2e5,300.).as_dict())
+    with pytest.raises(ValueError,match='different fluids or phases'):
+        node.select_fluid([*incoming,(1,branch(different,1.))])
+
+
+def test_junction_requires_explicit_initial_state():
+    with pytest.raises(KeyError):
+        JunctionComponent('mix',dict(fluid='Nitrogen',phase='gas',P0=2e5),
+                          fluid_properties=AnalyticProperties())
