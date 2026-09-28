@@ -49,6 +49,9 @@ engine:
 environment:
   altitude_step: 100.0
   max_altitude: 150000.0
+  wind:
+    enabled: false
+    profile: WindProfiles/example_wind_profile.csv
 fin_can:
   hardware_mass: 2.0 # kg; additional fin-can hardware, excluding engine and fins
   boattail_aft_diameter: 0.3032125

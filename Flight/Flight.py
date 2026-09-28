@@ -464,15 +464,20 @@ class FlightSim:
         return speed, gamma, airspeed, gamma_air, alpha
 
 
+    def _flight_kinematics(self, kin):
+        """Evaluate inertial and air-relative kinematics at the trial altitude."""
+        wind_x, wind_z = self.env.wind(kin.h)
+        return self.flight_kinematics(kin, wind_x=wind_x, wind_z=wind_z)
+
     def _kinematic_boundary(self, kin, on_rail):
         """Use the segment's fixed rail mode and derive AoA from its trial state."""
         if on_rail:
             return self.constrain_to_rail(kin)
-        return replace(kin, alpha=self.flight_kinematics(kin)[4])
+        return replace(kin, alpha=self._flight_kinematics(kin)[4])
 
     def _atmosphere(self, kin):
         self.check_trial(kin)
-        return self.env.atmosphere(kin.h, self.flight_kinematics(kin)[2])
+        return self.env.atmosphere(kin.h, self._flight_kinematics(kin)[2])
 
     @staticmethod
     def _apogee_crossing(start, trial):
@@ -647,15 +652,8 @@ class FlightSim:
                 or event_max_iterations < 1):
             raise ValueError("Flight event_max_iterations must be a positive integer")
 
-        atmosphere = self.env.atmosphere(h0, abs(v0))
-        fluid_state = self.commit_fluid(
-            dt=None,
-            atm=atmosphere,
-            axial_specific_force=gravity(mass, h0) / mass,
-        )
-        self.vehicle.update_mass_distribution(fluid_state.node)
-        mass = float(self.vehicle.total_mass)
         inertia = float(self.vehicle.Iyy)
+        rail_mode = self.on_rail(h0)
         kin = KinematicsState(
             t=0.0,
             dt=dt,
@@ -669,6 +667,18 @@ class FlightSim:
             m=mass,
             Iyy=inertia,
         )
+        kin = self._kinematic_boundary(kin, rail_mode)
+        atmosphere = self._atmosphere(kin)
+
+        fluid_state = self.commit_fluid(
+            dt=None,
+            atm=atmosphere,
+            axial_specific_force=gravity(mass, h0) / mass,
+        )
+        self.vehicle.update_mass_distribution(fluid_state.node)
+        mass = float(self.vehicle.total_mass)
+        inertia = float(self.vehicle.Iyy)
+        kin = replace(kin, m=mass, Iyy=inertia)
         history: List[Dict[str, Any]] = []
         result = self.result = SimResult(
             max_altitude=h0, initial_mass=mass, final_mass=mass,
@@ -696,7 +706,6 @@ class FlightSim:
             progress(kin)
 
         rail_end = float(self.cfg["launch"]["altitude"]) + float(self.cfg["launch"]["rail_height"])
-        rail_mode = self.on_rail(h0)
         macro_index = 0
         while kin.t < t_end and not result.apogee_reached and (kin.t == 0.0 or kin.vz >= 0.0):
             macro_end = min((macro_index + 1) * dt, t_end)

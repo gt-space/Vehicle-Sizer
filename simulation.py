@@ -140,8 +140,32 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
     if not isinstance(heating, bool):
         raise ValueError("thermal.external_heating must be true or false")
     thermal = ThermalNetwork(cfg, vehicle) if heating else None
-    environment = Environment(h_max=float(cfg["environment"]["max_altitude"]),
-                              dh=float(cfg["environment"]["altitude_step"]))
+
+    environment_cfg = cfg["environment"]
+    wind_cfg = environment_cfg.get("wind")
+    wind_profile = None
+
+    if wind_cfg is not None:
+        if not isinstance(wind_cfg, dict):
+            raise ValueError("environment.wind must be a mapping")
+
+        wind_enabled = wind_cfg.get("enabled", False)
+        if not isinstance(wind_enabled, bool):
+            raise ValueError("environment.wind.enabled must be true or false")
+
+        if wind_enabled:
+            profile = wind_cfg.get("profile")
+            if not isinstance(profile, str) or not profile.strip():
+                raise ValueError(
+                    "environment.wind.profile is required when wind is enabled"
+                )
+            wind_profile = project_path(profile)
+
+    environment = Environment(
+        h_max=float(environment_cfg["max_altitude"]),
+        dh=float(environment_cfg["altitude_step"]),
+        wind_profile=wind_profile,
+    )
     if aero_model is None:
         aero_model = DragModel(project_path(cfg["aero"]["model"]))
     flight = FlightSim(cfg, environment, Aero(cfg["aero"], vehicle.aero_candidate(), aero_model),
