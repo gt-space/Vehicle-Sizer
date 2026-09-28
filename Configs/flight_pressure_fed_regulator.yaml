@@ -57,7 +57,7 @@ fin_can:
   fin_thickness: 0.009525
   material: carbon_fiber
   root_chord: 0.508
-  span: 0.40386 # Aero maximum: 1.2 * vehicle.OMLD
+  span: 0.2286 # Aero maximum: 1.2 * vehicle.OMLD # This was 0.40386 before, which errored. changes temporarily
   sweep_fraction: 0.75
   tip_chord: 0.2032
 inter_tank:
