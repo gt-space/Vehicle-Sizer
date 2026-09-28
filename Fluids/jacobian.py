@@ -5,7 +5,7 @@ Keep dense native linear algebra; reduce expensive Python residual calls.
 """
 import numpy as np
 from .FluidNode import BoundaryComponent, VolumeComponent, CombustorComponent, JunctionComponent
-from .errors import TrialDomainError
+from errors import TrialDomainError, LookupBoundsError
 
 
 def pattern(network):
@@ -107,7 +107,7 @@ def install(session, network, *, verify=False):
                 try:
                     session.structured_residuals += 1
                     network.residual(t, y + dy, yp + cj * dy, trial)
-                except TrialDomainError:
+                except (TrialDomainError, LookupBoundsError):
                     dy = -dy
                     session.structured_residuals += 1
                     network.residual(t, y + dy, yp + cj * dy, trial)
@@ -135,7 +135,7 @@ def install(session, network, *, verify=False):
             if not np.isfinite(jac).all():
                 raise TrialDomainError('Non-finite structured Jacobian')
             return 0
-        except TrialDomainError as error:
+        except (TrialDomainError, LookupBoundsError) as error:
             session.last_trial_error = error
             return 1
         except Exception as error:

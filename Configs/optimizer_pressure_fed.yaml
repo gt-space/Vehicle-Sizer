@@ -11,6 +11,12 @@ popsize: 4
 reference_mass: 250.0
 conditional_geometry: true
 verification_dt_factor: 0.5
+failure_policy:
+  native_retries: 1           # Fresh process only; recovered crashes remain reported
+  consecutive_limit: 5
+  window: 50
+  rate_limit: 0.2
+  repeated_limit: 3
 evaluation_overrides:
   simulation.t_end: 600.0
   environment.max_altitude: 300000.0

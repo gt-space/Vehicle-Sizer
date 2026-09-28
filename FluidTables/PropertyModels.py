@@ -9,6 +9,7 @@ import numpy as np
 from scipy.optimize import root_scalar
 
 from Fluids import FluidsDef
+from warning import caution
 from .LookupTables import LookupTables
 
 
@@ -535,6 +536,18 @@ class TableCombustionPropertySource:
         cstar_efficiency: float = 1.0,
         cf_efficiency: float = 1.0,
     ) -> CombustionProperties:
+        minimum_ambient = float(self.table.axes["ambient_pressure"][0])
+        if 0.0 <= ambient_pressure < minimum_ambient:
+            # Near vacuum this conservatively neglects eps * (Pmin - Pamb) / Pc
+            # in Cf: at the shipped 68.95 Pa bound, ~2.33 N (0.012%) for the
+            # regulated reference candidate. Other table bounds remain strict.
+            caution("ambient_pressure_clamped",
+                    f"Combustion lookup ambient pressure was clamped to "
+                    f"{minimum_ambient:.6g} Pa; atmospheric pressure is unchanged. "
+                    "Thrust is slightly underestimated (ideal Cf deficit = "
+                    "expansion_ratio * (bound - ambient_pressure) / chamber_pressure). "
+                    "Counts include numerical trial evaluations.")
+            ambient_pressure = minimum_ambient
         values = self.table.evaluate(
             self.outputs,
             **self._coordinates(

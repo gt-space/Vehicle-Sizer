@@ -18,7 +18,7 @@ def test_parallel_search_honors_budgets_with_flat_scores(tmp_path, monkeypatch, 
     (tmp_path/'fingerprints.json').write_text('{}')
     monkeypatch.setattr(search, 'fingerprints', lambda: {})
     monkeypatch.setattr(search.opt, 'variable_paths', lambda *args: {'a': 'a', 'b': 'b'})
-    monkeypatch.setattr(search, 'launch_batch', lambda output, tasks, timeout: [
+    monkeypatch.setattr(search, 'launch_batch', lambda output, tasks, timeout, **kwargs: [
         dict(index=i, score=3., score_class='unresolved', accepted=False,
              termination='test_rejection', wall_seconds=0.) for i, _ in tasks])
     search.main(SimpleNamespace(output=tmp_path, workers=2, candidates_per_worker=3, timeout=1.))

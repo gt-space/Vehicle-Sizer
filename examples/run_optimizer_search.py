@@ -21,22 +21,58 @@ import subprocess
 import shutil
 import sys
 import time
+import tempfile
+import traceback
+from threading import Event
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import numpy as np
 import yaml
 import optimizer as opt
+from errors import failure_details, InfrastructureError, SearchFailureLimit
+from warning import caution
 
 
-def write_json(path, value):
-    temp = path.with_suffix('.tmp')
-    temp.write_text(json.dumps(value, indent=2, allow_nan=False))
-    temp.replace(path)
+def write_json(path, value, *, optional=False, retry_seconds=3.):
+    """Publish a complete document; retry only transient replacement contention."""
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
+            temp = Path(stream.name)
+            json.dump(value, stream, indent=2, allow_nan=False)
+        deadline = time.monotonic() + retry_seconds
+        while True:
+            try:
+                temp.replace(path)
+                return True
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.05)
+    except OSError as error:
+        if optional:
+            caution('progress_publication_failed', f'Could not publish {path}: {error}')
+            return False
+        raise InfrastructureError(f'Could not publish required result {path}') from error
+    finally:
+        if temp is not None:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def exit_kind(returncode):
+    # Windows may expose NTSTATUS as either signed or unsigned; POSIX uses signals.
+    code = returncode & 0xffffffff
+    return 'native_crash' if returncode < 0 or code & 0xc0000000 == 0xc0000000 else 'worker_error'
 
 
 def fingerprints():
-    files = [ROOT/'optimizer.py', ROOT/'simulation.py', ROOT/'constraints.py', ROOT/'simulation_types.py']
+    files = [ROOT/'optimizer.py', ROOT/'simulation.py', ROOT/'constraints.py',
+             ROOT/'simulation_types.py', ROOT/'warning.py', ROOT/'errors.py']
     files.extend((ROOT/'examples'/name for name in ('run_optimizer_search.py', 'search_timing.py')))
     for folder in ('Fluids', 'Flight', 'FluidTables', 'Vehicle', 'Configs'):
         files.extend((ROOT/folder).rglob('*.py'))
@@ -74,7 +110,6 @@ def worker(output, indices):
         module.install()
     models, timing = None, None
     for index in indices:
-        source_version = check_sources(output)
         job = output/'candidates'/f'{index:04d}'
         task = json.loads((job/'task.json').read_text())
         faulthandler.enable()
@@ -82,6 +117,7 @@ def worker(output, indices):
         started, cpu_started = time.perf_counter(), time.process_time()
         original_simulate = opt.simulate
         try:
+            source_version = check_sources(output)
             cfg, settings = opt.load_config(output/'base.yaml'), opt.load_config(output/'search.yaml')
             profiled = settings.get('profile', index % 16 == 0)
             if profiled and timing is None:
@@ -104,7 +140,7 @@ def worker(output, indices):
                 now = time.perf_counter()
                 if now - last_progress[0] >= 10 or kin.t == 0:
                     write_json(job/'progress.json', dict(time_s=kin.t, altitude=kin.h,
-                               wall_seconds=now-started))
+                               wall_seconds=now-started), optional=True)
                     last_progress[0] = now
                     if timing is not None and timing.enabled:
                         timing.save(job/'timings.json')
@@ -132,31 +168,56 @@ def worker(output, indices):
                                        if profiled else None),
                        recovered_fluid_retries=[d for p in tracked for d in p.network.retry_diagnostics],
                        load_peaks=simulation_results[-1].load_peaks if simulation_results else {})
-            write_json(job/'result.json', row)
-            # Recycle after any unresolved solve; never reuse a potentially damaged native session.
-            if row['score_class'] == 'unresolved':
-                return
+        except Exception as error:
+            # Setup, publication, scoring and invariant failures are never numerical rejects.
+            detail = failure_details(error, phase='worker')
+            detail['fatal'] = True
+            write_json(job/'fatal.json', dict(failure_details=detail, traceback=traceback.format_exc()))
+            return
         finally:
-            if timing is not None and timing.enabled:
-                timing.save(job/'timings.json')
-            faulthandler.cancel_dump_traceback_later()
-            opt.simulate = original_simulate
-            for prop in tracked:
-                prop.close()
-            tracked.clear()
-            gc.collect()
+            try:
+                if timing is not None and timing.enabled:
+                    timing.save(job/'timings.json')
+                faulthandler.cancel_dump_traceback_later()
+                opt.simulate = original_simulate
+                for prop in tracked:
+                    prop.close()
+                tracked.clear()
+                gc.collect()
+            except Exception as error:
+                detail = failure_details(error, phase='worker cleanup')
+                detail['fatal'] = True
+                write_json(job/'fatal.json', dict(failure_details=detail, traceback=traceback.format_exc()))
+                raise
+        # Publish only after native cleanup: a destructor crash belongs to this
+        # candidate, never to the next unstarted item in the worker's batch.
+        try:
+            write_json(job/'result.json', row)
+        except Exception as error:
+            write_json(job/'fatal.json', dict(failure_details=failure_details(error, phase='publication'),
+                                              traceback=traceback.format_exc()))
+            raise
+        if row['score_class'] == 'unresolved':
+            return
 
 
-def launch_batch(output, tasks, timeout):
+def launch_batch(output, tasks, timeout, *, stop_event=None):
     """Supervise a small batch, enforcing a separate wall deadline per candidate.
 
     Successful jobs share only loaded models. A timeout, native exit or reported
     numerical failure ends that child; remaining jobs start in a clean process.
     """
+    search_config = output/'search.yaml'
+    policy = opt.load_config(search_config).get('failure_policy', {}) if search_config.exists() else {}
+    native_retries = policy.get('native_retries', 0)
+    if isinstance(native_retries, bool) or native_retries not in (0, 1):
+        raise ValueError('native_retries must be 0 or 1')
     pending = []
     for index, coordinates in tasks:
         job = output/'candidates'/f'{index:04d}'
         job.mkdir(parents=True, exist_ok=True)
+        if (job/'fatal.json').exists():
+            raise InfrastructureError(f'Worker fatal diagnostic requires attention: {job / "fatal.json"}')
         task = dict(index=index, coordinates=list(map(float, coordinates)))
         if (job/'result.json').exists():
             row = json.loads((job/'result.json').read_text())
@@ -165,6 +226,8 @@ def launch_batch(output, tasks, timeout):
             write_json(job/'task.json', task)
             pending.append(index)
     while pending:
+        if stop_event is not None and stop_event.is_set():
+            raise SearchFailureLimit('Coordinator stopped; remaining candidates were not evaluated')
         first = output/'candidates'/f'{pending[0]:04d}'
         current, started = pending[0], time.perf_counter()
         status = 'worker_error'
@@ -173,6 +236,10 @@ def launch_batch(output, tasks, timeout):
                     '--output', str(output), '--worker-batch', *map(str, pending)],
                     cwd=ROOT, stdout=stdout, stderr=stderr) as process:
                 while True:
+                    if stop_event is not None and stop_event.is_set():
+                        process.kill()
+                        process.wait()
+                        raise SearchFailureLimit('Coordinator stopped; active candidate cancelled without a score')
                     remaining = [i for i in pending if not (output/'candidates'/f'{i:04d}'/'result.json').exists()]
                     if remaining and remaining[0] != current:
                         current, started = remaining[0], time.perf_counter()
@@ -184,10 +251,14 @@ def launch_batch(output, tasks, timeout):
                         break
                     try:
                         process.wait(timeout=min(.25, timeout-elapsed))
-                        status = 'native_crash' if process.returncode < 0 else 'worker_error'
+                        status = exit_kind(process.returncode)
                         break
                     except subprocess.TimeoutExpired:
                         pass
+        for index in pending:
+            fatal = output/'candidates'/f'{index:04d}'/'fatal.json'
+            if fatal.exists():
+                raise RuntimeError(f'Fatal candidate worker failure; see {fatal}')
         remaining = [i for i in pending if not (output/'candidates'/f'{i:04d}'/'result.json').exists()]
         completed = [i for i in pending if i not in remaining]
         reported_failure = bool(completed) and json.loads(
@@ -196,13 +267,36 @@ def launch_batch(output, tasks, timeout):
             index = remaining.pop(0)
             job = output/'candidates'/f'{index:04d}'
             task = json.loads((job/'task.json').read_text())
+            attempts_file = job/'worker_attempts.json'
+            attempts = json.loads(attempts_file.read_text()) if attempts_file.exists() else []
+            attempt = dict(kind=status, exit_code=process.returncode,
+                           wall_seconds=time.perf_counter()-started)
+            attempts.append(attempt)
+            write_json(attempts_file, attempts)
+            if status == 'native_crash' and len(attempts) <= native_retries:
+                shutil.copyfile(first/'stderr.log', job/f'native_attempt_{len(attempts)}.stderr.log')
+                shutil.copyfile(first/'stdout.log', job/f'native_attempt_{len(attempts)}.stdout.log')
+                pending = [index] + remaining
+                continue
             row = dict(index=index, coordinates=task['coordinates'], score=3., score_class='unresolved',
                        accepted=False, termination=status, mass=None, apogee=None, burn_duration=None,
                        wall_seconds=time.perf_counter()-started, violations={},
+                       failure_details=dict(kind=status, fatal=False, phase='worker',
+                                            exit_code=process.returncode,
+                                            fingerprint=f'{status}:{process.returncode}'),
                        failure=(first/'stderr.log').read_text()[-18000:])
             write_json(job/'result.json', row)
         pending = remaining
-    return [json.loads((output/'candidates'/f'{i:04d}'/'result.json').read_text()) for i, _ in tasks]
+    results = []
+    for index, _ in tasks:
+        job = output/'candidates'/f'{index:04d}'
+        row = json.loads((job/'result.json').read_text())
+        attempts_file = job/'worker_attempts.json'
+        if attempts_file.exists():
+            row['worker_attempts'] = json.loads(attempts_file.read_text())
+            write_json(job/'result.json', row)
+        results.append(row)
+    return results
 
 
 def launch(output, index, coordinates, timeout):
@@ -228,6 +322,8 @@ def main(args):
     bounds = [settings['bounds'][name] for name in names]
     budget, count = settings['max_evaluations'], 0
     rows = {}
+    monitor = opt.FailureMonitor(settings.get('failure_policy'))
+    stop_workers = Event()
     started = time.perf_counter()
     def mapped(function, vectors):
         nonlocal count
@@ -236,16 +332,21 @@ def main(args):
         available = min(len(vectors), budget-count)
         tasks = [(count+i+1, vector) for i, vector in enumerate(vectors[:available])]
         batches = [tasks[i:i+args.candidates_per_worker] for i in range(0, len(tasks), args.candidates_per_worker)]
-        futures = [pool.submit(launch_batch, output, batch, args.timeout) for batch in batches]
+        futures = [pool.submit(launch_batch, output, batch, args.timeout, stop_event=stop_workers) for batch in batches]
         for future in as_completed(futures):
             for row in future.result():
                 rows[row['index']] = row
                 counts = Counter(r['score_class'] for r in rows.values())
                 write_json(output/'status.json', dict(completed=len(rows), budget=budget, classes=dict(counts),
-                           best_score=min(r['score'] for r in rows.values()), latest_index=row['index']))
+                           failure_kinds=dict(Counter(r.get('failure_details', {}).get('kind')
+                               for r in rows.values() if r.get('failure_details'))),
+                           best_score=min(r['score'] for r in rows.values()), latest_index=row['index']), optional=True)
                 print(f"{row['index']}/{budget}: {row['score_class']} score={row['score']:.7g} "
                       f"apogee={row.get('apogee')} wall={row['wall_seconds']:.1f}s", flush=True)
         count += available
+        # Observe in candidate order, not nondeterministic worker completion order.
+        for index, _ in tasks:
+            monitor.observe(rows[index])
         if available < len(vectors):
             raise opt.EvaluationBudget
         return [rows[i]['score'] for i, _ in tasks]
@@ -267,6 +368,13 @@ def main(args):
                 generation = result.nit
             except opt.EvaluationBudget:
                 pass
+            except (Exception, KeyboardInterrupt) as error:
+                stop_workers.set()
+                write_json(output/'stopped.json', dict(reason=str(error), evaluations=count,
+                           failure_details=failure_details(error, phase='coordinator'),
+                           generation=generation, seed=settings['seed'],
+                           resume='Replay saved candidate results with unchanged settings and source fingerprints.'))
+                raise
     ordered = [rows[i] for i in sorted(rows)]
     (output/'evaluations.jsonl').write_text(''.join(json.dumps(r, allow_nan=False)+'\n' for r in ordered))
     best = min(ordered, key=lambda r: r['score'])
@@ -293,6 +401,9 @@ def main(args):
         if verified:
             (output/'verified.yaml').write_text(yaml.safe_dump(verify_cfg, sort_keys=False))
     summary = dict(evaluations=len(ordered), counts=dict(Counter(r['termination'] for r in ordered)),
+                   failure_kinds=dict(Counter(r['failure_details']['kind'] for r in ordered if r.get('failure_details'))),
+                   recovered_native_candidates=sum(bool(r.get('worker_attempts')) and r['score_class'] != 'unresolved'
+                                                   for r in ordered),
                    generations=generation,
                    stop='evaluation budget exhausted' if count >= budget else 'generation budget exhausted',
                    classes=dict(Counter(r['score_class'] for r in ordered)), accepted=len(accepted),

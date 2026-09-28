@@ -178,6 +178,8 @@ simulation:
   t_end: 300.0
 tanks:
   fuel_tank:
+    thermal:
+      model: None
     ellipse_ratio: 1.75
     material: aluminum_6061
     passthrough_diameter: 0.1016
@@ -186,6 +188,8 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   ox_tank:
+    thermal:
+      model: None
     ellipse_ratio: 1.75
     material: aluminum_6061
     passthrough_diameter: 0.03175
@@ -194,6 +198,8 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   press_tank:
+    thermal:
+      model: None
     design_pressure: 1.3684e7
     ellipse_ratio: 1.75
     material: 1018_carbon_steel
@@ -202,18 +208,10 @@ tanks:
     volume_liters: 20.0
     wall_thickness: 0.0032
 thermal:
-  external_heating: false
   initial_temperature: 288.15
   material_overrides:
     fiberglass:
       specific_heat: 800.0
-  nodes:
-    fuel_tank:
-      insulated: false
-    ox_tank:
-      insulated: false
-    press_tank:
-      insulated: true
   sink_temperature: 288.15
 vehicle:
   OMLD: 0.33655

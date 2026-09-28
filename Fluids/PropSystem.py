@@ -7,6 +7,7 @@ from constraints import DesignInfeasible
 from Fluids.pump_curve import scaled_pump_curve
 from Fluids.design import initial_conditions, pump_definition, size_electric_pump
 from Fluids.templates import load_template
+from Fluids.heat_sources import thermal_model
 
 from .FluidNetwork import FluidNetwork
 from Fluids import FluidsDef
@@ -43,6 +44,8 @@ class PropSystem:
 
     def __init__(self, cfg, tanks, fluid_properties=None, combustion_properties=None):
         self.design_config = deepcopy(cfg)
+        if {'external_heating', 'nodes'} & self.design_config.get('thermal', {}).keys():
+            raise ValueError('Select thermal.model per dynamic model instead of legacy global heating flags')
         self.cfg = self.design_config["prop_system"]
         self.template = load_template(self.design_config)
         self.cfg["template"] = self.template
@@ -101,6 +104,10 @@ class PropSystem:
                 used.append(tank_id)
                 state = deepcopy(self.initial_states[tank_id])
                 node.update(geometry=geometries[tank_id], state0=state)
+                if 'thermal' in self.tank_definitions.get(tank_id, {}):
+                    if 'thermal' in node:
+                        raise ValueError(f'Duplicate thermal configuration for tank {tank_id!r}')
+                    node['thermal'] = deepcopy(self.tank_definitions[tank_id]['thermal'])
                 if kind == "pressurant_tank":
                     node["fluid"] = state["fluid"]
                 else:
@@ -641,6 +648,16 @@ class PropSystem:
         boundaries[self.ambient_id] = {"P": float(atm.p)}
 
         event_start = len(self.network.events)
+        heat_rate = dict(heat_rate or {})
+        aero_nodes = {key for key, node in self.node_definitions.items()
+                      if thermal_model(node.get('thermal')) == 'Aeroheating'}
+        if set(heat_rate) - aero_nodes:
+            raise ValueError('External heat rates require Aeroheating on the receiving node')
+        for key in aero_nodes - heat_rate.keys():
+            if dt is None or dt == 0:
+                heat_rate[key] = {}  # Initial fluid snapshot precedes the first wall trial.
+            else:
+                raise ValueError(f'Aeroheating node {key!r} requires wall heat rates')
         result = self.network.update(
             dt=dt,
             bcs=boundaries,

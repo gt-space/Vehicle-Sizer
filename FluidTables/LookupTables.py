@@ -8,10 +8,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 import h5py
 import numpy as np
-
-
-class LookupBoundsError(ValueError):
-    """A table query lies outside its declared coordinate axes."""
+from errors import LookupBoundsError
 
 
 def _json_attribute(attributes: h5py.AttributeManager, name: str) -> Any:
@@ -188,7 +185,9 @@ class LookupTable:
                     self._warned_bounds.add(key)
                 raise LookupBoundsError(
                     f"Coordinate '{axis_name}'={coordinate} is outside table "
-                    f"'{self.name}' bounds [{axis[0]}, {axis[-1]}]"
+                    f"'{self.name}' bounds [{axis[0]}, {axis[-1]}]",
+                    table=self.name, axis=axis_name, value=float(coordinate),
+                    lower=float(axis[0]), upper=float(axis[-1]),
                 )
             upper_index = int(np.searchsorted(axis, coordinate))
             if upper_index < len(axis) and axis[upper_index] == coordinate:

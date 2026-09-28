@@ -70,9 +70,6 @@ def natural_convection_htc(
 class WetNodeModel(DryNodeModel):
     """Wall coupled to one bulk fluid temperature per contacting phase."""
 
-    def __init__(self, insulated: bool = False) -> None:
-        self.insulated = bool(insulated)
-
     def _phases(self, node, fluid_out: FluidOut):
         matches = [
             (fluid_node_id, output)
@@ -116,36 +113,23 @@ class WetNodeModel(DryNodeModel):
     ):
         fluid_node_id, phases, labels = self._phases(node, fluid_out)
         fluid_T = np.asarray([phases[phase]["T"] for phase in labels], dtype=float)
-        active_h = np.zeros(node.n)
-        grashof = np.zeros(node.n)
-        if not self.insulated:
-            required = ("rho", "mu", "k", "cp", "beta")
-            for phase, fluid in phases.items():
-                missing = [name for name in required if name not in fluid]
-                if missing:
-                    raise ValueError(
-                        f"Thermal node {node.id!r} phase {phase!r} is missing "
-                        f"properties {missing}"
-                    )
-            widths = np.diff(node.cell_edges)
-            phase_length = {
-                phase: float(np.sum(widths[labels == phase])) for phase in phases
-            }
-            length = np.asarray([phase_length[phase] for phase in labels])
-            properties = {
-                name: np.asarray([phases[phase][name] for phase in labels], dtype=float)
-                for name in required
-            }
-            active_h, grashof = natural_convection_htc(
-                wall_T - fluid_T,
-                axial_specific_force,
-                length,
-                properties["rho"],
-                properties["mu"],
-                properties["k"],
-                properties["cp"],
-                properties["beta"],
-            )
+        required = ("rho", "mu", "k", "cp", "beta")
+        for phase, fluid in phases.items():
+            missing = [name for name in required if name not in fluid]
+            if missing:
+                raise ValueError(
+                    f"Thermal node {node.id!r} phase {phase!r} is missing properties {missing}"
+                )
+        widths = np.diff(node.cell_edges)
+        phase_length = {phase: float(np.sum(widths[labels == phase])) for phase in phases}
+        length = np.asarray([phase_length[phase] for phase in labels])
+        properties = {name: np.asarray([phases[phase][name] for phase in labels], dtype=float)
+                      for name in required}
+        active_h, grashof = natural_convection_htc(
+            wall_T - fluid_T, axial_specific_force, length,
+            properties["rho"], properties["mu"], properties["k"],
+            properties["cp"], properties["beta"],
+        )
         conductance = np.zeros(node.n)
         active = active_h > 0.0
         area = node.internal_area[active]

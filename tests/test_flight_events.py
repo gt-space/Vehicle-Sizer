@@ -190,7 +190,7 @@ def test_apogee_is_localized_before_reversed_airflow_query(monkeypatch):
 @pytest.mark.parametrize('angle', [-16., 16.])
 def test_aoa_exceedance_is_a_signed_operating_constraint(monkeypatch, angle):
     from constraints import OperatingInfeasible, finalize
-    from Fluids.errors import TrialDomainError
+    from errors import TrialDomainError
     from simulation_types import KinematicsState, SimResult
     sim = flight(monkeypatch)
     kin = KinematicsState(t=2., dt=1., x=0., h=10., vx=0., vz=10.,

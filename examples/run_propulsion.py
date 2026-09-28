@@ -1,4 +1,4 @@
-"""Run a table-backed SUNDIALS propulsion config at fixed ambient pressure, without flight/thermals."""
+"""Run fixed-ambient propulsion with prescribed heating, but no aeroheating wall solver."""
 import argparse
 from dataclasses import asdict
 import json
@@ -13,6 +13,7 @@ import yaml
 from Fluids.PropSystem import PropSystem
 from Vehicle.Vehicle import Vehicle
 from FluidTables.PropertyModels import TablePureFluidPropertySource, TableCombustionPropertySource
+from Fluids.heat_sources import thermal_model
 
 
 def main():
@@ -36,6 +37,9 @@ def main():
     combustion = TableCombustionPropertySource(ROOT / combustion_cfg['lookup_file'], combustion_cfg['nfz'])
     vehicle = Vehicle(cfg, pure)
     with PropSystem(cfg, vehicle.tanks, pure, combustion) as propulsion:
+        if any(thermal_model(node.get('thermal')) == 'Aeroheating'
+               for node in propulsion.node_definitions.values()):
+            parser.error('Aeroheating requires the flight/wall solver; use None or DensityPowerLaw here')
         atm = SimpleNamespace(p=args.ambient_pressure)
         propulsion.update(None, atm, {})
         while propulsion.network.time < args.duration:

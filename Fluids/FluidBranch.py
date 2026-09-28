@@ -12,7 +12,7 @@ from math import copysign, isfinite, sqrt
 import numpy as np
 
 from .FluidState import BranchState
-from .errors import TrialDomainError
+from errors import TrialDomainError
 
 
 def _port_pressure(node, port):

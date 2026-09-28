@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import time
 import traceback
+from collections import Counter, deque
+from errors import failure_details, SearchFailureLimit, LookupBoundsError
 
 from scipy.optimize._differentialevolution import DifferentialEvolutionSolver
 import yaml
@@ -181,6 +183,48 @@ class EvaluationBudget(Exception):
     pass
 
 
+class FailureMonitor:
+    """Candidate-ordered circuit breaker; physical/domain rejects are not solver failures."""
+    def __init__(self, policy=None):
+        policy = policy or {}
+        self.consecutive_limit = policy.get('consecutive_limit', 5)
+        self.window = policy.get('window', 50)
+        self.rate_limit = policy.get('rate_limit', .2)
+        self.repeated_limit = policy.get('repeated_limit', 3)
+        for value in (self.consecutive_limit, self.window, self.repeated_limit):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError('Failure monitor limits must be positive integers')
+        if not 0 < self.rate_limit <= 1:
+            raise ValueError('Failure rate limit must be in (0, 1]')
+        self.recent = deque(maxlen=self.window)
+        self.consecutive = 0
+        self.fingerprints = Counter()
+
+    def observe(self, row):
+        detail = row.get('failure_details') or {}
+        kind = detail.get('kind', row.get('termination'))
+        native_attempts = [attempt for attempt in row.get('worker_attempts', [])
+                           if attempt['kind'] == 'native_crash']
+        if native_attempts:
+            kind = 'native_crash'
+        failed = kind in {'solver_nonconvergence', 'residual_acceptance_failure',
+                          'trial_domain_failure', 'native_crash', 'wall_timeout',
+                          'worker_error', 'unexpected_error'}
+        self.recent.append(failed)
+        self.consecutive = self.consecutive + 1 if failed else 0
+        if kind in {'unexpected_error', 'worker_error', 'native_crash'}:
+            signature = detail.get('fingerprint', kind)
+            if native_attempts:
+                signature = f"native_crash:{native_attempts[-1]['exit_code']}"
+            self.fingerprints[signature] += 1
+            if self.fingerprints[signature] >= self.repeated_limit:
+                raise SearchFailureLimit(f'Repeated {kind}: {signature}')
+        if self.consecutive >= self.consecutive_limit:
+            raise SearchFailureLimit(f'{self.consecutive} consecutive numerical/worker failures')
+        if len(self.recent) == self.window and sum(self.recent) / self.window > self.rate_limit:
+            raise SearchFailureLimit(f'Numerical/worker failure rate exceeds {self.rate_limit:.0%} in last {self.window} candidates')
+
+
 class GenerationBudgetSolver(DifferentialEvolutionSolver):
     """Run to maxiter/evaluation budget; equal rejection scores are not convergence."""
 
@@ -198,6 +242,7 @@ class Evaluator:
         self.bounds = [settings["bounds"][name] for name in self.names]
         self.count = 0
         self.best = None
+        self.failure_monitor = FailureMonitor(settings.get('failure_policy'))
 
     def decode(self, values):
         if len(values) != len(self.paths):
@@ -334,26 +379,24 @@ class Evaluator:
             raise EvaluationBudget
         self.count += 1
         started = time.perf_counter()
-        cfg, failure = None, None
+        cfg, failure, details = None, None, None
         try:
             cfg = self.decode(values)
             result, redundant = self.evaluate(cfg)
         except GeometryError as error:
             result = rejection({k: ConstraintRecord(v, "optimizer", "sizing", "m") for k, v in error.constraints.items()})
             redundant = ()
-        except EvaluationFailure as error:
-            if error.phase not in ("runtime", "flight initialization"):
-                raise
-            cause = error
-            while cause.__cause__ is not None:
-                cause = cause.__cause__
-            if isinstance(cause, (KeyError, TypeError, AttributeError, AssertionError)):
+        except (EvaluationFailure, LookupBoundsError) as error:
+            phase = getattr(error, 'phase', 'sizing')
+            details = failure_details(error, phase=phase)
+            if details['fatal'] or (phase not in ("runtime", "flight initialization")
+                                    and details['kind'] != 'table_domain_exceeded'):
                 raise
             failure = traceback.format_exc()
-            result = error.partial_result or SimResult()
+            result = getattr(error, 'partial_result', None) or SimResult()
             result = deepcopy(result)
             result.apogee = None
-            result.termination = "numerical_failure"
+            result.termination = details['kind']
             redundant = ()
             (self.output / f"failed_{self.count:04d}.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
             (self.output / f"failure_{self.count:04d}.txt").write_text(failure)
@@ -367,8 +410,10 @@ class Evaluator:
         variables = ({name: get_path(cfg, path) for name, path in self.paths.items()} if cfg is not None else {})
         entry = dict(evaluation=self.count, variables=variables,
                      search_coordinates=list(map(float, values)), score_class=candidate_class(result), failure=failure,
+                     failure_details=details,
                      score=score, accepted=result.accepted, mass=result.initial_mass,
-                     termination=result.termination, apogee=result.apogee, dry_mass=result.dry_mass,
+                     termination=result.termination, warnings=result.warnings,
+                     apogee=result.apogee, dry_mass=result.dry_mass,
                      burn_duration=result.burn_duration, violations=contributions,
                      constraints={k: asdict(v) for k, v in result.constraint_records.items()},
                      elapsed_seconds=time.perf_counter() - started)
@@ -379,6 +424,12 @@ class Evaluator:
             (self.output / "best.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
             (self.output / "best.json").write_text(json.dumps(entry, indent=2, allow_nan=False))
         print(f"{self.count}: score={score:.6g}, accepted={result.accepted}, {result.termination}", flush=True)
+        try:
+            self.failure_monitor.observe(entry)
+        except SearchFailureLimit as error:
+            (self.output / 'stopped.json').write_text(json.dumps(dict(
+                reason=str(error), evaluations=self.count, last_failure=details), indent=2))
+            raise
         return score
 
 

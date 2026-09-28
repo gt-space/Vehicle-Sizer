@@ -19,6 +19,7 @@ from Vehicle.Engine import Engine
 from Vehicle.Vehicle import Vehicle
 from Thermals import ThermalNetwork
 from simulation_types import SimResult
+from warning import collect_warnings
 from constraints import (GeometryError, EvaluationFailure, OperatingInfeasible,
                          configured_limits, finalize, merge_margins)
 
@@ -79,23 +80,30 @@ def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
              progress=None) -> SimResult:
     """Evaluate a fresh candidate; expected rejects return, unexpected failures raise.
 
-    EvaluationFailure deliberately escapes to stop an optimizer. Its cause and
-    copied config allow reproduction without printing or writing files here.
+    EvaluationFailure retains a typed cause and copied configuration. The caller
+    decides whether the failure ends this candidate or the whole search.
     """
     context = {"phase": "configuration", "flight": None, "propulsion": None}
     candidate = deepcopy(cfg)
-    try:
-        return _simulate(candidate, pure_properties=pure_properties,
-                         combustion_properties=combustion_properties,
-                         aero_model=aero_model, record_history=record_history,
-                         compute_loads=compute_loads, progress=progress, context=context)
-    except Exception as error:
-        raise EvaluationFailure(context["phase"], candidate,
-                                getattr(context["flight"], "result", None)) from error
-    finally:
-        propulsion = context["propulsion"]
-        if propulsion is not None:
-            propulsion.close()
+    with collect_warnings() as cautions:
+        result = None
+        try:
+            result = _simulate(candidate, pure_properties=pure_properties,
+                               combustion_properties=combustion_properties,
+                               aero_model=aero_model, record_history=record_history,
+                               compute_loads=compute_loads, progress=progress, context=context)
+            return result
+        except Exception as error:
+            result = getattr(context["flight"], "result", None)
+            raise EvaluationFailure(context["phase"], candidate, result) from error
+        finally:
+            try:
+                propulsion = context["propulsion"]
+                if propulsion is not None:
+                    propulsion.close()
+            finally:
+                if result is not None:
+                    result.warnings = cautions
 
 
 def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
@@ -104,7 +112,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
 
     Reuse injected read-only property sources/aero_model across candidates to
     avoid reloading tables. Expected construction and converged operating-limit
-    rejections become partial results; unresolved solver errors remain fatal.
+    rejections become partial results; unresolved solver errors escape with context.
     """
     limits = configured_limits(cfg)
     if (pure_properties is None) != (combustion_properties is None):
@@ -136,10 +144,13 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
                          final_pitch_rate=0.0)
         return finalize(result, limits)
     context["phase"] = "flight initialization"
-    heating = cfg.get("thermal", {}).get("external_heating", False)
-    if not isinstance(heating, bool):
-        raise ValueError("thermal.external_heating must be true or false")
-    thermal = ThermalNetwork(cfg, vehicle) if heating else None
+    from Fluids.heat_sources import thermal_model
+    if {'external_heating', 'nodes'} & cfg.get('thermal', {}).keys():
+        raise ValueError('Select thermal.model per dynamic model instead of legacy global heating flags')
+    selections = {node.get('tank_id', key): node.get('thermal', {})
+                  for key, node in propulsion.node_definitions.items()
+                  if thermal_model(node.get('thermal')) == 'Aeroheating'}
+    thermal = ThermalNetwork(cfg, vehicle, selections=selections) if selections else None
     environment = Environment(h_max=float(cfg["environment"]["max_altitude"]),
                               dh=float(cfg["environment"]["altitude_step"]))
     if aero_model is None:

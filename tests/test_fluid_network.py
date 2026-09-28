@@ -168,12 +168,12 @@ def test_failed_preview_and_commit_preserve_accepted_state():
         y, dy, time = net.y.copy(), net.ydot.copy(), net.time
         def broken(t):
             raise ValueError('intentional boundary failure')
-        with pytest.raises(RuntimeError, match='intentional boundary failure'):
+        with pytest.raises(ValueError, match='intentional boundary failure'):
             net.update(1., bcs={'ambient': broken}, commit=False)
         np.testing.assert_array_equal(net.y, y)
         assert net.session is not None
         session = net.session
-        with pytest.raises(RuntimeError, match='intentional boundary failure'):
+        with pytest.raises(ValueError, match='intentional boundary failure'):
             net.update(1., bcs={'ambient': broken})
         np.testing.assert_array_equal(net.y, y)
         np.testing.assert_array_equal(net.ydot, dy)
@@ -543,7 +543,7 @@ def test_boundary_changes_reuse_allocations_but_reinitialize_history(monkeypatch
 @pytest.mark.parametrize('persistent,error_type,attempts', [
     (False, 'residual', 2), (True, 'residual', 3), (True, 'other', 1)])
 def test_initialization_retries_only_residual_failure_and_restores_state(monkeypatch, persistent, error_type, attempts):
-    from Fluids.errors import ResidualAcceptanceError
+    from errors import ResidualAcceptanceError
     original, calls = FluidNetwork._accept, []
     error = ResidualAcceptanceError if error_type == 'residual' else ValueError
     def accept(net):
@@ -569,7 +569,7 @@ def test_initialization_retries_only_residual_failure_and_restores_state(monkeyp
 
 
 def test_accepted_residual_retry_restores_events_and_retains_tighter_integration(monkeypatch):
-    from Fluids.errors import ResidualAcceptanceError
+    from errors import ResidualAcceptanceError
     original = FluidNetwork._accept
     failures = []
     def accept(net):
@@ -595,7 +595,7 @@ def test_accepted_residual_retry_restores_events_and_retains_tighter_integration
 
 
 def test_accepted_residual_retry_is_bounded_and_rolls_back(monkeypatch):
-    from Fluids.errors import ResidualAcceptanceError
+    from errors import ResidualAcceptanceError
     attempts = []
     original = FluidNetwork._accept
     def accept(net):
@@ -607,8 +607,9 @@ def test_accepted_residual_retry_is_bounded_and_rolls_back(monkeypatch):
         net.initialize()
         before = net._checkpoint()
         monkeypatch.setattr(FluidNetwork, '_accept', accept)
-        with pytest.raises(RuntimeError, match='after 2 retries'):
+        with pytest.raises(ResidualAcceptanceError, match='persistent closure failure') as failure:
             net.update(1.)
+        assert len(failure.value.attempts) == 3
         assert len(attempts) == 3 and net.time == 0
         np.testing.assert_array_equal(net.y, before['y'])
         assert net.effective_rtol == 1e-9 and net.events == [] and net.session is None

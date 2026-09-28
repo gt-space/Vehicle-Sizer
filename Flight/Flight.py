@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from Fluids.PropSystem import PropSystem
-from Fluids.errors import TrialDomainError
+from errors import TrialDomainError
 from .flight_forces import gravity
 from .loads import Loads
 from simulation_types import SimResult

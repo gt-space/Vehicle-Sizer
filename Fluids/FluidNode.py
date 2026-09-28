@@ -11,7 +11,7 @@ from math import isfinite
 import numpy as np
 
 from .FluidState import BranchState, FluidState, NodeState
-from .errors import TrialDomainError
+from errors import TrialDomainError
 
 
 Adjacent = list[tuple[float, BranchState]]

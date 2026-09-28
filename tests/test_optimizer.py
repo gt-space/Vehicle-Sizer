@@ -129,6 +129,31 @@ def test_logging_best_budget_and_unresolved_failure(settings, tmp_path):
     assert json.loads(rows[1])['score_class'] == 'unresolved'
 
 
+@pytest.mark.parametrize('kind', ['table', 'solver', 'residual', 'unexpected', 'configuration', 'io'])
+def test_typed_failures_are_reported_or_stop(settings, tmp_path, kind):
+    from errors import LookupBoundsError, SolverConvergenceError, ResidualAcceptanceError
+    causes = dict(table=LookupBoundsError('outside'),
+                  solver=SolverConvergenceError('integration', -4, 1.),
+                  residual=ResidualAcceptanceError('closure'), unexpected=RuntimeError('unknown'),
+                  configuration=ValueError('invalid setting'), io=PermissionError('locked'))
+    cfg = load_config(settings['base_config'])
+    evaluator = opt.Evaluator(cfg, settings, None, None, None, tmp_path)
+    x = np.mean(evaluator.bounds, axis=1)
+    failure = EvaluationFailure('runtime', cfg)
+    failure.__cause__ = causes[kind]
+    with patch.object(evaluator, 'evaluate', side_effect=failure):
+        if kind in ('configuration', 'io'):
+            with pytest.raises(EvaluationFailure):
+                evaluator(x)
+            assert not (tmp_path/'evaluations.jsonl').exists()
+        else:
+            assert evaluator(x) == 3.
+            entry = json.loads((tmp_path/'evaluations.jsonl').read_text())
+            expected = dict(table='table_domain_exceeded', solver='solver_nonconvergence',
+                            residual='residual_acceptance_failure', unexpected='unexpected_error')
+            assert entry['termination'] == entry['failure_details']['kind'] == expected[kind]
+
+
 def test_real_scipy_budget_and_no_false_winner(settings, tmp_path):
     settings['max_evaluations'] = 3
     result = opt.rejection({'engine.length': ConstraintRecord(-.01, '', 'sizing', 'm')})

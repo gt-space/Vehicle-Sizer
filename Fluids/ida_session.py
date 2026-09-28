@@ -10,7 +10,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .errors import TrialDomainError
+from errors import (TrialDomainError, LookupBoundsError, ModelDomainExceeded,
+                    SolverConvergenceError, SolverSetupError)
 
 
 @dataclass
@@ -84,7 +85,15 @@ class IdaSession:
     def _check(self, status, operation):
         if status < 0:
             error = self.callback_error or self.last_trial_error
-            raise RuntimeError(f"{operation} failed with SUNDIALS status {status}") from error
+            if isinstance(error, LookupBoundsError):
+                raise ModelDomainExceeded(str(error), time=self.time) from error
+            if self.callback_error is not None:
+                raise self.callback_error
+            # Only solve/IC return codes use the IDA convergence-status namespace.
+            if operation in ('integration', 'consistent initialization') and status in (-1, -2, -3, -4, -9, -11, -12, -13, -14):
+                raise SolverConvergenceError(operation, status, self.time,
+                                             retryable=status in (-3, -4, -11, -13)) from error
+            raise SolverSetupError(f"{operation} failed with SUNDIALS status {status}") from error
 
     def _residual_callback(self, t, y, ydot, out, _):
         self.callback_calls += 1
@@ -94,8 +103,9 @@ class IdaSession:
             self.residual(t, view(y), view(ydot), result)
             if not np.isfinite(result).all():
                 raise TrialDomainError("Non-finite assembled residual")
+            self.last_trial_error = None
             return 0
-        except TrialDomainError as error:
+        except (TrialDomainError, LookupBoundsError) as error:
             self.recoverable_errors += 1
             self.last_trial_error = error
             return 1
@@ -119,6 +129,7 @@ class IdaSession:
         """Hold differential y fixed; correct algebraic y and differential ydot."""
         if not np.isfinite(horizon) or horizon <= 0:
             raise ValueError("Initialization horizon must be positive and finite")
+        self.callback_error = self.last_trial_error = None
         self._check(self.idas.IDACalcIC(self.mem, self.idas.IDA_YA_YDP_INIT,
                                        self.time + horizon), "consistent initialization")
         self._check(self.idas.IDAGetConsistentIC(self.mem, self.y, self.ydot), "consistent state retrieval")
@@ -136,6 +147,7 @@ class IdaSession:
         if not np.isfinite(target) or target <= self.time:
             raise ValueError("Target must be finite and later than the current time")
         self._check(self.idas.IDASetStopTime(self.mem, target), "stop time")
+        self.callback_error = self.last_trial_error = None
         flag, reached = self.idas.IDASolve(self.mem, target, self.y, self.ydot, self.idas.IDA_NORMAL)
         self._check(flag, "integration")
         self.time = reached

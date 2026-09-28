@@ -99,6 +99,7 @@ def inputs():
 @patch("Thermals.ThermalNode.heating.get_body_heating", return_value=np.zeros(4))
 def test_wet_node_rounds_fill_to_cells_and_commits_once(*_):
     cfg = {
+        "tanks": {"tank": {"thermal": {"model": "Aeroheating"}}},
         "thermal": {
             "initial_temperature": 300.0,
             "sink_temperature": 300.0,
@@ -134,7 +135,7 @@ def test_wet_node_rounds_fill_to_cells_and_commits_once(*_):
 
 @patch("Thermals.ThermalNode.heating.get_recovery_temperature", return_value=300.0)
 @patch("Thermals.ThermalNode.heating.get_body_heating", return_value=np.zeros(4))
-def test_insulated_wet_node_uses_the_universal_zero_watt_interface(*_):
+def test_omitted_model_builds_no_wall_nodes(*_):
     cfg = {
         "thermal": {
             "initial_temperature": 300.0,
@@ -145,14 +146,11 @@ def test_insulated_wet_node_uses_the_universal_zero_watt_interface(*_):
                     "thermal_conductivity": 150.0,
                 }
             },
-            "nodes": {"tank": {"insulated": True}},
         }
     }
     output = ThermalNetwork(
         cfg, SimpleNamespace(sections=[WetSection()])
     ).trial(*inputs(), fluid_output())
 
-    assert output.heat_rates() == {"tank": {"liquid": 0.0, "gas": 0.0}}
-    np.testing.assert_array_equal(
-        output.node["tank"]["cells"]["wall_T"], np.full(4, 300.0)
-    )
+    assert output.heat_rates() == {}
+    assert output.node == {}

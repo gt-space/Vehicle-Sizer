@@ -14,9 +14,10 @@ from .FluidNode import (BoundaryComponent, JunctionComponent, VolumeComponent,
 from .FluidBranch import (LossComponent, PumpComponent, RegulatorComponent,
                           BangBangValveComponent, NozzleComponent)
 from .FluidState import NodeState
-from .errors import TrialDomainError, ResidualAcceptanceError
+from errors import TrialDomainError, ResidualAcceptanceError, SolverConvergenceError
 from .ida_session import IdaSession, IdaStep
 from .jacobian import install as install_jacobian
+from .heat_sources import build_heat_source, evaluate_heat, NoHeating, Aeroheating
 
 
 @dataclass
@@ -82,6 +83,11 @@ class FluidNetwork:
         self.effective_max_step = self.options['max_step']
         self.retry_diagnostics = []
         self.nodes = {k: self._make_node(k, v) for k, v in nodes.items()}
+        self.heat_sources = {key: build_heat_source(definition.get('thermal'), definition.get('geometry'))
+                             for key, definition in nodes.items()}
+        for key, source in self.heat_sources.items():
+            if not isinstance(source, NoHeating) and not isinstance(self.nodes[key], (VolumeComponent, JunctionComponent)):
+                raise ValueError(f'Node {key!r} does not support prescribed energy input')
         self.branches = {k: self._make_branch(k, v) for k, v in branches.items()}
         if set(self.nodes) & set(self.branches):
             raise ValueError('Node and branch IDs must be distinct')
@@ -333,14 +339,20 @@ class FluidNetwork:
         return {key: {name: ydot[index] for name, index in indices}
                 for key, indices in self._trial_derivatives}
 
+    def _heat_for(self, key, state, time):
+        source = self.heat_sources[key]
+        if key in self.heat_rate:
+            if not isinstance(source, (NoHeating, Aeroheating)):
+                raise ValueError(f'Conflicting heat sources for node {key!r}')
+            source = self.heat_rate[key]
+        return evaluate_heat(source, state, time)
+
     def residual(self, t, y, ydot, out):
         try:
             nodes, branches, adjacent = self.evaluate_trial(t, y)
             derivatives = self._derivatives(ydot)
             for key, node in self.nodes.items():
-                heat = self.heat_rate.get(key, {})
-                if callable(heat):
-                    heat = heat(t)
+                heat = self._heat_for(key, nodes[key], t)
                 out[self.equation_slices[key]] = node.residual(nodes[key], derivatives[key], adjacent[key], heat_rate=heat)
             for key, branch in self.branches.items():
                 if key in self.regulator_modes and branch.active:
@@ -557,11 +569,21 @@ class FluidNetwork:
             except ResidualAcceptanceError as error:
                 if attempt == self.options['residual_retries']:
                     self.restore(checkpoint)
+                    error.attempts = failures + [dict(diagnostic=str(error), exhausted=True)]
                     raise
                 floor = min(self.options['retry_rtol_floor'], self.effective_rtol)
                 self.effective_rtol = max(floor, self.effective_rtol * self.options['retry_rtol_factor'])
                 failures.append(dict(diagnostic=str(error), initialization_retry=True,
                                      rtol=self.effective_rtol, max_step=self.effective_max_step))
+            except SolverConvergenceError as error:
+                horizon = self.options['initialization_horizon']
+                self.restore(checkpoint)
+                if not error.retryable or attempt == self.options['residual_retries']:
+                    error.attempts = failures + [dict(diagnostic=str(error), exhausted=True)]
+                    raise
+                self.options['initialization_horizon'] = horizon * .5
+                failures.append(dict(diagnostic=str(error), initialization_retry=True,
+                                     horizon=self.options['initialization_horizon']))
             except Exception:
                 self.restore(checkpoint)
                 raise
@@ -728,9 +750,7 @@ class FluidNetwork:
             names = node.differential_variable_names
             if not names:
                 continue
-            heat = self.heat_rate.get(key, {})
-            if callable(heat):
-                heat = heat(self.time)
+            heat = self._heat_for(key, nodes[key], self.time)
             zero = dict.fromkeys(names, 0.)
             rhs = -node.residual(nodes[key], zero, adjacent[key], heat_rate=heat)[:len(names)]
             matrix = np.column_stack([node.residual(nodes[key], dict(zip(names, column)))[:len(names)]
@@ -754,6 +774,8 @@ class FluidNetwork:
                 if not -1e-8 <= fraction <= 1 + 1e-8:
                     raise RuntimeError(f'Invalid nozzle area split at {key}')
         self.state = NetworkState({k: n.output_state(nodes[k]) for k, n in self.nodes.items()}, deepcopy(branches))
+        for key, state in self.state.nodes.items():
+            state.properties['heat_rate'] = self._heat_for(key, nodes[key], self.time)
         if self.constraint_monitor:
             for name, margin in self.constraint_monitor(deepcopy(self.state)).items():
                 if margin < self.constraints.get(name, np.inf):
@@ -803,14 +825,17 @@ class FluidNetwork:
                 return output
             except Exception as error:
                 diagnostic = f'Fluid network failed at t={self.time:g}: {error}'
-                retry = (isinstance(error, ResidualAcceptanceError) and duration > 0
+                retry = ((isinstance(error, ResidualAcceptanceError) or
+                          isinstance(error, SolverConvergenceError) and error.retryable) and duration > 0
                          and attempt < self.options['residual_retries'])
                 self.restore(checkpoint)
                 self.last_diagnostic = diagnostic
                 if not retry:
-                    raise RuntimeError(f'{diagnostic} (after {attempt} retries)') from error
-                floor = min(self.options['retry_rtol_floor'], rtol)
-                rtol = max(floor, rtol * self.options['retry_rtol_factor'])
+                    error.attempts = failures + [dict(diagnostic=diagnostic, exhausted=True)]
+                    raise
+                if isinstance(error, ResidualAcceptanceError):
+                    floor = min(self.options['retry_rtol_floor'], rtol)
+                    rtol = max(floor, rtol * self.options['retry_rtol_factor'])
                 max_step = min(max_step, duration * .1 * .5**attempt)
                 self.effective_rtol, self.effective_max_step = rtol, max_step
                 failures.append(dict(diagnostic=diagnostic, rtol=rtol, max_step=max_step))

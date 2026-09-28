@@ -8,13 +8,19 @@ import numpy as np
 from simulation_types import AeroOut, AtmosState, FluidOut, KinematicsState, ThermalOut
 from Vehicle.Material import MaterialProperties
 from .ThermalNode import DryNodeModel, ThermalNode, WetNodeModel
+from Fluids.heat_sources import thermal_model
 
 
 class ThermalNetwork:
     """Build and evaluate section-level arrays of independent axial wall cells."""
 
-    def __init__(self, cfg: Dict[str, Any], vehicle: Any) -> None:
+    def __init__(self, cfg: Dict[str, Any], vehicle: Any, selections=None) -> None:
         thermal_cfg = cfg.get("thermal", {})
+        if 'external_heating' in thermal_cfg or 'nodes' in thermal_cfg:
+            raise ValueError('Select thermal.model per dynamic model; legacy external_heating/nodes settings are unsupported')
+        if selections is None:
+            selections = {key: tank.get('thermal', {}) for key, tank in cfg.get('tanks', {}).items()}
+        selected = {key: value for key, value in selections.items() if thermal_model(value) == 'Aeroheating'}
         missing = {"initial_temperature", "sink_temperature"}.difference(thermal_cfg)
         if missing:
             raise ValueError(f"Thermal network requires explicit temperatures: {sorted(missing)}")
@@ -26,7 +32,6 @@ class ThermalNetwork:
         if not np.isfinite([initial_T, sink_T]).all() or min(initial_T, sink_T) <= 0:
             raise ValueError("Thermal temperatures must be finite and positive")
         overrides = thermal_cfg.get("material_overrides", {})
-        node_cfg = thermal_cfg.get("nodes", {})
         counts = defaultdict(int)
         self.nodes: Dict[str, ThermalNode] = {}
 
@@ -36,6 +41,8 @@ class ThermalNetwork:
                 kind = section.__class__.__name__.lower()
                 node_id = f"{kind}_{counts[kind]}"
                 counts[kind] += 1
+            if node_id not in selected:
+                continue
             material = MaterialProperties.from_name(section.wall_material)
             material_cfg = overrides.get(section.wall_material, {})
 
@@ -48,21 +55,24 @@ class ThermalNetwork:
                 return float(value)
 
             if hasattr(section, "tank_id"):
-                model = WetNodeModel(
-                    insulated=node_cfg.get(node_id, {}).get("insulated", False),
-                )
+                model = WetNodeModel()
             else:
                 model = DryNodeModel()
+            wall_temperature = float(selected[node_id].get('initial_wall_temperature', initial_T))
+            if not np.isfinite(wall_temperature) or wall_temperature <= 0:
+                raise ValueError(f'Invalid initial wall temperature for {node_id!r}')
             self.nodes[node_id] = ThermalNode(
                 node_id=node_id,
                 section=section,
                 model=model,
-                initial_T=initial_T,
+                initial_T=wall_temperature,
                 sink_T=sink_T,
                 density=material.density,
                 specific_heat=thermal_property("specific_heat"),
                 conductivity=thermal_property("thermal_conductivity"),
             )
+        if selected.keys() - self.nodes.keys():
+            raise ValueError(f'Aeroheating targets have no wall geometry: {sorted(selected.keys() - self.nodes.keys())}')
 
     def trial(
         self,
@@ -96,4 +106,4 @@ class ThermalNetwork:
 
     @property
     def wall_T(self) -> np.ndarray:
-        return np.concatenate([node.wall_T for node in self.nodes.values()])
+        return np.concatenate([node.wall_T for node in self.nodes.values()]) if self.nodes else np.array([])

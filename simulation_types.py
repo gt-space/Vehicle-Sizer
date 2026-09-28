@@ -124,6 +124,7 @@ class SimResult:
     final_pitch_angle: float = 0.0
     final_pitch_rate: float = 0.0
     termination: str = "time_limit"
+    warnings: list[dict] = field(default_factory=list)
     geometry_constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     history: Optional[list] = None
