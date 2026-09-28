@@ -853,12 +853,24 @@ class FlightSim:
                 loads = self._evaluate_loads(result, next_kin, end_atmosphere, end_aero,
                                              end_forces, end_engine_on)
             if record_history:
+                wind_x, wind_z = self.env.wind(next_kin.h)
+                _, _, airspeed, gamma_air, _ = self.flight_kinematics(
+                    next_kin,
+                    wind_x=wind_x,
+                    wind_z=wind_z,
+                )
                 state = {
                     "kinematics": next_kin,
                     "atmosphere": end_atmosphere,
                     "plant": end_plant,
                     "forces": end_forces,
                     "mass_properties": self.mass_properties(),
+                    "wind": {
+                        "wind_x": float(wind_x),
+                        "wind_z": float(wind_z),
+                        "airspeed": float(airspeed),
+                        "gamma_air": float(gamma_air),
+                    },
                     "engine_on": end_engine_on,
                     "on_rail": rail_mode,
                 }

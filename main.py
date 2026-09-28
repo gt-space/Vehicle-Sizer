@@ -20,6 +20,7 @@ def history_rows(history: list) -> list[dict]:
         speed = np.hypot(kin.vx, kin.vz)
         gamma = np.arctan2(kin.vz, kin.vx) if speed > 1.0e-8 else kin.theta
         atmosphere = state["atmosphere"]
+        wind = state["wind"]
         aero = state["plant"].aero
         propulsion = state["plant"].fluids.propulsion
         fluids = state["plant"].fluids
@@ -36,9 +37,14 @@ def history_rows(history: list) -> list[dict]:
             "speed_m_s": speed,
             "velocity_m_s": kin.vz,
 
+            "wind_x_m_s": wind["wind_x"],
+            "wind_z_m_s": wind["wind_z"],
+            "airspeed_m_s": wind["airspeed"],
+
             "acceleration_m_s2": forces["acceleration"],
 
             "flight_path_angle_deg": np.degrees(gamma),
+            "air_flight_path_angle_deg": np.degrees(wind["gamma_air"]),
             "pitch_angle_deg": np.degrees(kin.theta),
             "angle_of_attack_deg": np.degrees(kin.alpha),
 

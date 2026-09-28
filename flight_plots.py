@@ -134,8 +134,9 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     base_path.parent.mkdir(parents=True, exist_ok=True)
     paths = {name: _path(base_path, name) for name in (
         "pressure_ladder", "copv_blowdown", "tank_temperatures",
-        "propellant_mass", "pc_thrust", "kinematics", "trajectory", "axial_temperatures",
-        "bang_bang", "pressurant_mdot", "engine_mdot_mr", "mass_distribution",
+        "propellant_mass", "pc_thrust", "kinematics", "trajectory", "wind",
+        "axial_temperatures", "bang_bang", "pressurant_mdot", "engine_mdot_mr",
+        "mass_distribution",
         "axial_force_distribution", "normal_force_distribution",
     )}
     time = _series(rows, "time_s")
@@ -243,6 +244,17 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
         title="Flight trajectory",
     )
     _finish(figure, axis, paths["trajectory"])
+
+    figure, axis = plt.subplots(figsize=(8, 8))
+    altitude = _series(rows, "altitude_m")
+    axis.plot(_series(rows, "wind_x_m_s"), altitude, label="Wind x")
+    axis.plot(_series(rows, "wind_z_m_s"), altitude, label="Wind z")
+    axis.set(
+        xlabel="Wind velocity [m/s]",
+        ylabel="Altitude [m]",
+        title="Wind profile sampled along trajectory",
+    )
+    _finish(figure, axis, paths["wind"])
 
     thermal = history[0]["plant"].thermal
     if thermal is None:
