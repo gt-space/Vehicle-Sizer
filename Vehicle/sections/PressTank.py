@@ -18,8 +18,8 @@ class PressTank(Section):
         self.copv = copv
         self.length = self.copv.length
         self.set_grid()
-        self.wall_thickness = cfg["press_tank"]["airframe_wall_thickness"]
         self.wall_material = cfg["press_tank"]["airframe_material"]
+        self.wall_thickness = cfg["press_tank"]["airframe_wall_thickness"]
         self.emissivity = 0.85
 
     def get_fluid_geometry(self) -> PressTankGeometry:
@@ -55,16 +55,7 @@ class PressTank(Section):
         self.get_MOI()
 
     def _get_mount_mass(self) -> float:
-        mat = MaterialProperties.from_name(
-            self.cfg["press_tank"]["mount_material"]
-        )
-        sigma = mat.require("yield_strength")
-        P = self.copv.mass * 9.81 * 10.0
-        h = self.cfg["press_tank"]["mount_thickness"]
-        r = self.cfg["vehicle"]["OMLD"] * 0.5
-        L = r - self.cfg["press_tank"]["airframe_wall_thickness"]
-        w = 1.4 * (3 * P * L) / (2 * sigma * h**2)
-        return w * L * h * 4 * mat.density
+        return 1.25
 
     def _get_airframe_mass(self) -> float:
         t = self.cfg["press_tank"]["airframe_wall_thickness"]

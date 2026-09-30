@@ -37,22 +37,29 @@ class InterTank(Section):
     def get_mass(self):
         # Geometry still determines stiffness and the thermal shell distribution.
         self.stringer_thickness = self._get_stringer_thickness()
-        self.shell_mass = dist.uniform(self._get_clamshell_mass(), self.n)
+        self.shell_mass = dist.uniform(self._get_uniform_mass(), self.n)
         mass = self.mass_override
         if mass is None:
             density = MaterialProperties.from_name(self.cfg["inter_tank"]["stringer_material"]).density
-            stringer_mass = self.stringer_thickness**2 * self.length * self.stringer_count * density
+            unit_mass = self.cfg["inter_tank"].get("stringer_unit_mass")
+            if unit_mass is None:
+                unit_mass = self.stringer_thickness**2 * density
+            unit_mass = float(unit_mass)
+            if not np.isfinite(unit_mass) or unit_mass < 0.0:
+                raise ValueError("stringer_unit_mass must be finite and nonnegative")
+            stringer_mass = unit_mass * self.length * self.stringer_count
             mass = np.sum(self.shell_mass) + stringer_mass + self.feed_system_mass + self.avi_mass
         self.mass = dist.uniform(mass, self.n)
 
-    def _get_clamshell_mass(self) -> float:
+    def _get_uniform_mass(self) -> float:
         t = self.cfg["inter_tank"]["clamshell_wall_thickness"]
         r_o = self.cfg["vehicle"]["OMLD"] * 0.5
         r_i = r_o - t
         rho = MaterialProperties.from_name(
             self.cfg["inter_tank"]["clamshell_material"]
         ).density
-        return geo.annulus_volume(r_o, r_i, self.length) * rho
+        clamshell_mass = geo.annulus_volume(r_o, r_i, self.length) * rho
+        return clamshell_mass
 
     def _get_stringer_thickness(self) -> float:
         required = self.area_moment_of_inertia

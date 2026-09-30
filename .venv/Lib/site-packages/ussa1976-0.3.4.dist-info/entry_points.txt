@@ -1,0 +1,3 @@
+[console_scripts]
+ussa1976=ussa1976.__main__:main
+

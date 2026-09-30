@@ -55,6 +55,14 @@ class PropTank(Section):
         self.weld_efficiency = float(weld_efficiency)
         if not 0.0 < self.weld_efficiency <= 1.0:
             raise ValueError("Tank weld_efficiency must be in (0, 1]")
+        configured_allowable = cfg.get("advanced", {}).get("weld_allowable")
+        # A configured allowable is the final stress in Pa, including weld effects.
+        if configured_allowable is None:
+            self.weld_allowable = self.material.require("yield_strength") * self.weld_efficiency
+        else:
+            self.weld_allowable = float(configured_allowable)
+        if not np.isfinite(self.weld_allowable) or self.weld_allowable <= 0.0:
+            raise ValueError("weld_allowable must be finite and positive")
         self.wall_thickness = self.get_thickness(wall_thickness)
         self.passthrough_wall_thickness = float(passthrough_wall_thickness)
         self.emissivity = 0.85
@@ -91,13 +99,13 @@ class PropTank(Section):
         e = self.ellipse_ratio
         rho = self.material.density
 
-        k = (
-            2 * e
-            + (1 / np.sqrt(e**2 - 1))
-            * np.log((e + np.sqrt(e**2 - 1)) / (e - np.sqrt(e**2 - 1)))
-        )
-
-        V_end = ((1/4) * np.pi * (D - 2*t) * t * k) / (2 * e)
+        "ellipse variables based on 'e'"
+        a = D * 0.5
+        b = D * 0.5 
+        c = a / e
+        end_SA = 4*np.pi*(((a*b)**1.6 + (a*c)**1.6 + (b*c)**1.6)/3)**(1/1.6)
+    
+        V_end = end_SA * t * 1.5  # assume 1.5x heavier to account for ports
         V_cyl = geo.annulus_volume(D * 0.5, D * 0.5 - t, self.cyl_length)
         if D_pass > 0.0 and t_pass >= 0.5 * D_pass:
             raise ValueError("Passthrough wall consumes its internal diameter")
@@ -115,13 +123,9 @@ class PropTank(Section):
 
     def get_thickness(self, supplied: Optional[float] = None) -> float:
         """Return supplied gauge or pressure-size it from the fixed OML diameter."""
-
-        allowable = self.material.require("yield_strength") * self.weld_efficiency
-        ratio = 1.5 * self.max_pressure / allowable
-        required = max(
-            ratio * (0.5 * self.OMLD) / (1.0 + ratio),
-            self.t_wall_min,
-        )
+        p_load = 1.5 * self.max_pressure
+        R = self.OMLD * 0.5
+        required = p_load * R / self.weld_allowable
         self.required_wall_thickness = required
         if supplied is None:
             return required
@@ -178,21 +182,21 @@ class PropTank(Section):
         self.volume = self._tank_volume()
         radius = 0.5 * inner_diameter
         pass_radius = 0.5 * self.passthrough_diameter
-        head_depth = radius / self.ellipse_ratio
-        beta = np.sqrt(1.0 - (pass_radius / radius) ** 2)
-
+        
+        a = inner_diameter * 0.5
+        b = inner_diameter * 0.5 
+        c = a / self.ellipse_ratio #ellipsoid height
         # Usable volume in both ellipsoidal heads, excluding the axial
         # passthrough tube. The remaining volume is carried by the cylinder.
-        head_volume = (
-            (4.0 / 3.0) * np.pi * radius**2 * head_depth * beta**3
-        )
+        head_volume = ((4.0 / 3.0) * np.pi * a * b * c)
         cylinder_area = np.pi * (radius**2 - pass_radius**2)
-        self.cyl_length = (self.volume - head_volume) / cylinder_area
+        passthru_area = np.pi * pass_radius**2
+        self.cyl_length = (self.volume - head_volume + passthru_area * 2* c) / cylinder_area
         if self.cyl_length <= 0.0:
             raise ValueError(
                 "Requested tank volume is smaller than its endcap volume"
             )
-        self.length = self.cyl_length + 2.0 * head_depth
+        self.length = self.cyl_length + 2.0 * c
 
     def get_EI(self):
         r_o = self.OMLD * 0.5

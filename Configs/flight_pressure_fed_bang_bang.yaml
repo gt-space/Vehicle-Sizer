@@ -20,14 +20,14 @@ advanced:
     max_iterations: 20
     temperature_tolerance: 0.01
   t_wall_min: 0.001
-  weld_efficiency: 1.0
+  weld_allowable: 82740000 #Pa
 aero:
   finish: 20um
   fins_on_boattail: true
   model: AeroTables/dragmodel.h5
   nose: vonkarman
 avi_bay:
-  avi_mass: 2.0
+  avi_mass: 4.0
   bulkhead_material: carbon_fiber
   clamshell_material: fiberglass
   clamshell_thickness: 0.003175
@@ -80,7 +80,6 @@ press_tank:
   airframe_material: carbon_fiber
   airframe_wall_thickness: 0.00318
   mount_material: aluminum_7075
-  mount_thickness: 0.00318
 prop_system:
   MR_target: 2.0
   Pc_target: 1723689.323292
@@ -165,7 +164,7 @@ tanks:
     outer_diameter: 0.22
     type: pressurant
     volume: 0.1
-    wall_thickness: 0.0032
+    
 thermal:
   external_heating: false
   initial_temperature: 288.15
@@ -181,30 +180,44 @@ thermal:
       insulated: true
   sink_temperature: 288.15
 vehicle:
-  OMLD: 0.33655
+  OMLD: 0.3048
   dx: 0.01
   sections:
   - type: nosecone
+
   - type: avi_bay
+
   - tank_id: press_tank
     type: press_tank
-  - area_moment_of_inertia: 3.6e-05
-    avi_mass: 2.0
+
+    # Intertank 1
+  - area_moment_of_inertia: 0.0015 #m^4
+    avi_mass: 1.0
     feed_system_mass: 5.0
-    length: 0.12
+    length: 0.3
+    stringer_unit_mass: 2.7 #kg/m
     type: inter_tank
+
   - tank_id: ox_tank
     type: prop_tank
-  - area_moment_of_inertia: 3.6e-05
-    avi_mass: 2.0
-    feed_system_mass: 5.0
+
+    # Intertank 2
+  - area_moment_of_inertia: 0.0015 #m^4
+    avi_mass: 1.0
+    feed_system_mass: 3.0
     length: 0.15
+    stringer_unit_mass: 2.7 #kg/m
     type: inter_tank
+
   - tank_id: fuel_tank
     type: prop_tank
-  - area_moment_of_inertia: 3.6e-05
-    avi_mass: 2.0
+
+    # Intertank 3
+  - area_moment_of_inertia: 0.0015 #m^4
+    avi_mass: 1.0
     feed_system_mass: 5.0
-    length: 0.762
+    length: 0.3
+    stringer_unit_mass: 2.7 #kg/m
     type: inter_tank
+
   - type: fin_can

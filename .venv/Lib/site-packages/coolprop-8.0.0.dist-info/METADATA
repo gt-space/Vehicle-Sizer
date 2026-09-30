@@ -1,0 +1,60 @@
+Metadata-Version: 2.2
+Name: CoolProp
+Version: 8.0.0
+Summary: Open-source thermodynamic and transport properties database
+Author-Email: Ian Bell <ian.h.bell@gmail.com>
+License: MIT
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Environment :: Other Environment
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Topic :: Scientific/Engineering
+Classifier: Topic :: Scientific/Engineering :: Physics
+Project-URL: Homepage, http://www.coolprop.org
+Project-URL: Documentation, http://www.coolprop.org
+Project-URL: Repository, https://github.com/CoolProp/CoolProp
+Project-URL: Bug Tracker, https://github.com/CoolProp/CoolProp/issues
+Requires-Python: >=3.9
+Requires-Dist: numpy>=1.20
+Description-Content-Type: text/markdown
+
+# Welcome to CoolProp
+
+CoolProp is a thermophysical property database and wrappers for a selection of programming environments.
+It offers similar functionality to REFPROP, but CoolProp is open-source and free.
+It was originally developed by Ian Bell, at the time a post-doc at the University of Liege, in Liege, Belgium.
+
+* CoolProp has flexible licensing terms: Commercial - ok! Academic? - ok! [![license](https://img.shields.io/github/license/CoolProp/CoolProp.svg)](https://github.com/CoolProp/CoolProp/blob/master/LICENSE)
+
+* For Python, get the latest release via `pip install coolprop` [![PyPI downloads](https://img.shields.io/pypi/dm/CoolProp.svg?label=PyPI-downloads)](http://pypi.python.org/pypi/CoolProp/) [![PyPI version](https://img.shields.io/pypi/v/coolprop.svg?label=PyPI-binaries)](http://pypi.python.org/pypi/CoolProp/)
+
+* ... other binaries are available from [SourceForge](http://sourceforge.net/projects/coolprop/files) [![sourceforge downloads](https://img.shields.io/sourceforge/dm/CoolProp.svg?label=SF-downloads)](http://sourceforge.net/projects/coolprop/files) ![CoolProp version tag](https://img.shields.io/github/release/CoolProp/CoolProp.svg?label=SF-binaries)
+
+* There is also a bleeding edge nightly build of the [development version](http://sourceforge.net/projects/coolprop/files/CoolProp/nightly).
+
+* The documentation is available for the [latest release](http://www.coolprop.org) and the [development version](https://coolprop.github.io/devdocs/)
+
+* For any kind of question regarding CoolProp and its usage, you can ask the [CoolProp Discussions](https://github.com/CoolProp/CoolProp/discussions)
+
+* ... you might also find answers in our [FAQ](https://github.com/CoolProp/CoolProp/blob/master/FAQ.md)
+
+* If you found a bug or have an issue that requires the developers to become active, please file an issue in our [issue tracker](https://github.com/CoolProp/CoolProp/issues)
+
+* [Contributions](https://github.com/CoolProp/CoolProp/blob/master/.github/CONTRIBUTING.md) to this project are welcomed and encouraged! If you wish to [contribute](https://github.com/CoolProp/CoolProp/blob/master/.github/CONTRIBUTING.md) bug fixes, patches, or new features, wrappers, or material properties, please submit a Pull Request with your code.
+
+* If you are new to Git and Github, please see the [CoolProp Wiki](https://github.com/CoolProp/CoolProp/wiki) for guidance on becoming a contributor to the project.
+
+## Sponsors
+
+Free code signing on Windows provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).

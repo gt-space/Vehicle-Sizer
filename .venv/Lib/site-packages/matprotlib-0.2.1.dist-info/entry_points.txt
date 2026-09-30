@@ -1,0 +1,2 @@
+[console_scripts]
+matprotlib-ui = matprotlib:launch_dashboard

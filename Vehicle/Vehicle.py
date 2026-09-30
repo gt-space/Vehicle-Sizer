@@ -102,14 +102,11 @@ class Vehicle:
             elif tank_type == "pressurant":
                 if "volume" in definition and "volume_liters" in definition:
                     raise ValueError(f"Tank {tank_id!r}: specify volume (m^3) or volume_liters, not both")
-                material = MaterialProperties.from_name(definition["material"])
                 copv = COPV(
                     volume=(float(definition["volume"]) if "volume" in definition
                             else float(definition["volume_liters"]) * 1.0e-3),
                     diameter=float(definition["outer_diameter"]),
-                    wall_thickness=float(definition["wall_thickness"]),
                     ellipse_ratio=float(definition["ellipse_ratio"]),
-                    material_density=material.density,
                     mass=float(definition["mass"]) if "mass" in definition else None,
                 )
                 tanks[tank_id] = PressTank(self.cfg, copv, tank_id=tank_id)
