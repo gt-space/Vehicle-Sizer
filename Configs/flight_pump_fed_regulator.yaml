@@ -34,10 +34,6 @@ avi_bay:
   clamshell_thickness: 0.003175
   length: 0.25
   ring_material: aluminum_6061
-constraints:
-  max_aoa_deg: 15.0
-  goal_apogee: 150000.0
-  max_burn_duration: 75.0
 engine:
   cf_efficiency: 0.95
   cstar_efficiency: 0.85
@@ -174,6 +170,8 @@ simulation:
   t_end: 300.0
 tanks:
   fuel_tank:
+    min_temperature: 80.0 # K; liquid and ullage
+    min_pressure: 68947.57293168 # Pa absolute (10 psia)
     thermal:
       model: None
     ellipse_ratio: 1.75
@@ -184,6 +182,8 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   ox_tank:
+    min_temperature: 80.0 # K; liquid and ullage
+    min_pressure: 68947.57293168 # Pa absolute (10 psia)
     thermal:
       model: None
     ellipse_ratio: 1.75
@@ -194,6 +194,8 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   press_tank:
+    min_pressure: 4136854.3759008 # Pa absolute (600 psia)
+    min_temperature: 220.0
     thermal:
       model: None
     design_pressure: 1.3684e7

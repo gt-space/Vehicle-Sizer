@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import time
 import csv
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
 
 from Configs.loader import load_config
 from simulation import ROOT, project_path, property_sources, simulate
+from run_report import print_run_summary
 
 
 def history_rows(history: list) -> list[dict]:
@@ -20,6 +22,7 @@ def history_rows(history: list) -> list[dict]:
         speed = np.hypot(kin.vx, kin.vz)
         gamma = np.arctan2(kin.vz, kin.vx) if speed > 1.0e-8 else kin.theta
         atmosphere = state["atmosphere"]
+        wind = state["wind"]
         aero = state["plant"].aero
         propulsion = state["plant"].fluids.propulsion
         fluids = state["plant"].fluids
@@ -36,9 +39,14 @@ def history_rows(history: list) -> list[dict]:
             "speed_m_s": speed,
             "velocity_m_s": kin.vz,
 
+            "wind_x_m_s": wind["wind_x"],
+            "wind_z_m_s": wind["wind_z"],
+            "airspeed_m_s": wind["airspeed"],
+
             "acceleration_m_s2": forces["acceleration"],
 
             "flight_path_angle_deg": np.degrees(gamma),
+            "air_flight_path_angle_deg": np.degrees(wind["gamma_air"]),
             "pitch_angle_deg": np.degrees(kin.theta),
             "angle_of_attack_deg": np.degrees(kin.alpha),
 
@@ -60,6 +68,7 @@ def history_rows(history: list) -> list[dict]:
             "Cn": aero.Cn,
             "normal_force_N": aero.N,
             "cp_m": aero.cp,
+            "static_stability_margin_calibers": (aero.cp - mass["cg"]) / mass["diameter"],
 
             "thrust_N": propulsion.thrust,
             "chamber_pressure_Pa": propulsion.Pc,
@@ -122,6 +131,35 @@ def write_events(history: list, path: Path) -> None:
         writer.writerows(event for state in history for event in state["plant"].fluids.events)
 
 
+def write_structural_loads(history: list, path: Path) -> None:
+    """Export every tenth accepted time plus the final time, keeping all stations."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow((
+            "time_s", "station_m", "cell_width_m", "internal_axial_force_kN",
+            "distributed_axial_aero_force_kN_m", "distributed_normal_force_kN_m",
+            "internal_shear_force_kN", "internal_bending_moment_kN_m",
+        ))
+        for index, state in enumerate(history):
+            if index % 10 != 0 and index != len(history) - 1:
+                continue
+            loads = state["loads"]
+            station = np.asarray(loads["station"], dtype=float)
+            widths = np.asarray(state["mass_properties"]["cell_widths"], dtype=float)
+            if widths.shape != station.shape or not np.all(np.isfinite(widths) & (widths > 0)):
+                raise ValueError("Structural load export requires a positive width for every station")
+            columns = (
+                station, widths, np.asarray(loads["axial"]) / 1000,
+                np.asarray(loads["axial_aero"]) / widths / 1000,
+                np.asarray(loads["normal"]) / widths / 1000,
+                np.asarray(loads["shear"]) / 1000,
+                np.asarray(loads["bending"]) / 1000,
+            )
+            writer.writerows((state["kinematics"].t, *values)
+                             for values in zip(*columns, strict=True))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run")
     parser.add_argument(
@@ -132,8 +170,12 @@ def main() -> None:
     )
     parser.add_argument("--dt", type=float)
     parser.add_argument("--t-end", type=float)
+    parser.add_argument("--enforce-constraints", action="store_true",
+                        help="Apply saved flight/optimizer limits during this manual run")
     args = parser.parse_args()
-    cfg = load_config(args.config)
+    cfg = deepcopy(load_config(args.config))
+    if not args.enforce_constraints:
+        cfg.pop('constraints', None)
     if args.dt is not None:
         cfg["simulation"]["dt"] = args.dt
     if args.t_end is not None:
@@ -180,14 +222,18 @@ def main() -> None:
     write_history(rows, output_path)
     events_path = output_path.with_name(output_path.stem + "_events.csv")
     write_events(history, events_path)
+    loads_path = output_path.with_name(output_path.stem + "_structural_loads.csv")
+    write_structural_loads(history, loads_path)
     from flight_plots import plot_flight
     plots = plot_flight(history, rows, plot_path)
     print(f"Run complete: {time.perf_counter() - setup_started:.1f} s total.", flush=True)
 
     print(f"Max altitude reached: {result.max_altitude:.1f} m")
     print(f"Apogee: {result.apogee:.1f} m" if result.apogee_reached else "Apogee: not reached")
+    print_run_summary(cfg, result)
     print(f"History: {output_path}")
     print(f"Events: {events_path}")
+    print(f"Structural loads: {loads_path}")
     for name, path in plots.items():
         print(f"{name.replace('_', ' ').title()}: {path}")
 

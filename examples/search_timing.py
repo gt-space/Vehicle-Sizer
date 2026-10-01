@@ -47,7 +47,7 @@ def install():
     from Vehicle.Vehicle import Vehicle
     from Thermals import ThermalNetwork
     from Fluids.FluidNetwork import FluidNetwork
-    from Fluids.ida_session import IdaSession
+    from Fluids.Sundials.ida_session import IdaSession
     from FluidTables.PropertyModels import TablePureFluidPropertySource, TableCombustionPropertySource
     from Fluids.FluidNode import (BoundaryComponent, JunctionComponent, VolumeComponent,
                                           PropellantTankComponent, CombustorComponent)

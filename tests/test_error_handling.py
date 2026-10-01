@@ -8,7 +8,7 @@ import pytest
 from errors import (LookupBoundsError, ModelDomainExceeded, SolverConvergenceError,
                     SolverSetupError, ResidualAcceptanceError, InfrastructureError,
                     SearchFailureLimit, failure_details)
-from Fluids.ida_session import IdaSession
+from Fluids.Sundials.ida_session import IdaSession
 from optimizer import FailureMonitor
 from examples import run_optimizer_search as search
 

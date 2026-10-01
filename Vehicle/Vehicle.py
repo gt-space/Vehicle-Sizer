@@ -1,6 +1,6 @@
 import numpy as np
 from Fluids.design import initial_conditions, tank_design_pressure
-from Fluids.templates import load_template
+from Fluids.helpers.templates import load_template
 
 from .COPV import COPV
 from .Engine import Engine

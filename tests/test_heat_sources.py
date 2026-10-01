@@ -5,7 +5,7 @@ import pytest
 
 from errors import TrialDomainError
 from Fluids.FluidState import FluidState, NodeState
-from Fluids.heat_sources import build_heat_source, evaluate_heat, thermal_model
+from Thermals.heat_sources import build_heat_source, evaluate_heat, thermal_model
 
 
 def state(rho, phase='gas'):
@@ -91,6 +91,6 @@ def test_real_config_binds_area_and_defaults():
                  if 'tank_id' in definition}
         source = prop.network.heat_sources[nodes['press_tank']]
         assert source.area == pytest.approx(vehicle.tanks['press_tank'].get_fluid_geometry().internal_area)
-        assert source.reference_area == 1.
+        assert source.reference_area == cfg['tanks']['press_tank']['thermal']['reference_area']
         for tank in ('ox_tank', 'fuel_tank'):
             assert prop.network.heat_sources[nodes[tank]].evaluate(state(1.)) == {}

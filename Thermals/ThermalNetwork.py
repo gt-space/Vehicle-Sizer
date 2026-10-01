@@ -8,7 +8,7 @@ import numpy as np
 from simulation_types import AeroOut, AtmosState, FluidOut, KinematicsState, ThermalOut
 from Vehicle.Material import MaterialProperties
 from .ThermalNode import DryNodeModel, ThermalNode, WetNodeModel
-from Fluids.heat_sources import thermal_model
+from Thermals.heat_sources import thermal_model
 
 
 class ThermalNetwork:

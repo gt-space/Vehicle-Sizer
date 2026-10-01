@@ -20,10 +20,10 @@ Python 3.12 with version 7.9.0). No alternate solver selection is required.
   pump and nozzle modes. Trial evaluation never commits a discrete transition.
 - `FluidState.py`: `FluidState`, `NodeState` and `BranchState` data records. Trial
   unknowns and derived properties remain distinct; records do not solve physics.
-- `ida_session.py`: native IDAS callbacks, solver lifetime and restarts.
+- `Sundials/ida_session.py`: native IDAS callbacks, solver lifetime and restarts.
 - `jacobian.py`: equation dependency structure and colored finite differences.
 - `errors.py`: recoverable trial-domain and accepted-residual error types.
-- `design.py`, `pump_curve.py`, `FluidsDef.py`: shared sizing and physics helpers.
+- `design.py`, `helpers/pump_curve.py`, `FluidsDef.py`: shared sizing and physics helpers.
 
 `FluidTables/PropertyModels.py` supplies CoolProp/CEA or table-backed properties.
 The exact-coordinate property cache shares state/derivative lookup work; complete

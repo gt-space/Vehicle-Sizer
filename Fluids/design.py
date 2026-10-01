@@ -1,7 +1,7 @@
 """Pure design calculations shared by tank sizing and propulsion construction."""
 from copy import deepcopy
 from math import isfinite
-from .templates import load_template
+from .helpers.templates import load_template
 
 
 def pump_definition(prop: dict, pump_id: str) -> dict:

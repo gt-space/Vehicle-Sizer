@@ -381,7 +381,7 @@ def main(args):
     accepted = [r for r in ordered if r['accepted']]
     verified = None
     if accepted:
-        winner = min(accepted, key=lambda r: r['mass'])
+        winner = min(accepted, key=lambda r: r['score'])
         (output/'best.yaml').write_text((output/'candidates'/f"{winner['index']:04d}"/'candidate.yaml').read_text())
         write_json(output/'best.json', winner)
         verification = output/'verification'

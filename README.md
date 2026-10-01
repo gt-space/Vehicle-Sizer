@@ -3,8 +3,23 @@
 ## Run
 
 Use Python 3.12 with sundials4py, NumPy, SciPy,
-CoolProp, RocketCEA, h5py, PyYAML, pandas, matplotlib, ussa1976 and matprotlib.
+CoolProp, RocketCEA, h5py, PyYAML, pandas, matplotlib, ussa1976, prettytable and matprotlib.
 Install the material library with `python -m pip install matprotlib`.
+Install CLI table formatting with `python -m pip install prettytable`.
+`main.py` prints the assembled section order, tank geometry, launch/shutdown
+masses, initial absolute pressures, flight performance, engine data, and body-axis
+inertias. Izz is reported as Iyy under the transverse-symmetry assumption; it
+is not independently calculated by the planar model. Reported flight maxima
+use the initial state and accepted samples; incomplete burns/apogees are labeled.
+Each CLI run also writes `<output_stem>_structural_loads.csv`, with one row per
+recorded time and vehicle station (cell center, measured from the nose).
+Columns include time [s], station and cell width [m], internal axial/shear forces
+[kN], distributed axial aerodynamic/normal forces [kN/m], and internal bending
+moment [kN m]. Signs are preserved from the load model (axial compression is
+positive). Distributed values use each cell's actual width. The export streams
+every tenth recorded time sample, plus the final sample, retaining all vehicle
+stations. This reduces the structural-load CSV to approximately one tenth of
+its full size; simulation resolution and plots are unchanged.
 
 ```bash
 python main.py Configs/flight_pump_fed_regulator.yaml

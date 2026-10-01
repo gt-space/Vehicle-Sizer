@@ -4,10 +4,10 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from math import isfinite
 from copy import deepcopy
 from constraints import DesignInfeasible
-from Fluids.pump_curve import scaled_pump_curve
+from Fluids.helpers.pump_curve import scaled_pump_curve
 from Fluids.design import initial_conditions, pump_definition, size_electric_pump
-from Fluids.templates import load_template
-from Fluids.heat_sources import thermal_model
+from Fluids.helpers.templates import load_template
+from Thermals.heat_sources import thermal_model
 
 from .FluidNetwork import FluidNetwork
 from Fluids import FluidsDef
@@ -104,6 +104,8 @@ class PropSystem:
                 used.append(tank_id)
                 state = deepcopy(self.initial_states[tank_id])
                 node.update(geometry=geometries[tank_id], state0=state)
+                if kind == 'propellant_tank':
+                    node['pressure_tracking_target'] = float(node['P0'])
                 if 'thermal' in self.tank_definitions.get(tank_id, {}):
                     if 'thermal' in node:
                         raise ValueError(f'Duplicate thermal configuration for tank {tank_id!r}')
@@ -309,11 +311,8 @@ class PropSystem:
             branch_type = branch.get("component", branch.get("model"))
             circuit = circuits[circuit_id]
             branch["fluid"] = circuit["fluid"]
-            if (nodes[branch["from"]].get("component") == "pressurant_tank"
-                    and branch_type in ("compressible_loss", "bang_bang_valve", "regulator")):
-                if branch.get("require_choked", True) is not True:
-                    raise ValueError("Pressurant feeds require choked-flow feasibility checks")
-                branch["require_choked"] = True
+            if 'require_choked' in branch:
+                raise ValueError('require_choked was removed; configure tank pressure floors instead')
             if circuit["prop"] in design_flows or "design_mdot" in circuit:
                 branch.setdefault("design_mdot", design_flow(branch))
 
@@ -427,11 +426,6 @@ class PropSystem:
                     gamma / (gamma - 1.0)
                 )
                 eol_pressure = downstream_pressure / critical_ratio
-                if start_pressure < eol_pressure:
-                    tank_id = source_node.get("tank_id", branch["from"])
-                    raise DesignInfeasible({f"branch.{branch_id}.choked": start_pressure-eol_pressure,
-                                            f"tank.{tank_id}.Pmin": start_pressure-eol_pressure})
-
                 pressure_mid = 0.5 * (start_pressure + eol_pressure)
                 tank_definition = getattr(self, "tank_definitions", {}).get(source_node.get("tank_id"), {})
                 min_temperature = float(tank_definition.get("min_temperature", branch.get("min_temperature", float("nan"))))
@@ -512,9 +506,8 @@ class PropSystem:
         self.nozzle_id = nozzles[0]
 
     def _configure_constraints(self):
-        """Attach limits to physical tank IDs and choked-flow requirements to edges."""
+        """Attach owner-defined temperature and absolute pressure floors to tanks."""
         self.tank_limits = {}
-        self.choked_branches = {}
         initial = dict(self.sizing_constraints)
         for node_id, node in self.node_definitions.items():
             tank_id = node.get("tank_id")
@@ -537,41 +530,12 @@ class PropSystem:
                 initial[f"tank.{tank_id}.Tmin"] = min(float(state[key]) for key in ("T", "gas_T") if key in state) - limits["min_temperature"]
             if "min_pressure" in limits:
                 initial[f"tank.{tank_id}.Pmin"] = float(state["P"]) - limits["min_pressure"]
-        for branch_id, branch in self.branch_definitions.items():
-            required = branch.get("require_choked", False)
-            if not isinstance(required, bool):
-                raise ValueError("require_choked must be boolean")
-            if not required:
-                continue
-            self.choked_branches[branch_id] = branch
-            source = self.node_definitions[branch["from"]]
-            target = self.node_definitions[branch["to"]]
-            state = source.get("state0", self.circuits[branch["circuit"]]["state0"])
-            pressure = float(state["P"])
-            gas = self.fluid_properties.state_pt(branch["fluid"], pressure, float(state["T"]))
-            downstream = float(target.get("state0", {}).get("P", target.get("P0", 0.0)))
-            margin = self._choked_margin(pressure, downstream, gas.gamma)
-            initial[f"branch.{branch_id}.choked"] = margin
-            if source.get("tank_id") is not None:
-                key = f"tank.{source['tank_id']}.Pmin"
-                initial[key] = min(initial.get(key, float("inf")), margin)
         self.initial_constraints = initial
         if any(value < 0 for value in initial.values()):
             raise DesignInfeasible(initial, self.pump_sizing)
 
-    @staticmethod
-    def _choked_margin(upstream, downstream, gamma):
-        if not isfinite(gamma) or gamma <= 1:
-            raise ValueError("Choked-flow checking requires finite gamma > 1")
-        critical_ratio = (2.0 / (gamma + 1.0)) ** (gamma / (gamma - 1.0))
-        return upstream - downstream / critical_ratio
-
     def _constraint_margins(self, state):
-        """Evaluate the same bulk pressures/gas gamma used by compressible flow.
-
-        Closed valves are checked for available choking pressure as well: closing
-        a valve must not hide an exhausted supply. Limits apply through shutdown.
-        """
+        """Evaluate owner-defined hard floors on accepted fluid states."""
         for branch_id, definition in self.branch_definitions.items():
             curve = definition.get("head_model")
             if curve is None:
@@ -591,16 +555,6 @@ class PropSystem:
                 margins[f"tank.{tank_id}.Tmin"] = min(temperatures) - limits["min_temperature"]
             if "min_pressure" in limits:
                 margins[f"tank.{tank_id}.Pmin"] = float(node["P"]) - limits["min_pressure"]
-        for branch_id, branch in self.choked_branches.items():
-            source, target = state.nodes[branch["from"]], state.nodes[branch["to"]]
-            gas = source.get("fluids", {}).get(branch["fluid"])
-            gamma = float(gas["gamma"] if gas is not None else state.branches[branch_id]["gamma"])
-            margin = self._choked_margin(float(source["P"]), float(target["P"]), gamma)
-            margins[f"branch.{branch_id}.choked"] = margin
-            tank_id = self.node_definitions[branch["from"]].get("tank_id")
-            if tank_id is not None:
-                key = f"tank.{tank_id}.Pmin"
-                margins[key] = min(margins.get(key, float("inf")), margin)
         if any(not isfinite(v) for v in margins.values()):
             raise ValueError("Propulsion constraint margins must be finite")
         return margins

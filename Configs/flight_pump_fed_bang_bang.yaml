@@ -35,6 +35,7 @@ avi_bay:
   length: 0.25
   ring_material: aluminum_6061
 constraints:
+  min_stability_calibers: 2.0
   max_aoa_deg: 15.0
   goal_apogee: 150000.0
   max_burn_duration: 75.0
@@ -178,6 +179,8 @@ simulation:
   t_end: 300.0
 tanks:
   fuel_tank:
+    min_temperature: 80.0 # K; liquid and ullage
+    min_pressure: 68947.57293168 # Pa absolute (10 psia)
     thermal:
       model: None
     ellipse_ratio: 1.75
@@ -188,6 +191,8 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   ox_tank:
+    min_temperature: 80.0 # K; liquid and ullage
+    min_pressure: 68947.57293168 # Pa absolute (10 psia)
     thermal:
       model: None
     ellipse_ratio: 1.75
@@ -198,6 +203,8 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   press_tank:
+    min_pressure: 4136854.3759008 # Pa absolute (600 psia)
+    min_temperature: 220.0
     thermal:
       model: None
     design_pressure: 1.3684e7
@@ -214,7 +221,7 @@ thermal:
       specific_heat: 800.0
   sink_temperature: 288.15
 vehicle:
-  OMLD: 0.33655
+  OMLD: 0.3048
   dx: 0.01
   sections:
   - type: nosecone

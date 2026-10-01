@@ -69,7 +69,22 @@ def feasibility(margins):
 
 
 UNITS = {"max_q": "Pa", "max_burn_duration": "s", "goal_apogee": "m",
-         "min_stability_calibers": "calibers", "min_rail_twr": "1", "max_aoa_deg": "deg"}
+         "min_stability_calibers": "calibers", "min_rail_twr": "1", "max_aoa_deg": "deg",
+         "max_length_to_diameter": "1"}
+
+
+def vehicle_limit_margins(cfg, vehicle):
+    """Assess optional static vehicle limits before spending time on flight."""
+    limit = cfg.get('constraints', {}).get('max_length_to_diameter')
+    if limit is None:
+        return {}
+    length, diameter = float(vehicle.length), float(cfg['vehicle']['OMLD'])
+    if not all(isfinite(v) and v > 0 for v in (length, diameter)):
+        raise ValueError('L/D requires finite positive vehicle length and body diameter')
+    margins = {'max_length_to_diameter': float(limit) - length / diameter}
+    if margins['max_length_to_diameter'] < 0:
+        raise DesignInfeasible(margins)
+    return margins
 
 
 def configured_limits(cfg):
@@ -91,7 +106,9 @@ def finalize(result, limits):
     sizing_only = result.termination == "infeasible_initial_design"
     for key, limit in limits.items():
         margin = None
-        if not sizing_only:
+        if key == 'max_length_to_diameter':
+            margin = result.constraints.get(key)
+        elif not sizing_only:
             if key == "goal_apogee":
                 margin = None if result.apogee is None else result.apogee - limit
             elif key == "max_burn_duration":
@@ -115,6 +132,8 @@ def finalize(result, limits):
         phase = "mission" if key in {"goal_apogee", "max_burn_duration"} else (
             "sizing" if key not in limits and (sizing_only or key.startswith("pump.")) else "runtime")
         source = "Flight.Flight" if key in UNITS else "Fluids.PropSystem"
+        if key == 'max_length_to_diameter':
+            phase, source = 'sizing', 'Vehicle.Vehicle'
         units = UNITS.get(key, "kW" if key.endswith("max_power") else "K" if key.endswith("Tmin") else "Pa")
         records[key] = ConstraintRecord(margin, source, phase, units,
                                         time=result.min_rail_twr_time if key == "min_rail_twr" else result.constraint_times.get(key))

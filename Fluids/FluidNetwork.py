@@ -15,9 +15,10 @@ from .FluidBranch import (LossComponent, PumpComponent, RegulatorComponent,
                           BangBangValveComponent, NozzleComponent)
 from .FluidState import NodeState
 from errors import TrialDomainError, ResidualAcceptanceError, SolverConvergenceError
-from .ida_session import IdaSession, IdaStep
-from .jacobian import install as install_jacobian
-from .heat_sources import build_heat_source, evaluate_heat, NoHeating, Aeroheating
+from .Sundials.ida_session import IdaSession, IdaStep
+from .Sundials.jacobian import install as install_jacobian
+from Thermals.heat_sources import build_heat_source, evaluate_heat, NoHeating, Aeroheating
+from .helpers.pressure_tracking import PressureTracking
 
 
 @dataclass
@@ -110,6 +111,7 @@ class FluidNetwork:
             raise ValueError('Branch directions must be -1 or 1')
         self.constraint_monitor = constraint_monitor
         self.state, self.time = NetworkState(), 0.0
+        self.pressure_tracking = PressureTracking(nodes)
         self.events, self.remainders = [], []
         self.session = None
         self.y = self.ydot = None
@@ -776,6 +778,11 @@ class FluidNetwork:
         self.state = NetworkState({k: n.output_state(nodes[k]) for k, n in self.nodes.items()}, deepcopy(branches))
         for key, state in self.state.nodes.items():
             state.properties['heat_rate'] = self._heat_for(key, nodes[key], self.time)
+        powered = any(isinstance(node, CombustorComponent) and node.mode == 'combusting'
+                      and nodes[key].get('mdot_fuel', 0.) > 0
+                      and nodes[key].get('mdot_oxidizer', 0.) > 0
+                      for key, node in self.nodes.items())
+        self.pressure_tracking.accept(self.time, nodes, powered)
         if self.constraint_monitor:
             for name, margin in self.constraint_monitor(deepcopy(self.state)).items():
                 if margin < self.constraints.get(name, np.inf):

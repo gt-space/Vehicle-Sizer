@@ -470,6 +470,31 @@ class TableCombustionPropertySource:
         pressure = self.table.axes["chamber_pressure"]
         return float(pressure[0]), float(pressure[-1])
 
+    def design_exit_pressure_bounds(self, chamber_bounds, mixture_bounds):
+        """Common sizing interval over a rectangular Pc/MR search domain."""
+        def knots(name, bounds):
+            axis = self.table.axes[name]
+            low, high = map(float, bounds)
+            if not axis[0] <= low <= high <= axis[-1]:
+                raise ValueError(f'{name} search bounds exceed the combustion table')
+            return [low, *(float(v) for v in axis if low < v < high), high]
+
+        pressures = knots('chamber_pressure', chamber_bounds)
+        mixtures = knots('mixture_ratio', mixture_bounds)
+        ambient = self.table.axes['ambient_pressure']
+        epsilon = self.table.axes['expansion_ratio']
+        low, high = float(ambient[0]), min(float(ambient[-1]), float(chamber_bounds[0]))
+        # Endpoint signs bracket a root for every interpolated Pc/MR/ambient
+        # cell. Include all knots, not just the outer search-domain corners.
+        for pc in pressures:
+            for mr in mixtures:
+                for pa in ambient:
+                    low = max(low, self.table.get('exit_pressure', **self._coordinates(pc, mr, epsilon[-1], pa)))
+                    high = min(high, self.table.get('exit_pressure', **self._coordinates(pc, mr, epsilon[0], pa)))
+        if not 0 < low < high:
+            raise ValueError('No common exit-pressure interval over the configured Pc/MR bounds')
+        return float(low), float(high)
+
     def _coordinates(
         self,
         chamber_pressure: float,

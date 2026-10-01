@@ -92,14 +92,19 @@ class Loads:
         axial_force: float,
         thrust: float,
         engine_on: bool,
+        *, aerodynamic: bool = True,
     ) -> dict[str, np.ndarray]:
         """Evaluate synchronized aerodynamic, inertial, and internal loads."""
 
-        axial_aero = self.get_axial_forces(q, mach, alpha, engine_on)
+        if aerodynamic:
+            axial_aero = self.get_axial_forces(q, mach, alpha, engine_on)
+            normal = self.get_normal_load(q, mach, alpha)
+        else:
+            axial_aero = np.zeros_like(self.vehicle.station)
+            normal = np.zeros_like(self.vehicle.station)
         if not np.isclose(axial_aero.sum(), axial_force, rtol=1e-7, atol=1e-7):
             raise ValueError("Distributed axial force disagrees with flight CA force")
         axial = self.get_axial_load(axial_aero, thrust)
-        normal = self.get_normal_load(q, mach, alpha)
         shear, bending, _, _ = self.beam_deflection(normal)
         return {
             "station": self.vehicle.station.copy(),

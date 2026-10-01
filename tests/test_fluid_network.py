@@ -516,7 +516,7 @@ def test_triple_point_stops_at_temperature_and_warm_low_pressure_gas_does_not_st
 
 
 def test_boundary_changes_reuse_allocations_but_reinitialize_history(monkeypatch):
-    from Fluids.ida_session import IdaSession
+    from Fluids.Sundials.ida_session import IdaSession
     original, restarts = IdaSession.restart, []
     def restart(self, *args, **kwargs):
         restarts.append(self.time)

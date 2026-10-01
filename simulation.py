@@ -20,6 +20,7 @@ from Vehicle.Vehicle import Vehicle
 from Thermals import ThermalNetwork
 from simulation_types import SimResult
 from warning import collect_warnings
+from constraints import vehicle_limit_margins
 from constraints import (GeometryError, EvaluationFailure, OperatingInfeasible,
                          configured_limits, finalize, merge_margins)
 
@@ -127,6 +128,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
                                 combustion_properties=combustion_properties)
         context["propulsion"] = propulsion
         vehicle.build(Engine(float(cfg["engine"]["mass"]), float(cfg["engine"]["length"]), propulsion.exit_area))
+        static_margins = vehicle_limit_margins(cfg, vehicle)
     except DesignInfeasible as error:
         geometry = isinstance(error, GeometryError)
         result = SimResult(termination="infeasible_initial_design",
@@ -144,15 +146,36 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
                          final_pitch_rate=0.0)
         return finalize(result, limits)
     context["phase"] = "flight initialization"
-    from Fluids.heat_sources import thermal_model
+    design_summary = {}
+    if record_history:
+        from run_report import collect_design_summary
+        design_summary = collect_design_summary(cfg, vehicle, propulsion)
+    from Thermals.heat_sources import thermal_model
     if {'external_heating', 'nodes'} & cfg.get('thermal', {}).keys():
         raise ValueError('Select thermal.model per dynamic model instead of legacy global heating flags')
     selections = {node.get('tank_id', key): node.get('thermal', {})
                   for key, node in propulsion.node_definitions.items()
                   if thermal_model(node.get('thermal')) == 'Aeroheating'}
     thermal = ThermalNetwork(cfg, vehicle, selections=selections) if selections else None
-    environment = Environment(h_max=float(cfg["environment"]["max_altitude"]),
-                              dh=float(cfg["environment"]["altitude_step"]))
+    environment_cfg = cfg["environment"]
+    wind_cfg = environment_cfg.get("wind")
+    wind_profile = None
+    if wind_cfg is not None:
+        if not isinstance(wind_cfg, dict):
+            raise ValueError("environment.wind must be a mapping")
+        wind_enabled = wind_cfg.get("enabled", False)
+        if not isinstance(wind_enabled, bool):
+            raise ValueError("environment.wind.enabled must be true or false")
+        if wind_enabled:
+            profile = wind_cfg.get("profile")
+            if not isinstance(profile, str) or not profile.strip():
+                raise ValueError("environment.wind.profile is required when wind is enabled")
+            wind_profile = project_path(profile)
+    environment = Environment(
+        h_max=float(environment_cfg["max_altitude"]),
+        dh=float(environment_cfg["altitude_step"]),
+        wind_profile=wind_profile,
+    )
     if aero_model is None:
         aero_model = DragModel(project_path(cfg["aero"]["model"]))
     flight = FlightSim(cfg, environment, Aero(cfg["aero"], vehicle.aero_candidate(), aero_model),
@@ -184,6 +207,9 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
     else:
         result = flight.result
     result.pump_sizing = deepcopy(propulsion.pump_sizing)
+    result.design_summary = design_summary
+    result.constraints.update(static_margins)
+    result.pressure_tracking = deepcopy(propulsion.network.pressure_tracking.records)
     result.constraints.update(propulsion.sizing_constraints)
     context["phase"] = "constraint reporting"
     return finalize(result, limits)

@@ -40,6 +40,7 @@ class AeroOut:
     N: float = 0.0
     cp: float = float("nan")
     Mroll: float = 0.0
+    ballistic_coast: bool = False
 
 
 @dataclass
@@ -112,6 +113,8 @@ class SimResult:
     max_q: float = 0.0
     max_aoa_deg: float = 0.0
     min_stability_calibers: Optional[float] = None
+    min_stability_length_fraction: Optional[float] = None
+    max_stability_length_fraction: Optional[float] = None
     burn_duration: float = 0.0
     burn_complete: bool = False
     final_time: float = 0.0
@@ -125,9 +128,12 @@ class SimResult:
     final_pitch_rate: float = 0.0
     termination: str = "time_limit"
     warnings: list[dict] = field(default_factory=list)
+    pressure_tracking: Dict[str, Dict[str, float]] = field(default_factory=dict)
     geometry_constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     history: Optional[list] = None
+    initial_state: Optional[dict] = None
+    design_summary: Dict[str, Any] = field(default_factory=dict)
     pump_sizing: Dict[str, Dict[str, float]] = field(default_factory=dict)
     constraint_records: Dict[str, ConstraintRecord] = field(default_factory=dict)
     constraint_times: Dict[str, float] = field(default_factory=dict)

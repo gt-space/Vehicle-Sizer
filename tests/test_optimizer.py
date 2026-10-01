@@ -18,6 +18,7 @@ def settings():
     # Scoring examples use a fixed reference independent of user search tuning.
     settings['reference_mass'] = 500.0
     settings['conditional_geometry'] = False
+    settings.pop('soft_penalties', None)
     return settings
 
 
@@ -61,19 +62,20 @@ def test_optional_and_redundant_checks_do_not_add_penalties(settings):
         opt.candidate_score(result, settings)
 
 
-def test_decode_changes_all_18_inputs_without_mutating_fixed_choices(settings, tmp_path):
+def test_decode_changes_all_19_inputs_without_mutating_fixed_choices(settings, tmp_path):
     cfg = load_config(settings['base_config'])
     cfg['tanks']['press_tank']['volume'] = cfg['tanks']['press_tank'].pop('volume_liters') * .001 if 'volume_liters' in cfg['tanks']['press_tank'] else cfg['tanks']['press_tank']['volume']
     before = deepcopy(cfg)
     evaluator = opt.Evaluator(cfg, settings, None, None, None, tmp_path)
     x = np.mean(evaluator.bounds, axis=1)
     candidate = evaluator.decode(x)
-    assert len(x) == 18
+    assert len(x) == 19
     for value, path in zip(x, evaluator.paths.values()):
         assert opt.get_path(candidate, path) == value
     assert cfg == before
     assert candidate['aero'] == cfg['aero']
-    assert candidate['engine'] == cfg['engine']
+    assert candidate['engine'] == {**cfg['engine'], 'exit_pressure': candidate['engine']['exit_pressure']}
+    assert candidate['engine']['exit_pressure'] != cfg['engine']['exit_pressure']
     assert candidate['vehicle']['sections'] == cfg['vehicle']['sections']
     assert candidate['tanks']['press_tank']['outer_diameter'] == cfg['tanks']['press_tank']['outer_diameter']
 
@@ -127,6 +129,40 @@ def test_logging_best_budget_and_unresolved_failure(settings, tmp_path):
     rows = (tmp_path / 'evaluations.jsonl').read_text().splitlines()
     assert len(rows) == 2 and json.loads(rows[0])['accepted']
     assert json.loads(rows[1])['score_class'] == 'unresolved'
+
+
+def test_incumbent_uses_soft_objective_not_mass(settings, tmp_path):
+    cfg = load_config(settings['base_config'])
+    cfg['tanks']['press_tank']['volume'] = .02
+    settings['soft_penalties'] = {'max_q': dict(weight=.1, target_pa=140000., scale_pa=10000.)}
+    evaluator = opt.Evaluator(cfg, settings, None, None, None, tmp_path)
+    x = np.mean(evaluator.bounds, axis=1)
+    light = accepted(250.)
+    light.max_q = 160000.
+    heavy = accepted(275.)
+    heavy.max_q = 140000.
+    with patch.object(evaluator, 'evaluate', side_effect=[(light, set()), (heavy, set())]):
+        first = evaluator(x)
+        assert evaluator(x) < first
+    assert evaluator.best['mass'] == 275.
+
+
+def test_pressure_fed_policy_validates_owned_limits():
+    settings = load_config('Configs/optimizer_pressure_fed.yaml')
+    assert 'constraints' not in load_config(settings['base_config'])
+    model = opt.DragModel()
+    cfg, prepared = opt.prepare(settings, model)
+    assert cfg['constraints']['min_stability_calibers'] == 2.
+    assert cfg['constraints']['max_length_to_diameter'] == 25.
+    assert cfg['constraints']['goal_apogee'] == 150000.
+    assert cfg['constraints']['max_burn_duration'] == 75.
+    assert 'constraints' not in load_config(settings['base_config'])
+    assert cfg['tanks']['fuel_tank']['min_temperature'] == 80.
+    assert prepared['soft_penalties']['max_q']['target_pa'] == 140000.
+    bad = deepcopy(settings)
+    bad['hard_constraints'].append('tank.missing.Pmin')
+    with pytest.raises(ValueError, match='requires a limit'):
+        opt.prepare(bad, model)
 
 
 @pytest.mark.parametrize('kind', ['table', 'solver', 'residual', 'unexpected', 'configuration', 'io'])
@@ -185,16 +221,16 @@ def test_verification_can_reject_search_winner(settings, tmp_path, passes):
 
 
 @pytest.mark.parametrize('mode,suffix', [('bang_bang', 'BANGBANG'), ('regulator', 'REGULATOR')])
-def test_initial_rejection_deduplicates_tank_choking(settings, mode, suffix):
+def test_no_implicit_choking_penalties(settings, mode, suffix):
     cfg = load_config(settings['base_config'])
     cfg = load_config(f'Configs/flight_pump_fed_{mode}.yaml')
-    assert opt.Evaluator.redundant(None, cfg) == {f'branch.OX_{suffix}.choked', f'branch.FUEL_{suffix}.choked'}
+    assert opt.Evaluator.redundant(None, cfg) == set()
     cfg['prop_system']['template'] = {
         'circuits': {'gas': {}},
         'nodes': {'gas': {'component': 'pressurant_tank', 'tank_id': 'supply'}, 'boundary': {'component': 'boundary'}},
         'branches': {'feed': {'component': 'loss', 'circuit': 'gas', 'from': 'gas', 'to': 'boundary'},
                      'standalone': {'component': 'loss', 'circuit': 'gas', 'from': 'boundary', 'to': 'gas'}}}
-    assert opt.Evaluator.redundant(None, cfg) == {'branch.feed.choked'}
+    assert opt.Evaluator.redundant(None, cfg) == set()
 
 
 @pytest.mark.parametrize('length', [360, 501])
@@ -238,7 +274,8 @@ def test_conditional_geometry_matches_actual_sizing_and_user_bounds(settings, tm
     evaluator = opt.Evaluator(cfg, settings, model, pure, combustion, tmp_path)
     rng = np.random.default_rng(42)
     bounds = np.array(evaluator.bounds)
-    for unit in [np.zeros(18), np.ones(18), *rng.random((10, 18))]:
+    count = len(evaluator.paths)
+    for unit in [np.zeros(count), np.ones(count), *rng.random((10, count))]:
         candidate = evaluator.decode(bounds[:, 0] + unit*(bounds[:, 1]-bounds[:, 0]))
         for name, path in evaluator.paths.items():
             assert settings['bounds'][name][0] <= opt.get_path(candidate, path) <= settings['bounds'][name][1]

@@ -128,18 +128,43 @@ def plot_valve_actuations(history, path, burnout=None):
     _finish(figure, axes, path, burnout)
 
 
+def plot_aoa_flight_path(rows, path, burnout=None):
+    """Overlay true AoA and ground-relative flight-path angle on separate scales."""
+    time = _series(rows, "time_s")
+    figure, aoa_axis = plt.subplots(figsize=(11, 6))
+    path_axis = aoa_axis.twinx()
+    aoa_axis.plot(time, _series(rows, "angle_of_attack_deg"),
+                  color="tab:blue", label="Angle of attack")
+    path_axis.plot(time, _series(rows, "flight_path_angle_deg"),
+                   color="tab:orange", linestyle="--", label="Flight-path angle (ground-relative)")
+    aoa_axis.set(xlabel="Time [s]", title="Angle of attack and flight-path angle")
+    aoa_axis.set_ylabel("Angle of attack [deg]", color="tab:blue")
+    path_axis.set_ylabel("Flight-path angle [deg]", color="tab:orange")
+    aoa_axis.tick_params(axis="y", colors="tab:blue")
+    path_axis.tick_params(axis="y", colors="tab:orange")
+    _mark_burnout(aoa_axis, burnout)
+    handles, labels = aoa_axis.get_legend_handles_labels()
+    path_handles, path_labels = path_axis.get_legend_handles_labels()
+    aoa_axis.legend(handles + path_handles, labels + path_labels, loc="upper center")
+    aoa_axis.grid(True, alpha=0.3)
+    figure.tight_layout()
+    figure.savefig(path, dpi=160)
+    plt.close(figure)
+
+
 def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, Path]:
     """Write the standard flight diagnostic figures and return their paths."""
 
     base_path.parent.mkdir(parents=True, exist_ok=True)
     paths = {name: _path(base_path, name) for name in (
         "pressure_ladder", "copv_blowdown", "tank_temperatures",
-        "propellant_mass", "pc_thrust", "kinematics", "trajectory", "axial_temperatures",
-        "bang_bang", "pressurant_mdot", "engine_mdot_mr", "mass_distribution",
-        "axial_force_distribution", "normal_force_distribution",
+        "propellant_mass", "pc_thrust", "kinematics", "static_stability", "axial_temperatures",
+        "bang_bang", "pressurant_mdot", "engine_mdot_mr", "mass_distribution", "dry_mass_distribution",
+        "force_distributions", "wind", "aoa_flight_path",
     )}
     time = _series(rows, "time_s")
     burnout = _burnout_time(rows)
+    plot_aoa_flight_path(rows, paths["aoa_flight_path"], burnout)
     tank_nodes = _tank_nodes(history)
     press_node = tank_nodes["press_tank"]
 
@@ -183,7 +208,14 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     _mark_burnout(pressure_axis, burnout)
     _finish(figure, [pressure_axis, thrust_axis], paths["pc_thrust"])
 
-    figure, axes = plt.subplots(4, 2, figsize=(12, 13), sharex=True)
+    figure = plt.figure(figsize=(17, 13))
+    grid = figure.add_gridspec(4, 3, width_ratios=(1, 1, 1.2))
+    axes = np.empty((4, 2), dtype=object)
+    for row in range(4):
+        for col in range(2):
+            axes[row, col] = figure.add_subplot(
+                grid[row, col], sharex=axes[0, 0] if row or col else None
+            )
 
     axes[0, 0].plot(time, _series(rows, "altitude_m"))
     axes[0, 0].set_ylabel("Altitude [m]")
@@ -192,6 +224,7 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     axes[0, 1].set_ylabel("Downrange distance [m]")
 
     axes[1, 0].plot(time, _series(rows, "speed_m_s"), label="Speed")
+    axes[1, 0].plot(time, _series(rows, "airspeed_m_s"), linestyle="--", label="Airspeed")
     axes[1, 0].plot(time, _series(rows, "vx_m_s"), label="Horizontal velocity")
     axes[1, 0].plot(time, _series(rows, "vz_m_s"), label="Vertical velocity")
     axes[1, 0].set_ylabel("Velocity [m/s]")
@@ -225,6 +258,8 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
         label="Angle of attack",
     )
     axes[3, 0].set_ylabel("Angle [deg]")
+    axes[3, 0].plot(time, _series(rows, "air_flight_path_angle_deg"),
+                    linestyle="--", label="Air-relative flight-path angle")
 
     axes[3, 1].plot(time, _series(rows, "pitch_rate_rad_s"))
     axes[3, 1].set_ylabel("Pitch rate [rad/s]")
@@ -232,17 +267,45 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     for axis in axes[-1]:
         axis.set_xlabel("Time [s]")
 
-    figure.suptitle("Kinematics")
-    _finish(figure, axes, paths["kinematics"], burnout)
-
-    figure, axis = plt.subplots(figsize=(8, 8))
+    _mark_burnout(axes, burnout)
+    axis = figure.add_subplot(grid[:, 2])
     axis.plot(_series(rows, "x_m"), _series(rows, "altitude_m"))
     axis.set(
         xlabel="Downrange distance [m]",
         ylabel="Altitude [m]",
         title="Flight trajectory",
     )
-    _finish(figure, axis, paths["trajectory"])
+    if burnout is not None:
+        index = int(np.abs(time - burnout).argmin())
+        axis.plot(rows[index]["x_m"], rows[index]["altitude_m"], "ko", label="Burnout")
+    figure.suptitle("Flight kinematics and trajectory")
+    _finish(figure, [*axes.flat, axis], paths["kinematics"])
+
+    figure, stability_axis = plt.subplots(figsize=(11, 6))
+    mach_axis = stability_axis.twinx()
+    stability_axis.plot(time, _series(rows, "static_stability_margin_calibers"),
+                        color="tab:blue", label="Static stability margin")
+    stability_axis.axhline(0, color="gray", linewidth=1, linestyle=":")
+    mach_axis.plot(time, _series(rows, "mach"), color="tab:orange", linestyle="--", label="Mach")
+    stability_axis.set(xlabel="Time [s]", ylabel="Static stability margin [calibers]",
+                       title="Static stability margin and Mach")
+    mach_axis.set_ylabel("Mach")
+    _mark_burnout(stability_axis, burnout)
+    handles, labels = stability_axis.get_legend_handles_labels()
+    mach_handles, mach_labels = mach_axis.get_legend_handles_labels()
+    stability_axis.legend(handles + mach_handles, labels + mach_labels, loc="best")
+    stability_axis.grid(True, alpha=0.3)
+    figure.tight_layout()
+    figure.savefig(paths["static_stability"], dpi=160)
+    plt.close(figure)
+
+    figure, axis = plt.subplots(figsize=(8, 8))
+    altitude = _series(rows, "altitude_m")
+    axis.plot(_series(rows, "wind_x_m_s"), altitude, label="Wind x")
+    axis.plot(_series(rows, "wind_z_m_s"), altitude, label="Wind z")
+    axis.set(xlabel="Wind velocity [m/s]", ylabel="Altitude [m]",
+             title="Wind profile sampled along trajectory")
+    _finish(figure, axis, paths["wind"])
 
     thermal = history[0]["plant"].thermal
     if thermal is None:
@@ -314,46 +377,46 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     _finish(figure, [flow_axis, mr_axis], paths["engine_mdot_mr"])
 
     station = np.asarray(history[0]["mass_properties"]["station"], dtype=float)
+    mass_properties = history[0]["mass_properties"]
+    cell_widths = np.asarray(mass_properties["cell_widths"], dtype=float)
     mass = np.asarray([state["mass_properties"]["axial_mass"] for state in history])
     figure, axis = plt.subplots(figsize=(11, 7))
-    field = axis.pcolormesh(time, station, mass.T, shading="nearest")
-    figure.colorbar(field, ax=axis, label="Mass per axial cell [kg]")
+    field = axis.pcolormesh(time, station, (mass / cell_widths).T, shading="nearest")
+    figure.colorbar(field, ax=axis, label="Mass per unit length [kg/m]")
     axis.plot(time, _series(rows, "cg_m"), color="white", linewidth=2, label="Center of mass")
     axis.plot(time, _series(rows, "cp_m"), color="black", linewidth=2, label="Center of pressure")
     axis.set(xlabel="Time [s]", ylabel="Axial station [m]", title="Vehicle mass distribution")
     _finish(figure, axis, paths["mass_distribution"], burnout)
 
-    axial = np.asarray([state["loads"]["axial"] for state in history]) / 1000.0
-    figure = plt.figure(figsize=(12, 8))
-    axis = figure.add_subplot(111, projection="3d")
-    surface = _load_surface(
-        axis,
-        time,
-        station,
-        axial,
-        "Axial force distribution",
-        "Internal axial force [kN]",
-        burnout,
-    )
-    figure.colorbar(surface, ax=axis, shrink=0.65, pad=0.12, label="Internal axial force [kN]")
-    _finish(figure, axis, paths["axial_force_distribution"])
+    dry_mass = np.asarray(mass_properties["dry_mass"], dtype=float)
+    figure, axis = plt.subplots(figsize=(12, 6))
+    axis.stairs(dry_mass / cell_widths, mass_properties["cell_edges"],
+                label=f"Dry mass: {dry_mass.sum():.2f} kg")
+    axis.set(xlabel="Axial station from nose [m]", ylabel="Dry mass per unit length [kg/m]",
+             title="Vehicle dry-mass distribution", xlim=(0, mass_properties["length"]))
+    _finish(figure, axis, paths["dry_mass_distribution"])
 
     figure, axes = plt.subplots(
-        3,
-        1,
-        figsize=(13, 16),
+        2,
+        2,
+        figsize=(20, 14),
         subplot_kw={"projection": "3d"},
     )
+    axes = axes.ravel()
     for axis, key, scale, title, label in (
-        (axes[0], "normal", 1 / 1000.0, "Normal-force distribution",
-         "Distributed normal force [kN/cell]"),
-        (axes[1], "shear", 1 / 1000.0, "Internal shear distribution",
+        (axes[0], "axial", 1 / 1000.0, "Axial force distribution",
+         "Internal axial force [kN]"),
+        (axes[1], "normal", 1 / 1000.0, "Normal-force distribution",
+         "Distributed normal force [kN/m]"),
+        (axes[2], "shear", 1 / 1000.0, "Internal shear distribution",
          "Internal shear [kN]"),
-        (axes[2], "bending", 1 / 1000.0, "Internal bending-moment distribution",
+        (axes[3], "bending", 1 / 1000.0, "Internal bending-moment distribution",
          "Internal bending moment [kN m]"),
     ):
         values = np.asarray([state["loads"][key] for state in history]) * scale
+        if key == "normal":
+            values = values / cell_widths
         surface = _load_surface(axis, time, station, values, title, label, burnout)
         figure.colorbar(surface, ax=axis, shrink=0.65, pad=0.12, label=label)
-    _finish(figure, axes, paths["normal_force_distribution"])
+    _finish(figure, axes, paths["force_distributions"])
     return paths

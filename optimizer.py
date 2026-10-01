@@ -21,13 +21,14 @@ from AeroTables.dragmodel import _end as aero_endpoint
 from Configs.loader import load_config
 from constraints import ConstraintRecord, DesignInfeasible, EvaluationFailure, GeometryError, configured_limits, finalize
 from Fluids.PropSystem import PropSystem
-from Fluids.templates import load_template
+from Fluids.helpers.templates import load_template
 from Fluids.design import initial_conditions
 from Vehicle.Material import MaterialProperties
 from Vehicle.Engine import Engine
 from Vehicle.Vehicle import Vehicle
 from simulation import project_path, property_sources, simulate
 from simulation_types import SimResult
+from constraints import vehicle_limit_margins
 
 INCH = 0.0254
 AERO_PATHS = {
@@ -57,7 +58,7 @@ def pump_roles(cfg):
 def variable_paths(cfg, tank_ids):
     paths = dict(AERO_PATHS)
     paths.update(chamber_pressure="prop_system.Pc_target", mixture_ratio="prop_system.MR_target",
-                 thrust="prop_system.thrust_target")
+                 thrust="prop_system.thrust_target", exit_pressure="engine.exit_pressure")
     pumps = pump_roles(cfg)
     for role in ("oxidizer", "fuel"):
         if role in pumps:
@@ -152,6 +153,45 @@ def candidate_class(result):
     return "completed_infeasible"
 
 
+def soft_penalties(result, settings):
+    """Soft preferences never change feasibility; missing measurements cannot pass."""
+    policy = settings.get('soft_penalties', {})
+    if set(policy) - {'tank_pressure_tracking', 'max_q', 'stability_length_fraction'}:
+        raise ValueError('Unknown soft penalty')
+    penalties = {}
+    for tank, spec in policy.get('tank_pressure_tracking', {}).items():
+        for key in ('weight', 'pressure_scale_pa', 'time_scale_s'):
+            value = spec[key]
+            if not isfinite(value) or (value < 0 if key == 'weight' else value <= 0):
+                raise ValueError(f'Invalid pressure penalty {key}')
+        record = result.pressure_tracking.get(tank)
+        if record is None or not isfinite(record['duration_s']) or record['duration_s'] <= 0:
+            raise ValueError(f'Missing powered pressure tracking for {tank}')
+        integral = record['integral_pa_s']
+        if not isfinite(integral) or integral < 0:
+            raise ValueError('Invalid pressure error integral')
+        penalties[f'tank.{tank}.pressure_tracking'] = spec['weight'] * integral / (spec['pressure_scale_pa'] * spec['time_scale_s'])
+    if 'max_q' in policy:
+        spec = policy['max_q']
+        if any(not isfinite(spec[k]) or spec[k] < 0 for k in ('weight', 'target_pa')) or not isfinite(spec['scale_pa']) or spec['scale_pa'] <= 0:
+            raise ValueError('Invalid max-Q penalty')
+        if not isfinite(result.max_q) or result.max_q < 0:
+            raise ValueError('Invalid maximum dynamic pressure')
+        penalties['max_q'] = spec['weight'] * max(0., result.max_q - spec['target_pa']) / spec['scale_pa']
+    if 'stability_length_fraction' in policy:
+        spec = policy['stability_length_fraction']
+        lower, upper, scale, weight = (spec[k] for k in ('lower_target', 'upper_target', 'scale', 'weight'))
+        if (not all(isfinite(v) for v in (lower, upper, scale, weight))
+                or not 0 <= lower < upper or scale <= 0 or weight < 0):
+            raise ValueError('Invalid stability length-fraction penalty')
+        minimum, maximum = result.min_stability_length_fraction, result.max_stability_length_fraction
+        if (minimum is None or maximum is None or not all(isfinite(v) for v in (minimum, maximum))
+                or minimum > maximum):
+            raise ValueError('Missing or invalid stability length-fraction extrema')
+        penalties['stability_length_fraction'] = weight * (max(0., lower - minimum) + max(0., maximum - upper)) / scale
+    return penalties
+
+
 def candidate_score(result, settings, *, redundant=()):
     """Disjoint class intervals; scales guide search within a class only."""
     category = candidate_class(result)
@@ -159,7 +199,9 @@ def candidate_score(result, settings, *, redundant=()):
         mass = result.initial_mass
         if mass is None or not isfinite(mass) or mass <= 0:
             raise ValueError("Accepted candidate has no finite positive launch mass")
-        return min(mass / (mass + settings["reference_mass"]), nextafter(1., 0.)), {}
+        penalties = soft_penalties(result, settings)
+        objective = mass / settings['reference_mass'] + sum(penalties.values())
+        return min(objective / (1. + objective), nextafter(1., 0.)), {}
     contributions = {}
     for key, record in result.constraint_records.items():
         if not record.required or key in redundant or record.margin is None:
@@ -347,6 +389,7 @@ class Evaluator:
             propulsion = PropSystem(cfg, vehicle.tanks, fluid_properties=self.pure,
                                     combustion_properties=self.combustion)
             vehicle.build(Engine(cfg["engine"]["mass"], cfg["engine"]["length"], propulsion.exit_area))
+            vehicle_limit_margins(cfg, vehicle)
         except DesignInfeasible as error:
             result = SimResult(termination="infeasible_initial_design", constraints=dict(error.constraints))
             if isinstance(error, GeometryError):
@@ -363,16 +406,7 @@ class Evaluator:
 
     @staticmethod
     def redundant(propulsion, cfg=None):
-        # Tank Pmin already contains the worst outgoing choked margin. Keep
-        # standalone branch checks whose source has no tank aggregate.
-        if propulsion is None:
-            template = load_template(cfg) if cfg is not None else None
-            return {f"branch.{key}.choked" for key, branch in template['branches'].items()
-                    if template['nodes'][branch['from']].get('tank_id') is not None
-                    and (branch.get('require_choked', False) or
-                         template['nodes'][branch['from']].get('component') == 'pressurant_tank')} if template else set()
-        return {f"branch.{key}.choked" for key, branch in propulsion.choked_branches.items()
-                if propulsion.node_definitions[branch["from"]].get("tank_id") is not None}
+        return set()
 
     def __call__(self, values):
         if self.count >= self.settings["max_evaluations"]:
@@ -411,6 +445,10 @@ class Evaluator:
         entry = dict(evaluation=self.count, variables=variables,
                      search_coordinates=list(map(float, values)), score_class=candidate_class(result), failure=failure,
                      failure_details=details,
+                     pressure_tracking=result.pressure_tracking,
+                     min_stability_length_fraction=result.min_stability_length_fraction,
+                     max_stability_length_fraction=result.max_stability_length_fraction,
+                     soft_penalties=soft_penalties(result, self.settings) if result.accepted else {},
                      score=score, accepted=result.accepted, mass=result.initial_mass,
                      termination=result.termination, warnings=result.warnings,
                      apogee=result.apogee, dry_mass=result.dry_mass,
@@ -419,7 +457,7 @@ class Evaluator:
                      elapsed_seconds=time.perf_counter() - started)
         with (self.output / "evaluations.jsonl").open("a") as stream:
             stream.write(json.dumps(entry, allow_nan=False) + "\n")
-        if result.accepted and (self.best is None or result.initial_mass < self.best["mass"]):
+        if result.accepted and (self.best is None or score < self.best["score"]):
             self.best = entry
             (self.output / "best.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
             (self.output / "best.json").write_text(json.dumps(entry, indent=2, allow_nan=False))
@@ -453,9 +491,26 @@ def prepare(settings, model):
     states = cfg["prop_system"].get("initial_conditions", {})
     for role in ("oxidizer", "fuel"):
         states[ids[role]].pop("P", None)
+    cfg.setdefault('constraints', {})
     for path, value in settings.get("evaluation_overrides", {}).items():
         set_path(cfg, path, value)
     limits = configured_limits(cfg)
+    for key in settings.get('hard_constraints', []):
+        if key in limits:
+            continue
+        parts = key.split('.')
+        field = {'Tmin': 'min_temperature', 'Pmin': 'min_pressure'}.get(parts[-1])
+        if len(parts) != 3 or parts[0] != 'tank' or field is None or field not in cfg.get('tanks', {}).get(parts[1], {}):
+            raise ValueError(f'Hard constraint {key!r} requires a limit in its flight-config owner')
+    tracking = settings.get('soft_penalties', {}).get('tank_pressure_tracking', {})
+    for tank in tracking:
+        if cfg.get('tanks', {}).get(tank, {}).get('type') != 'propellant':
+            raise ValueError(f'Pressure tracking requires a propellant tank: {tank}')
+    if 'max_q' in settings.get('soft_penalties', {}) and 'max_q' in limits:
+        raise ValueError('max_q cannot be both a hard constraint and a soft preference in this policy')
+    soft_penalties(SimpleNamespace(max_q=0., min_stability_length_fraction=0.,
+        max_stability_length_fraction=0., pressure_tracking={
+        tank: dict(duration_s=1., integral_pa_s=0.) for tank in tracking}), settings)
     if not {"goal_apogee", "max_burn_duration"} <= limits.keys():
         raise ValueError("Search requires goal_apogee and max_burn_duration")
     if cfg["environment"]["max_altitude"] <= limits["goal_apogee"]:
@@ -474,6 +529,17 @@ def prepare(settings, model):
             raise ValueError(f"{name} bounds exceed aero deck {deck[name]}")
         get_path(cfg, paths[name])
         settings["bounds"][name] = (low, high)
+    if settings['bounds']['exit_pressure'][1] >= settings['bounds']['chamber_pressure'][0]:
+        raise ValueError('Exit-pressure upper bound must be below the chamber-pressure lower bound')
+    combustion = cfg['property_models']['combustion']
+    if combustion['source'] == 'table':
+        from FluidTables.PropertyModels import TableCombustionPropertySource
+        source = TableCombustionPropertySource(project_path(combustion['table']['lookup_file']),
+                                               int(combustion['table']['nfz']))
+        low, high = source.design_exit_pressure_bounds(settings['bounds']['chamber_pressure'],
+                                                      settings['bounds']['mixture_ratio'])
+        if not low <= settings['bounds']['exit_pressure'][0] <= settings['bounds']['exit_pressure'][1] <= high:
+            raise ValueError(f'Exit-pressure bounds must lie in the common table sizing interval [{low}, {high}] Pa')
     if not isinstance(settings.get("conditional_geometry", False), bool):
         raise ValueError("conditional_geometry must be boolean")
     for name in ("reference_mass",):
@@ -511,6 +577,11 @@ def verify_best(evaluator):
                   initial_mass=result.initial_mass, apogee=result.apogee,
                   burn_duration=result.burn_duration, termination=result.termination,
                   load_peaks=result.load_peaks,
+                  score=candidate_score(result, evaluator.settings)[0],
+                  pressure_tracking=result.pressure_tracking,
+                  min_stability_length_fraction=result.min_stability_length_fraction,
+                  max_stability_length_fraction=result.max_stability_length_fraction,
+                  soft_penalties=soft_penalties(result, evaluator.settings) if result.accepted else {},
                   constraints={k: asdict(v) for k, v in result.constraint_records.items()})
     (evaluator.output / "verification.json").write_text(json.dumps(report, indent=2, allow_nan=False))
     if result.accepted:

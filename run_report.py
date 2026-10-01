@@ -1,0 +1,161 @@
+"""Generic CLI tables from the built design and synchronized flight states."""
+from collections import Counter
+import math
+
+import numpy as np
+
+PSI = 6894.757293168
+G0 = 9.80665
+
+
+def collect_design_summary(cfg, vehicle, propulsion):
+    """Capture the dry assembled vehicle before fluid inventories are attached."""
+    sections, tanks = [], []
+    counts = Counter()
+    names = {"nosecone": "Nosecone", "avi_bay": "Avionics bay",
+             "fin_can": "Fin can / boattail", "inter_tank": "Intertank"}
+    for definition, section in zip(cfg["vehicle"]["sections"], vehicle.sections):
+        kind = definition["type"]
+        counts[kind] += 1
+        label = definition.get("name", definition.get("tank_id", names.get(kind, kind)))
+        if kind == "inter_tank" and "name" not in definition:
+            label = f"Intertank {counts[kind]}"
+        sections.append([label, float(section.start_station), float(section.length),
+                         float(np.sum(section.mass))])
+        if kind == "fin_can":
+            sections.append(["Engine", float(vehicle.engine_start_station),
+                             float(vehicle.engine.length), float(vehicle.engine.mass)])
+        if "tank_id" in definition:
+            tank_id = definition["tank_id"]
+            tank_cfg = cfg["tanks"][tank_id]
+            vessel = getattr(section, "copv", section)
+            tanks.append(dict(
+                id=tank_id, type=tank_cfg["type"],
+                volume=float(vessel.volume), length=float(vessel.length),
+                diameter=float(vessel.diameter if hasattr(section, "copv") else section.OMLD),
+                thickness=float(vessel.wall_thickness), material=tank_cfg["material"],
+                initial=propulsion.initial_states[tank_id],
+            ))
+    sl = propulsion.combustion_properties.evaluate(
+        chamber_pressure=propulsion.Pc_target, mixture_ratio=propulsion.MR_target,
+        ambient_pressure=101325., expansion_ratio=propulsion.expansion_ratio,
+        cstar_efficiency=propulsion.cstar_efficiency, cf_efficiency=propulsion.cf_efficiency,
+    )
+    return dict(
+        sections=sections, tanks=tanks, length=float(vehicle.length),
+        diameter=float(cfg["vehicle"]["OMLD"]),
+        dry_inertia={"Ixx": float(vehicle.Ixx), "Iyy": float(vehicle.Iyy)},
+        design_mdot=float(propulsion.mdot_total),
+        sea_level_thrust=float(sl.Cf * propulsion.Pc_target * propulsion.throat_area),
+    )
+
+
+def _number(value, digits=2):
+    return f"{value:,.{digits}f}" if value is not None and math.isfinite(value) else "N/A"
+
+
+def _table(title, fields, rows):
+    from prettytable import PrettyTable
+    table = PrettyTable(fields)
+    table.title = title
+    table.align = "r"
+    table.align[fields[0]] = "l"
+    table.add_rows(rows)
+    return str(table)
+
+
+def build_run_tables(cfg, result):
+    """Return tables in display order; never infer launch values from the first step."""
+    design, initial = result.design_summary, result.initial_state
+    if not design or initial is None:
+        return []
+    history = result.history or []
+    states = [initial, *history]
+    shutdown = next((s for s in states if s["plant"].fluids.propulsion.mode == "shutdown"), None)
+    final = states[-1]
+    nodes = initial["plant"].fluids.node
+    tank_nodes = {node["tank_id"]: node for node in nodes.values() if node.get("tank_id")}
+    tables = []
+    tables.append(_table("Vehicle sections (nose to aft; engine overlaps its housing)",
+                         ["Section", "Station [m]", "Length [m]", "Dry mass [kg]"],
+                         [[name, _number(x, 3), _number(length, 4), _number(mass)]
+                          for name, x, length, mass in design["sections"]]))
+    tables.append(_table("Overall vehicle", ["Parameter", "Value"], [
+        ["Length", f'{design["length"]:.3f} m / {design["length"] / .3048:.2f} ft'],
+        ["Diameter", f'{design["diameter"] * 1000:.2f} mm / {design["diameter"] / .0254:.2f} in'],
+    ]))
+    tank_columns = []
+    for tank in design["tanks"]:
+        node = tank_nodes[tank["id"]]
+        load = node.get("m_liq") if tank["type"] == "propellant" else node.get("mass", node.get("m"))
+        tank_columns.append([
+            _number(load, 3), _number(tank["volume"] * 1000),
+            _number(tank["diameter"] * 1000), _number(tank["length"], 3),
+            _number(tank["thickness"] * 1000, 3), tank["material"],
+            _number(node.get("T_liq", node.get("T", tank["initial"]["T"]))),
+        ])
+    if tank_columns:
+        labels = ["Initial fluid load [kg]", "Volume [L]", "Outer diameter [mm]",
+                  "Length [m]", "Wall thickness [mm]", "Material", "Initial temperature [K]"]
+        tables.append(_table("Tanks (propellant load excludes ullage gas)",
+                             ["Parameter", *[t["id"] for t in design["tanks"]]],
+                             [[label, *values] for label, values in zip(labels, zip(*tank_columns))]))
+    prop_mass = sum(tank_nodes[t["id"]].get("m_liq", 0.) for t in design["tanks"] if t["type"] == "propellant")
+    stored_gas = result.initial_mass - result.dry_mass - prop_mass
+    tables.append(_table("Vehicle mass", ["Component / state", "Mass [kg]"], [
+        ["Dry vehicle", _number(result.dry_mass)], ["Initial propellant", _number(prop_mass)],
+        ["Initial pressurant / other stored fluids", _number(stored_gas)],
+        ["Launch mass", _number(result.initial_mass)],
+        ["Mass after shutdown", _number(shutdown["mass_properties"]["total_mass"] if shutdown else None)],
+        ["Final mass", _number(final["mass_properties"]["total_mass"])],
+    ]))
+    pressure_rows = [[node_id, _number(node["P"] / PSI)] for node_id, node in nodes.items() if "P" in node]
+    pressure_rows.append(["Nozzle exit (design)", _number(cfg["engine"]["exit_pressure"] / PSI)])
+    tables.append(_table("Pressure ladder at initialization (absolute)", ["Node / location", "Pressure [psia]"], pressure_rows))
+    max_speed = max(math.hypot(s["kinematics"].vx, s["kinematics"].vz) for s in states)
+    max_mach = max(s["atmosphere"].Ma for s in states)
+    # Proper acceleration excludes gravity, unlike vertical acceleration dvz/dt.
+    max_g = max(math.hypot(s["forces"]["thrust"] - s["plant"].aero.A,
+                          s["plant"].aero.N) / s["mass_properties"]["total_mass"] / G0 for s in states)
+    rail = next((s for s in states if result.rail_exit_time is not None
+                 and s["kinematics"].t >= result.rail_exit_time - 1e-6), None)
+    tables.append(_table("Kinematics (initial and accepted samples)", ["Parameter", "Value"], [
+        ["Off-rail TWR", _number(rail["forces"]["twr"] if rail else None)],
+        ["Maximum ground speed", f"{max_speed:,.2f} m/s"],
+        ["Maximum Mach", _number(max_mach, 3)],
+        ["Maximum proper acceleration", f"{max_g:.3f} g"],
+        ["Maximum Q", f"{result.max_q / 1000:.2f} kPa / {result.max_q / PSI:.2f} psi"],
+        ["Apogee", f"{result.apogee / 1000:.3f} km" if result.apogee_reached else "Not reached"],
+        ["Termination", result.termination],
+    ]))
+    engine, prop = cfg["engine"], cfg["prop_system"]
+    thrust = float(prop["thrust_target"])
+    max_thrust = max(s["plant"].fluids.propulsion.thrust for s in states)
+    tables.append(_table("Engine", ["Parameter", "Value"], [
+        ["Design thrust", f"{thrust / 1000:.2f} kN / {thrust / 4.4482216152605:,.0f} lbf"],
+        ["Sea-level thrust (design Pc/MR)", f'{design["sea_level_thrust"] / 1000:.2f} kN'],
+        ["Initial launch thrust", f'{initial["plant"].fluids.propulsion.thrust / 1000:.2f} kN'],
+        ["Maximum sampled thrust", f"{max_thrust / 1000:.2f} kN"],
+        ["Design mixture ratio O/F", _number(prop["MR_target"], 3)],
+        ["Design propellant flow", f'{design["design_mdot"]:.3f} kg/s'],
+        ["Burn duration", f'{result.burn_duration:.3f} s' + (" (incomplete)" if not result.burn_complete else "")],
+        ["Eta Cf", _number(engine["cf_efficiency"], 3)],
+        ["Eta C*", _number(engine["cstar_efficiency"], 3)],
+    ]))
+    inertia_rows = []
+    for label, properties in (
+        ("Dry", design["dry_inertia"]), ("Launch", initial["mass_properties"]),
+        ("Shutdown", shutdown["mass_properties"] if shutdown else None),
+        ("Final", final["mass_properties"]),
+    ):
+        inertia_rows.append([label, *[_number(properties[key], 3) if properties else "N/A"
+                                      for key in ("Ixx", "Iyy", "Iyy")]])
+    tables.append(_table("Body-axis inertia about each state's CG [kg m^2]",
+                         ["State", "Ixx (longitudinal)", "Iyy (pitch)", "Izz (assumed = Iyy)"], inertia_rows))
+    return tables
+
+
+def print_run_summary(cfg, result):
+    for table in build_run_tables(cfg, result):
+        print(table)
+        print()

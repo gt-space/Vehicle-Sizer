@@ -193,6 +193,7 @@ def test_aoa_exceedance_is_a_signed_operating_constraint(monkeypatch, angle):
     from errors import TrialDomainError
     from simulation_types import KinematicsState, SimResult
     sim = flight(monkeypatch)
+    sim.cfg['constraints'] = {'max_aoa_deg': 15.}
     kin = KinematicsState(t=2., dt=1., x=0., h=10., vx=0., vz=10.,
                           theta=np.pi/2 + np.radians(angle), q=0.,
                           alpha=np.radians(angle), m=16., Iyy=3.)

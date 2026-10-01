@@ -79,10 +79,10 @@ def test_renamed_shared_and_independent_supplies(example, split):
     assert cfg == original
     assert system.chamber_id == "node_thrust_chamber"
     assert system.nozzle_id == "edge_NOZZLE"
-    assert len(system.choked_branches) == 2
+    assert not any('choked' in key for key in system.initial_constraints)
     assert all(value >= 0 for value in system.initial_constraints.values())
     out = system.network.update(bcs={system.ambient_id: {"P": 1e5}})
-    assert len(out["constraints"]) == (6 if split else 4)
+    assert len(out["constraints"]) == (2 if split else 1)
     if split:
         ox = system.branch_definitions["edge_OX_BANGBANG"]
         fuel = system.branch_definitions["edge_FUEL_BANGBANG"]
@@ -99,6 +99,7 @@ def test_initial_pressure_and_temperature_failures_are_constraints(example):
     for field, value, suffix in (("P", 3e6, "Pmin"), ("T", 210, "Tmin")):
         candidate = deepcopy(cfg)
         if field == "P":
+            candidate['tanks']['press_tank']['min_pressure'] = 4e6
             candidate["tanks"]["press_tank"]["design_pressure"] = value
         else:
             candidate["prop_system"]["initial_conditions"]["press_tank"][field] = value
@@ -117,7 +118,7 @@ def test_two_supplies_to_one_tank_allocate_sizing_demand(example):
         "circuit": "circuit_second_gas", "demand_fraction": .6}
     system = build(cfg, tanks)
     assert system.branch_definitions["edge_OX_BANGBANG"]["CdA"] == pytest.approx(.4*original)
-    assert len(system.choked_branches) == 3
+    assert not any('choked' in key for key in system.initial_constraints)
     branches["additional_supply"]["demand_fraction"] = .5
     with pytest.raises(ValueError, match="summing to one"):
         build(cfg, tanks)
@@ -148,6 +149,7 @@ def test_api_returns_initial_design_rejection(example):
     cfg = deepcopy(cfg)
     cfg["launch"] = {"altitude": 0, "velocity": 0}
     cfg["tanks"]["press_tank"]["design_pressure"] = 3e6
+    cfg['tanks']['press_tank']['min_pressure'] = 4e6
     with patch.object(simulation, "Vehicle", return_value=SimpleNamespace(tanks=tanks)), \
          patch("Fluids.PropSystem._make_cea", return_value=FakeCEA()):
         result = simulation.simulate(cfg, pure_properties=example[2].fluid_properties,
@@ -168,8 +170,11 @@ def test_blowdown_has_no_implicit_copv_requirements(example):
     assert system.network.update(bcs={system.ambient_id: {"P": 1e5}})["constraints"] == {}
 
 
-def test_runtime_uses_current_gamma_pressure_and_temperature_even_when_closed(example):
-    system = example[2]
+def test_runtime_pressure_floor_is_independent_of_choking(example):
+    cfg, tanks, _ = example
+    cfg = deepcopy(cfg)
+    cfg['tanks']['press_tank']['min_pressure'] = 3.5e6
+    system = build(cfg, tanks)
     nodes = {key: {"P": definition.get("P0", 1e5), "fluids": {}}
              for key, definition in system.node_definitions.items()}
     nodes["press_tank"].update(P=4e6, T=210, fluids={"Nitrogen": {"T": 210, "gamma": 1.4}})
@@ -177,8 +182,8 @@ def test_runtime_uses_current_gamma_pressure_and_temperature_even_when_closed(ex
     nodes["fuel_ullage"]["P"] = 2.7e6
     margins = system._constraint_margins(SimpleNamespace(nodes=nodes, branches={}))
     assert margins["tank.press_tank.Tmin"] == -10
-    assert margins["tank.press_tank.Pmin"] == pytest.approx(4e6 - 2.7e6/(2/2.4)**3.5)
-    assert margins["branch.OX_BANGBANG.choked"] < 0
+    assert margins["tank.press_tank.Pmin"] == pytest.approx(.5e6)
+    assert not any('choked' in key for key in margins)
 
 
 def test_flight_retains_a_violation_after_recovery():

@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from Fluids.design import initial_conditions, tank_design_pressure
-from Fluids.templates import load_template
+from Fluids.helpers.templates import load_template
 from Fluids.PropSystem import PropSystem
 from FluidTables.PropertyModels import CEAPropertySource, CoolPropPropertySource, TablePureFluidPropertySource
 import propulsion_fixtures as fixtures
@@ -138,8 +138,10 @@ def test_actual_template_preview_commit_dryout_and_stopping(feed,control):
         first=prop.update(None,atm,{})
         assert first.propulsion.mode=='combusting'
         y=prop.network.y.copy()
+        tracking = deepcopy(prop.network.pressure_tracking.records)
         trial=prop.update(.2,atm,{},commit=False)
         np.testing.assert_array_equal(y,prop.network.y)
+        assert prop.network.pressure_tracking.records == tracking
         assert prop.network.time==0 and not prop.network.events
         actual=prop.update(.2,atm,{})
         assert actual.propulsion.mode=='shutdown'
@@ -147,6 +149,12 @@ def test_actual_template_preview_commit_dryout_and_stopping(feed,control):
         assert prop.network.frozen
         assert any(event['name']=='dryout' for event in actual.events)
         assert trial.propulsion.thrust==actual.propulsion.thrust
+        tracking = deepcopy(prop.network.pressure_tracking.records)
+        dryout_time = min(event['time_s'] for event in actual.events if event['name'] == 'dryout')
+        assert set(tracking) == {'fuel_tank', 'ox_tank'}
+        for record in tracking.values():
+            assert record['duration_s'] == pytest.approx(dryout_time, abs=1e-7)
+            assert record['integral_pa_s'] > 0
         for key in first.td_state:
             assert actual.td_state[key]['mass']==pytest.approx(trial.td_state[key]['mass'])
         later=prop.update(.3,atm,{})
@@ -154,6 +162,7 @@ def test_actual_template_preview_commit_dryout_and_stopping(feed,control):
         assert later.event_counts==actual.event_counts
         assert later.td_state==actual.td_state
         assert prop.network.time==pytest.approx(.5)
+        assert prop.network.pressure_tracking.records == tracking
 
 
 def test_template_continues_passive_flow_after_shutdown():

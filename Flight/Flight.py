@@ -42,6 +42,9 @@ class FlightSim:
         self.vehicle = vehicle
         self.thermal = thermal
         self.loads = Loads(vehicle, aero)
+        self.aero_q_cutoff = float(cfg.get("aero", {}).get("q_cutoff_Pa", 0.0))
+        if not math.isfinite(self.aero_q_cutoff) or self.aero_q_cutoff < 0:
+            raise ValueError("aero.q_cutoff_Pa must be finite and nonnegative")
 
     def trial_aero(
         self,
@@ -50,6 +53,14 @@ class FlightSim:
         engine_on: bool,
     ) -> AeroOut:
         self.check_trial(kin, atm)
+        if atm.q < self.aero_q_cutoff:
+            return AeroOut(Cd=float("nan"), D=0.0, Ca=float("nan"), A=0.0,
+                           Cn=float("nan"), N=0.0, cp=float("nan"), ballistic_coast=True)
+        angle_limit = min(15., float(getattr(self.aero, "alpha_deg", [15.])[-1]))
+        if abs(math.degrees(kin.alpha)) > angle_limit:
+            raise TrialDomainError(f"Flight trial AoA exceeds aero domain ({angle_limit:g} deg)")
+        if atm.Ma > float(getattr(self.aero, "mach", [float("inf")])[-1]):
+            raise TrialDomainError("Flight trial Mach exceeds aero domain")
         return self.aero.evaluate(kin, atm, engine_on)
 
     def check_trial(self, kin, atmosphere=None):
@@ -58,9 +69,6 @@ class FlightSim:
                     ("t", "dt", "x", "h", "vx", "vz", "theta", "q", "alpha", "m", "Iyy"))
                 or kin.t < 0 or kin.dt <= 0 or kin.m <= 0 or kin.Iyy <= 0):
             raise TrialDomainError("Flight trial requires finite state, positive dt, mass and inertia")
-        angle_limit = min(15., float(getattr(self.aero, "alpha_deg", [15.])[-1]))
-        if abs(math.degrees(kin.alpha)) > angle_limit:
-            raise TrialDomainError(f"Flight trial AoA exceeds aero domain ({angle_limit:g} deg)")
         if atmosphere is not None:
             values = (atmosphere.T, atmosphere.p, atmosphere.rho, atmosphere.mu,
                       atmosphere.a, atmosphere.q, atmosphere.Ma)
@@ -68,8 +76,6 @@ class FlightSim:
                     or min(atmosphere.T, atmosphere.a, atmosphere.mu) <= 0
                     or min(atmosphere.p, atmosphere.rho, atmosphere.q, atmosphere.Ma) < 0):
                 raise TrialDomainError("Flight trial has an invalid atmosphere state")
-            if atmosphere.Ma > float(getattr(self.aero, "mach", [float("inf")])[-1]):
-                raise TrialDomainError("Flight trial Mach exceeds aero domain")
 
     def check_commit(self, start, kin):
         """Check a converged endpoint before committing history or thermal state.
@@ -82,10 +88,11 @@ class FlightSim:
             return crossing
         if kin.vz < 0:
             return {"event": "no_ascent", "time_s": kin.t}
-        limit = min(15., float(self.cfg.get("constraints", {}).get("max_aoa_deg", 15.)))
-        margin = limit - abs(math.degrees(kin.alpha))
-        if margin < 0:
-            raise OperatingInfeasible({"max_aoa_deg": margin}, time=kin.t)
+        limit = self.cfg.get("constraints", {}).get("max_aoa_deg")
+        if limit is not None:
+            margin = float(limit) - abs(math.degrees(kin.alpha))
+            if margin < 0:
+                raise OperatingInfeasible({"max_aoa_deg": margin}, time=kin.t)
         self.check_trial(kin, self._atmosphere(kin))
         return None
 
@@ -355,7 +362,6 @@ class FlightSim:
                     drag,
                     axial_aero,
                     normal_aero,
-                    cp,
                     cg,
                     weight,
                     mass,
@@ -366,6 +372,8 @@ class FlightSim:
             ) or mass <= 0.0 or weight <= 0.0 or kin.Iyy <= 0.0
         ):
             raise ValueError("Nonphysical or nonfinite flight force state")
+        if not plant.aero.ballistic_coast and not math.isfinite(cp):
+            raise ValueError("Nonphysical or nonfinite flight force state")
 
         Fx = (thrust - axial_aero) * math.cos(kin.theta) - normal_aero * math.sin(kin.theta)
         Fz = (thrust - axial_aero) * math.sin(kin.theta) + normal_aero * math.cos(kin.theta) - weight
@@ -375,7 +383,7 @@ class FlightSim:
 
         axial_specific_force = (thrust - axial_aero) / mass # needed for fluid head pressure
 
-        pitch_moment = -normal_aero * (cp - cg)
+        pitch_moment = 0.0 if plant.aero.ballistic_coast else -normal_aero * (cp - cg)
         pitch_acceleration = pitch_moment / kin.Iyy
 
         return {
@@ -399,15 +407,20 @@ class FlightSim:
     def mass_properties(self) -> Dict[str, Any]:
         """Snapshot the vehicle mass state so later updates cannot alter history."""
 
-        return {
+        snapshot = {
             "total_mass": float(self.vehicle.total_mass),
             "cg": float(self.vehicle.cg),
             "Ixx": float(self.vehicle.Ixx),
             "Iyy": float(self.vehicle.Iyy),
             "length": float(self.vehicle.length),
+            "diameter": float(self.cfg.get("vehicle", {}).get("OMLD", np.nan)),
             "station": self.vehicle.station.copy(),
             "axial_mass": self.vehicle.mass.copy(),
         }
+        for name in ("cell_edges", "cell_widths", "dry_mass"):
+            if hasattr(self.vehicle, name):
+                snapshot[name] = getattr(self.vehicle, name).copy()
+        return snapshot
 
     @staticmethod
     def stop_fluids(fluids: FluidOut) -> FluidOut:
@@ -464,15 +477,25 @@ class FlightSim:
         return speed, gamma, airspeed, gamma_air, alpha
 
 
+    def _flight_kinematics(self, kin):
+        """Evaluate inertial and air-relative kinematics at the trial altitude."""
+        wind_x, wind_z = self._wind(kin.h)
+        return self.flight_kinematics(kin, wind_x=wind_x, wind_z=wind_z)
+
+    def _wind(self, altitude):
+        """Allow atmosphere-only environment providers to represent still air."""
+        lookup = getattr(self.env, "wind", None)
+        return lookup(altitude) if lookup is not None else (0.0, 0.0)
+
     def _kinematic_boundary(self, kin, on_rail):
         """Use the segment's fixed rail mode and derive AoA from its trial state."""
         if on_rail:
             return self.constrain_to_rail(kin)
-        return replace(kin, alpha=self.flight_kinematics(kin)[4])
+        return replace(kin, alpha=self._flight_kinematics(kin)[4])
 
     def _atmosphere(self, kin):
         self.check_trial(kin)
-        return self.env.atmosphere(kin.h, self.flight_kinematics(kin)[2])
+        return self.env.atmosphere(kin.h, self._flight_kinematics(kin)[2])
 
     @staticmethod
     def _apogee_crossing(start, trial):
@@ -613,6 +636,8 @@ class FlightSim:
         stopping = self.check_commit(kin, next_kin)
         if stopping is not None:
             return None, fluid_state, thermal_out, start_forces, stopping
+        # Validate the final correction inside the retry boundary as well.
+        self.trial_aero(next_kin, self._atmosphere(next_kin), end_engine_on)
         return next_kin, fluid_state, thermal_out, start_forces, shutdown
 
     def run(self, h0: float = 0.0, v0: float = 0.0, *, progress=None,
@@ -647,15 +672,8 @@ class FlightSim:
                 or event_max_iterations < 1):
             raise ValueError("Flight event_max_iterations must be a positive integer")
 
-        atmosphere = self.env.atmosphere(h0, abs(v0))
-        fluid_state = self.commit_fluid(
-            dt=None,
-            atm=atmosphere,
-            axial_specific_force=gravity(mass, h0) / mass,
-        )
-        self.vehicle.update_mass_distribution(fluid_state.node)
-        mass = float(self.vehicle.total_mass)
         inertia = float(self.vehicle.Iyy)
+        rail_mode = self.on_rail(h0)
         kin = KinematicsState(
             t=0.0,
             dt=dt,
@@ -669,6 +687,18 @@ class FlightSim:
             m=mass,
             Iyy=inertia,
         )
+        kin = self._kinematic_boundary(kin, rail_mode)
+        atmosphere = self._atmosphere(kin)
+
+        fluid_state = self.commit_fluid(
+            dt=None,
+            atm=atmosphere,
+            axial_specific_force=gravity(mass, h0) / mass,
+        )
+        self.vehicle.update_mass_distribution(fluid_state.node)
+        mass = float(self.vehicle.total_mass)
+        inertia = float(self.vehicle.Iyy)
+        kin = replace(kin, m=mass, Iyy=inertia)
         history: List[Dict[str, Any]] = []
         result = self.result = SimResult(
             max_altitude=h0, initial_mass=mass, final_mass=mass,
@@ -688,6 +718,15 @@ class FlightSim:
             return history
         initial_aero = self.trial_aero(kin, atmosphere, self.engine_on(fluid_state.propulsion))
         initial_forces = self.forces(kin, PlantOut(initial_aero, None, fluid_state), mass)
+        if record_history:
+            result.initial_state = {
+                "kinematics": kin,
+                "atmosphere": atmosphere,
+                "plant": PlantOut(initial_aero, None, fluid_state),
+                "forces": initial_forces,
+                "mass_properties": self.mass_properties(),
+                "engine_on": self.engine_on(fluid_state.propulsion),
+            }
         self._record_twr(result, kin, initial_forces["twr"])
         if compute_loads:
             self._evaluate_loads(result, kin, atmosphere, initial_aero, initial_forces,
@@ -696,7 +735,6 @@ class FlightSim:
             progress(kin)
 
         rail_end = float(self.cfg["launch"]["altitude"]) + float(self.cfg["launch"]["rail_height"])
-        rail_mode = self.on_rail(h0)
         macro_index = 0
         while kin.t < t_end and not result.apogee_reached and (kin.t == 0.0 or kin.vz >= 0.0):
             macro_end = min((macro_index + 1) * dt, t_end)
@@ -844,12 +882,24 @@ class FlightSim:
                 loads = self._evaluate_loads(result, next_kin, end_atmosphere, end_aero,
                                              end_forces, end_engine_on)
             if record_history:
+                wind_x, wind_z = self._wind(next_kin.h)
+                _, _, airspeed, gamma_air, _ = self.flight_kinematics(
+                    next_kin,
+                    wind_x=wind_x,
+                    wind_z=wind_z,
+                )
                 state = {
                     "kinematics": next_kin,
                     "atmosphere": end_atmosphere,
                     "plant": end_plant,
                     "forces": end_forces,
                     "mass_properties": self.mass_properties(),
+                    "wind": {
+                        "wind_x": float(wind_x),
+                        "wind_z": float(wind_z),
+                        "airspeed": float(airspeed),
+                        "gamma_air": float(gamma_air),
+                    },
                     "engine_on": end_engine_on,
                     "on_rail": rail_mode,
                 }
@@ -867,7 +917,8 @@ class FlightSim:
 
     def _evaluate_loads(self, result, kin, atmosphere, aero, forces, engine_on):
         loads = self.loads.evaluate(atmosphere.q, atmosphere.Ma, kin.alpha,
-                                    aero.A, forces["thrust"], engine_on=engine_on)
+                                    aero.A, forces["thrust"], engine_on=engine_on,
+                                    aerodynamic=not aero.ballistic_coast)
         for name in ("axial", "normal", "shear", "bending"):
             values = np.asarray(loads[name])
             if not np.all(np.isfinite(values)):
@@ -895,15 +946,21 @@ class FlightSim:
 
     def _record_extrema(self, result, atmosphere, aero, kin):
         result.max_aoa_deg = max(result.max_aoa_deg, abs(math.degrees(kin.alpha)))
-        limit = float(self.cfg.get("constraints", {}).get("max_aoa_deg", 15.0))
-        merge_margins(result.constraints, {"max_aoa_deg": limit - result.max_aoa_deg},
-                      times=result.constraint_times, time=kin.t)
+        limit = self.cfg.get("constraints", {}).get("max_aoa_deg")
+        if limit is not None:
+            merge_margins(result.constraints, {"max_aoa_deg": float(limit) - result.max_aoa_deg},
+                          times=result.constraint_times, time=kin.t)
         result.max_q = max(result.max_q, float(atmosphere.q))
         diameter = self.cfg.get("vehicle", {}).get("OMLD")
         if diameter is not None and math.isfinite(aero.cp):
             stability = (aero.cp - self.vehicle.cg) / float(diameter)
             previous = result.min_stability_calibers
             result.min_stability_calibers = stability if previous is None else min(previous, stability)
+            fraction = (aero.cp - self.vehicle.cg) / self.vehicle.length
+            previous = result.min_stability_length_fraction
+            result.min_stability_length_fraction = fraction if previous is None else min(previous, fraction)
+            previous = result.max_stability_length_fraction
+            result.max_stability_length_fraction = fraction if previous is None else max(previous, fraction)
 
     def on_rail(self, altitude: float) -> bool:
         launch = self.cfg["launch"]

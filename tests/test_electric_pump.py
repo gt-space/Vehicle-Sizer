@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from Fluids.design import pump_definition, size_electric_pump
-from Fluids.templates import load_template
+from Fluids.helpers.templates import load_template
 from Fluids.PropSystem import PropSystem, DesignInfeasible
 import propulsion_fixtures as support
 

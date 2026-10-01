@@ -13,7 +13,7 @@ import yaml
 from Fluids.PropSystem import PropSystem
 from Vehicle.Vehicle import Vehicle
 from FluidTables.PropertyModels import TablePureFluidPropertySource, TableCombustionPropertySource
-from Fluids.heat_sources import thermal_model
+from Thermals.heat_sources import thermal_model
 
 
 def main():

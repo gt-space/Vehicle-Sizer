@@ -200,6 +200,7 @@ def test_cli_distinguishes_apogee_from_maximum(monkeypatch, capsys, apogee, expe
     monkeypatch.setattr(main, "history_rows", lambda _: [])
     monkeypatch.setattr(main, "write_history", lambda *args: None)
     monkeypatch.setattr(main, "write_events", lambda *args: None)
+    monkeypatch.setattr(main, "write_structural_loads", lambda *args: None)
     monkeypatch.setitem(sys.modules, "flight_plots", SimpleNamespace(plot_flight=lambda *args: {}))
     main.main()
     output = capsys.readouterr().out

@@ -1,10 +1,7 @@
-# SI units; SUNDIALS/IDAS fluid integration. Wiring is selected by prop_system.template.
-# Sweep 20260927 candidate 1988 geometry; COPV Tmin remains violated.
-# Integration accuracy/retry policy tightened after the sweep.
 advanced:
   flight:
     trial_max_retries: 10
-    trial_min_dt: 1.0e-06 # s; lower bound for invalid-trial retries
+    trial_min_dt: 1.0e-06
     corrector_max_iterations: 10
     corrector_tolerance: 1.0e-08
     event_max_iterations: 50
@@ -12,7 +9,7 @@ advanced:
   fluid_network:
     jacobian: colored
     max_step: 1.0
-    residual_retries: 3 # Additional attempts after the initial solve.
+    residual_retries: 3
     residual_tolerance: 1.0e-05
     retry_rtol_factor: 0.1
     retry_rtol_floor: 1.0e-08
@@ -22,8 +19,9 @@ advanced:
     max_iterations: 20
     temperature_tolerance: 0.01
   t_wall_min: 0.001
-  weld_efficiency: 1.0
+  weld_efficiency: 0.5
 aero:
+  q_cutoff_Pa: 0.01
   finish: 20um
   fins_on_boattail: true
   model: AeroTables/dragmodel.h5
@@ -35,33 +33,32 @@ avi_bay:
   clamshell_thickness: 0.003175
   length: 0.3
   ring_material: aluminum_6061
-constraints:
-  max_aoa_deg: 15.0
-  goal_apogee: 150000.0
-  max_burn_duration: 75.0
 engine:
   cf_efficiency: 0.95
-  cstar_efficiency: 0.85
-  exit_pressure: 75842.3
+  cstar_efficiency: 0.90
+  exit_pressure: 66794.41202594012
   fuel: RP-1
   length: 0.5715
   mass: 30.0
   oxidizer: LOX
 environment:
+  wind:
+    enabled: true
+    profile: AeroTables/WindProfiles/RAP_HWM.csv
   altitude_step: 100.0
   max_altitude: 300000.0
 fin_can:
-  hardware_mass: 2.0 # kg; additional fin-can hardware, excluding engine and fins
-  boattail_aft_diameter: 0.24752442875466096
-  boattail_length: 0.5854210616517307
+  hardware_mass: 2.0
+  boattail_aft_diameter: 0.2286
+  boattail_length: 0.6145345333668587
   boattail_wall_thickness: 0.00318
   fin_count: 4
-  fin_thickness: 0.007449853882604735
+  fin_thickness: 0.006912142657945399
   material: carbon_fiber
-  root_chord: 0.4607423123811729
-  span: 0.3511871277753288 # Aero maximum: 1.2 * vehicle.OMLD
-  sweep_fraction: 0.8536938901043448
-  tip_chord: 0.20013155474689766
+  root_chord: 0.5033800058088373
+  span: 0.365
+  sweep_fraction: 0.9167107543066175
+  tip_chord: 0.19819931890997391
 inter_tank:
   clamshell_material: carbon_fiber
   clamshell_wall_thickness: 0.00318
@@ -72,11 +69,11 @@ launch:
   rail_height: 15.0
   velocity: 0.0
 nosecone:
-  wall_thickness: 0.0032 # m; nose shell thickness
-  fineness_ratio: 4.521923494264046
+  wall_thickness: 0.0032
+  fineness_ratio: 5.7
   material: carbon_fiber
   profile: von_karman
-  reco_mass: 5.0
+  reco_mass: 15.0
   tip_radius: 0.01
 press_tank:
   airframe_material: carbon_fiber
@@ -84,8 +81,8 @@ press_tank:
   mount_material: aluminum_7075
   mount_thickness: 0.00318
 prop_system:
-  MR_target: 2.442376927922069
-  Pc_target: 1449437.3283866504
+  MR_target: 2.2
+  Pc_target: 1463927.9694781723
   fuel_inj_stiffness: 0.2
   fuel_tank_inj_dp: 275790.291727
   initial_conditions:
@@ -115,7 +112,7 @@ prop_system:
       collapse_factor: 1.2
       tank_id: ox_tank
   template: Configs/templates/pressure_fed_regulator.yaml
-  thrust_target: 19628.212993247907
+  thrust_target: 15677.600822128927
 property_models:
   combustion:
     source: table
@@ -133,47 +130,47 @@ property_models:
         n-Dodecane: ndodecane_pt
       lookup_file: FluidTables/sizer_lookups.h5
 simulation:
-  dt: 1.0
+  dt: 0.1
   fluid_solve_post_shutdown: false
   output: outputs/flight_pressure_fed_regulator.csv
   plot: outputs/flight_pressure_fed_regulator.png
   t_end: 600.0
 tanks:
   fuel_tank:
+    min_temperature: 80.0
+    min_pressure: 68947.57293168
     thermal:
       model: None
     ellipse_ratio: 1.75
     material: aluminum_6061
     passthrough_diameter: 0.1016
     passthrough_wall_thickness: 0.00254
-    propellant_mass: 117.725265769558
+    propellant_mass: 108
     type: propellant
     ullage_factor: 1.1
   ox_tank:
+    min_temperature: 80.0
+    min_pressure: 68947.57293168
     thermal:
       model: None
     ellipse_ratio: 1.75
     material: aluminum_6061
     passthrough_diameter: 0.0
     passthrough_wall_thickness: 0
-    propellant_mass: 291.10789204509706
+    propellant_mass: 240
     type: propellant
     ullage_factor: 1.1
   press_tank:
+    min_pressure: 4136854.3759008
     thermal:
-      model: DensityPowerLaw
-      reference_area: 0.85 # m^2
-      reference_heat_rate: 15873.3 # W
-      reference_density: 209.559 # kg/m^3
-      density_exponent: 1.2609
-      phase: gas
-    design_pressure: 29584258.068066813
+      model: None
+    design_pressure: 2.9579e7
     ellipse_ratio: 1.75
     material: 1018_carbon_steel
-    min_temperature: 220.0
-    outer_diameter: 0.22
+    min_temperature: 190.0
+    outer_diameter: 0.2794
     type: pressurant
-    volume: 0.09272672409944474
+    volume: 0.07
     wall_thickness: 0.0032
 thermal:
   initial_temperature: 288.15
@@ -182,7 +179,7 @@ thermal:
       specific_heat: 800.0
   sink_temperature: 288.15
 vehicle:
-  OMLD: 0.4055449250701511
+  OMLD: 0.3048
   dx: 0.01
   sections:
   - type: nosecone
@@ -206,6 +203,12 @@ vehicle:
   - area_moment_of_inertia: 3.6e-05
     avi_mass: 2.0
     feed_system_mass: 5.0
-    length: 0.762
+    length: 0.3
     type: inter_tank
   - type: fin_can
+constraints:
+  max_length_to_diameter: 30.0
+  min_stability_calibers: 2.0
+  max_aoa_deg: 15.0
+  goal_apogee: 150000.0
+  max_burn_duration: 75.0

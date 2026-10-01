@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from Fluids.pump_curve import scaled_pump_curve
+from Fluids.helpers.pump_curve import scaled_pump_curve
 from Fluids.FluidState import FluidState
 from test_electric_pump import build, config
 

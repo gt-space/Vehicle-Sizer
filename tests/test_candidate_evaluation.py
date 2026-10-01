@@ -59,7 +59,9 @@ def test_geometry_build_rejection_and_runtime_failure_are_distinct():
     cfg = {"launch": {"altitude": 0, "velocity": 0}, "engine": {"mass": 1, "length": 1},
            "environment": {"max_altitude": 1000, "altitude_step": 100}, "aero": {}}
     vehicle = SimpleNamespace(tanks={}, aero_candidate=lambda: {})
-    propulsion = SimpleNamespace(exit_area=1, pump_sizing={}, sizing_constraints={}, close=lambda: None)
+    propulsion = SimpleNamespace(exit_area=1, pump_sizing={}, sizing_constraints={},
+                                 node_definitions={}, close=lambda: None,
+                                 network=SimpleNamespace(pressure_tracking=SimpleNamespace(records={})))
     vehicle.build = lambda engine: None
     partial = SimResult(final_time=1)
     flight = SimpleNamespace(result=partial)

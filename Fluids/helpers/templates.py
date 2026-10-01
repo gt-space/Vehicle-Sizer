@@ -17,7 +17,7 @@ def load_template(cfg, *, validate_pressures=True):
     if isinstance(selected, str):
         path = Path(selected)
         if not path.is_absolute():
-            path = Path(__file__).resolve().parents[1] / path
+            path = Path(__file__).resolve().parents[2] / path
         with path.open() as stream:
             template = yaml.safe_load(stream)
     else:

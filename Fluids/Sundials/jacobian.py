@@ -4,7 +4,7 @@ No physics changes. Construct a new pattern for every session/mode layout.
 Keep dense native linear algebra; reduce expensive Python residual calls.
 """
 import numpy as np
-from .FluidNode import BoundaryComponent, VolumeComponent, CombustorComponent, JunctionComponent
+from ..FluidNode import BoundaryComponent, VolumeComponent, CombustorComponent, JunctionComponent
 from errors import TrialDomainError, LookupBoundsError
 
 
