@@ -35,6 +35,29 @@ constraints:
   max_aoa_deg: 15.0
   goal_apogee: 150000.0
   max_burn_duration: 75.0
+  finish: 20um
+  fins_on_boattail: true
+# Roll uses fin derivatives from the aero table and the vehicle's current inertia.
+roll:
+  fin_cant: 0.00174533   # Assumed fin cant [rad]
+  thrust_offset_y: 0.0  # Nozzle offset from body axis [m]
+  thrust_angle_z: 0.0   # Thrust direction toward body z [rad]
+property_models:
+  pure_fluid:
+    source: table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      fluids:
+        Nitrogen:
+          pt: nitrogen_pt
+          saturation: nitrogen_saturation
+        Oxygen: oxygen_pt
+        n-Dodecane: ndodecane_pt
+  combustion:
+    source: table
+    table:
+      lookup_file: FluidProperties/sizer_lookups.h5
+      nfz: 1
 engine:
   cf_efficiency: 0.95
   cstar_efficiency: 0.85

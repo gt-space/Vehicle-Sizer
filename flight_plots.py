@@ -205,6 +205,84 @@ def plot_aoa_flight_path(rows, path, burnout=None):
     plt.close(figure)
 
 
+def plot_canard_coefficients(rows, base_path, diameter):
+    time = _series(rows, "time_s")
+    mach = _series(rows, "mach")
+    q = _series(rows, "dynamic_pressure_Pa")
+    alpha = np.deg2rad(_series(rows, "angle_of_attack_deg"))
+    area = np.pi * diameter**2 / 4
+    canard_drag = _series(rows, "canard_drag_N")
+    canard_cd = np.zeros(len(rows))
+    valid = (q > 0) & np.isfinite(canard_drag)
+    canard_cd[valid] = canard_drag[valid] / (q[valid] * area)
+
+    with_cd = _series(rows, "Cd")
+    without_cd = with_cd - canard_cd
+    without_ca = _series(rows, "Ca")
+    without_cn = _series(rows, "Cn")
+    without_cl = without_cn * np.cos(alpha) - without_ca * np.sin(alpha)
+    with_ca = without_ca + canard_cd * np.cos(alpha)
+    with_cn = without_cn + canard_cd * np.sin(alpha)
+    with_cl = with_cn * np.cos(alpha) - with_ca * np.sin(alpha)
+
+    paths = {}
+    for name, label, with_values, without_values in (
+        ("cd", "Cd", with_cd, without_cd),
+        ("cl", "Cl", with_cl, without_cl),
+        ("cn", "Cn", with_cn, without_cn),
+        ("ca", "Ca", with_ca, without_ca),
+    ):
+        path = _path(base_path, "canard_" + name)
+        figure, axes = plt.subplots(2, 1, figsize=(11, 8))
+        for axis, x, xlabel in ((axes[0], time, "Time [s]"),
+                                (axes[1], mach, "Mach")):
+            axis.plot(x, with_values, label="With canards")
+            axis.plot(x, without_values, label="Without canard drag, same state")
+            axis.set(xlabel=xlabel, ylabel=label)
+        figure.suptitle(label + " with and without canard drag")
+        _finish(figure, axes, path)
+        paths["canard_" + name] = path
+
+    cd_percent_increase = np.full(len(rows), np.nan)
+    np.divide(100 * canard_cd, without_cd, out=cd_percent_increase,
+              where=np.isfinite(without_cd) & (without_cd != 0))
+    path = _path(base_path, "canard_cd_percent_increase")
+    figure, axes = plt.subplots(2, 1, figsize=(11, 8))
+    axes[0].plot(time, cd_percent_increase)
+    axes[1].plot(mach, cd_percent_increase)
+    axes[0].set(xlabel="Time [s]", ylabel="Cd increase [%]")
+    axes[1].set(xlabel="Mach", ylabel="Cd increase [%]")
+    figure.suptitle("Cd increase from canard drag")
+    _finish(figure, axes, path)
+    paths["canard_cd_percent_increase"] = path
+    return paths
+
+
+def plot_roll_history(roll, base_path):
+    time = np.asarray(roll["time"])
+    paths = {
+        "roll_moments": _path(base_path, "roll_moments"),
+        "roll_frequencies": _path(base_path, "roll_frequencies"),
+    }
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+    axis.plot(time, roll["forcing_moment"], label="Roll forcing")
+    axis.plot(time, roll["damping_moment"], label="Roll damping")
+    axis.plot(time, roll["canard_roll_moment"], label="Canard control")
+    axis.axhline(0, color="gray", linewidth=1)
+    axis.set(xlabel="Time [s]", ylabel="Roll moment [N m]",
+             title="Roll moment components")
+    _finish(figure, axis, paths["roll_moments"])
+
+    figure, axis = plt.subplots(figsize=(11, 6))
+    axis.plot(time, np.asarray(roll["p"]) / (2 * np.pi), label="Roll rate")
+    axis.plot(time, roll["pitch_hz"], label="Pitch natural frequency")
+    axis.set(xlabel="Time [s]", ylabel="Frequency [Hz]",
+             title="Roll rate and pitch natural frequency")
+    _finish(figure, axis, paths["roll_frequencies"])
+    return paths
+
+
 def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, Path]:
     """Write the standard flight diagnostic figures and return their paths."""
 

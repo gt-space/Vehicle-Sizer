@@ -5,6 +5,10 @@ __pycache__/
 outputs/
 FluidTables/*.h5
 AeroTables/*.h5
+.DS_Store
+.DS_Store
+.vscode
+settings.json
 tests/
 
 .venv/

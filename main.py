@@ -67,8 +67,8 @@ def history_rows(history: list) -> list[dict]:
             "axial_aero_force_N": aero.A,
             "Cn": aero.Cn,
             "normal_force_N": aero.N,
-            "cp_m": aero.cp,
-            "static_stability_margin_calibers": (aero.cp - mass["cg"]) / mass["diameter"],
+            "cp_m": aero.total_cp,
+            "static_stability_margin_calibers": (aero.total_cp - mass["cg"]) / mass["diameter"],
 
             "thrust_N": propulsion.thrust,
             "chamber_pressure_Pa": propulsion.Pc,
@@ -81,6 +81,37 @@ def history_rows(history: list) -> list[dict]:
             "engine_on": state["engine_on"],
             "on_rail": state["on_rail"],
         }
+        if aero.canard is not None:
+            canard = aero.canard
+            row.update({
+                "canard_deflection_deg": np.degrees(canard.deflection_rad),
+                "canard_drag_N": canard.drag_n,
+                "canard_neutral_drag_N": canard.neutral_drag_n,
+                "canard_control_drag_N": canard.drag_n - canard.neutral_drag_n,
+                "canard_open_roll_moment_Nm": canard.open_roll_moment_nm,
+                "canard_control_roll_moment_Nm": canard.control_roll_moment_nm,
+                "canard_remaining_roll_moment_Nm": canard.remaining_roll_moment_nm,
+                "canard_max_roll_moment_Nm": canard.max_roll_moment_nm,
+                "canard_authority_ratio": canard.authority_ratio,
+                "canard_saturated": canard.saturated,
+                "canard_normal_force_N": canard.normal_force_n,
+                "canard_pitch_moment_Nm": canard.pitch_moment_nm,
+            })
+        else:
+            row.update({
+                "canard_deflection_deg": np.nan,
+                "canard_drag_N": np.nan,
+                "canard_neutral_drag_N": np.nan,
+                "canard_control_drag_N": np.nan,
+                "canard_open_roll_moment_Nm": np.nan,
+                "canard_control_roll_moment_Nm": np.nan,
+                "canard_remaining_roll_moment_Nm": np.nan,
+                "canard_max_roll_moment_Nm": np.nan,
+                "canard_authority_ratio": np.nan,
+                "canard_saturated": np.nan,
+                "canard_normal_force_N": np.nan,
+                "canard_pitch_moment_Nm": np.nan,
+            })
         row.update(
             {
                 f"{node_id}_pressure_Pa": node["P"]
@@ -121,6 +152,26 @@ def write_history(rows: list[dict], path: Path) -> None:
         writer = csv.DictWriter(stream, fieldnames=rows[0])
         writer.writeheader()
         writer.writerows(rows)
+
+
+def write_roll_history(roll, path):
+    fields = {
+        "time_s": "time", "roll_rate_rad_s": "p",
+        "roll_angle_rad": "phi", "thrust_roll_torque_Nm": "T_eq",
+        "total_roll_moment_Nm": "roll_moment",
+        "open_roll_moment_Nm": "open_roll_moment",
+        "forcing_roll_moment_Nm": "forcing_moment",
+        "damping_roll_moment_Nm": "damping_moment",
+        "canard_roll_moment_Nm": "canard_roll_moment",
+        "pitch_natural_frequency_Hz": "pitch_hz",
+    }
+    rows = []
+    for i in range(len(roll["time"])):
+        row = {}
+        for column, key in fields.items():
+            row[column] = roll[key][i]
+        rows.append(row)
+    write_history(rows, path)
 
 
 def write_events(history: list, path: Path) -> None:
@@ -173,7 +224,7 @@ def main() -> None:
         "config",
         nargs="?",
         type=Path,
-        default=ROOT / "Configs" / "Vespula.yaml"
+        default=ROOT / "Configs" / "flight_pressure_fed_regulator.yaml"
     )
     parser.add_argument("--dt", type=float)
     parser.add_argument("--t-end", type=float)
@@ -227,12 +278,21 @@ def main() -> None:
     output_path = project_path(cfg["simulation"]["output"])
     plot_path = project_path(cfg["simulation"]["plot"])
     write_history(rows, output_path)
+    if result.roll is not None:
+        roll_path = output_path.with_name(output_path.stem + "_roll.csv")
+        write_roll_history(result.roll, roll_path)
+        print(f"Roll history: {roll_path}")
     events_path = output_path.with_name(output_path.stem + "_events.csv")
     write_events(history, events_path)
     loads_path = output_path.with_name(output_path.stem + "_structural_loads.csv")
     write_structural_loads(history, loads_path)
-    from flight_plots import plot_flight
+    from flight_plots import plot_flight, plot_canard_coefficients, plot_roll_history
     plots = plot_flight(history, rows, plot_path)
+    if result.roll is not None:
+        plots.update(plot_roll_history(result.roll, plot_path))
+    if "canards" in cfg and any(state["plant"].aero.canard is not None for state in history):
+        plots.update(plot_canard_coefficients(
+            rows, plot_path, cfg["vehicle"]["OMLD"]))
     print(f"Run complete: {time.perf_counter() - setup_started:.1f} s total.", flush=True)
 
     print(f"Max altitude reached: {result.max_altitude:.1f} m")

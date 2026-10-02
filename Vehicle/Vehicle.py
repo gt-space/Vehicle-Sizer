@@ -40,6 +40,7 @@ class Vehicle:
         self.cp: float = None
         self.Ixx: float = None
         self.Iyy: float = None
+        self.Izz = None
 
     def build(self, engine: Engine):
         """Build the configured nose-to-aft section stack."""
@@ -243,6 +244,8 @@ class Vehicle:
             # retaining fluid inertia and the shift to the current computed COM.
             dry_cg = np.sum(self.dry_mass * self.station) / np.sum(self.dry_mass)
             self.Iyy += supplied - np.sum(self.dry_mass * (self.station - dry_cg)**2)
+        # Set yaw inertia from the transverse mass distribution.
+        self.Izz = self.Iyy
 
     def update_mass_distribution(self, node_states: dict) -> None:
         """Apply fluid-network axial mass vectors and refresh mass properties."""

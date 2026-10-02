@@ -39,8 +39,10 @@ class AeroOut:
     Cn: float = 0.0
     N: float = 0.0
     cp: float = float("nan")
+    total_cp: float = float("nan")
     Mroll: float = 0.0
     ballistic_coast: bool = False
+    canard: Any = None
 
 
 @dataclass
@@ -132,6 +134,7 @@ class SimResult:
     geometry_constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     history: Optional[list] = None
+    roll: Optional[Dict[str, Any]] = None
     initial_state: Optional[dict] = None
     design_summary: Dict[str, Any] = field(default_factory=dict)
     pump_sizing: Dict[str, Dict[str, float]] = field(default_factory=dict)

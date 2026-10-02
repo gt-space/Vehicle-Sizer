@@ -10,6 +10,8 @@ from Fluids.PropSystem import PropSystem
 from errors import TrialDomainError
 from .flight_forces import gravity
 from .loads import Loads
+from .roll import RollAnalysis
+from .canards import CanardSystem
 from simulation_types import SimResult
 from constraints import OperatingInfeasible, merge_margins
 from simulation_types import (
@@ -45,6 +47,11 @@ class FlightSim:
         self.thrust_tilt = math.radians(float(cfg.get("engine", {}).get("thrust_tilt_deg", 0.0)))
         if not math.isfinite(self.thrust_tilt):
             raise ValueError("engine.thrust_tilt_deg must be finite")
+        self.canards = (
+            CanardSystem(cfg["canards"], cfg["vehicle"]["OMLD"], vehicle)
+            if "canards" in cfg else None
+        )
+        self.roll_analysis = None
         self.aero_q_cutoff = float(cfg.get("aero", {}).get("q_cutoff_Pa", 0.0))
         if not math.isfinite(self.aero_q_cutoff) or self.aero_q_cutoff < 0:
             raise ValueError("aero.q_cutoff_Pa must be finite and nonnegative")
@@ -54,6 +61,7 @@ class FlightSim:
         kin: KinematicsState,
         atm: AtmosState,
         engine_on: bool,
+        thrust: float = 0.0,
     ) -> AeroOut:
         self.check_trial(kin, atm)
         if atm.q < self.aero_q_cutoff:
@@ -64,7 +72,49 @@ class FlightSim:
             raise TrialDomainError(f"Flight trial AoA exceeds aero domain ({angle_limit:g} deg)")
         if atm.Ma > float(getattr(self.aero, "mach", [float("inf")])[-1]):
             raise TrialDomainError("Flight trial Mach exceeds aero domain")
-        return self.aero.evaluate(kin, atm, engine_on)
+        aero = self.aero.evaluate(kin, atm, engine_on)
+        if self.canards is not None:
+            roll = self.roll_analysis.evaluate(kin, atm, self.vehicle, thrust)
+            active = (kin.t >= self.canards.config.get("control_start_time_s", 0.0)
+                      and not self.on_rail(kin.h))
+            canard = self.canards.evaluate(
+                kin, atm, roll["forcing_moment"], roll["open_moment"],
+                active, self.vehicle.cg)
+            aero.canard = canard
+            if self.canards.stability_on:
+                total_normal = aero.N + canard.normal_force_n
+                if abs(total_normal) > 1e-8 * atm.q * self.aero.reference_area:
+                    aero.total_cp = (
+                        aero.N * aero.cp
+                        + canard.normal_force_n * self.canards.station_m
+                    ) / total_normal
+                else:
+                    aero.total_cp = float("nan")
+
+                minimum_margin = self.cfg.get("constraints", {}).get(
+                    "min_stability_calibers")
+                if minimum_margin is None:
+                    minimum_margin = self.canards.config.get("min_stability_calibers")
+
+                margin = (aero.total_cp - self.vehicle.cg) / self.cfg["vehicle"]["OMLD"]
+                if not math.isfinite(margin) or (
+                    minimum_margin is not None and margin < minimum_margin
+                ):
+                    base_cna = self.aero.normal_force_derivative(atm.Ma, kin.alpha)
+                    base_cma = self.aero.pitch_moment_derivative(
+                        atm.Ma, kin.alpha, self.vehicle.cg)
+                    total_cna = base_cna + canard.cn_alpha
+                    if abs(total_cna) > 1e-12:
+                        aero.total_cp = (
+                            base_cna * self.vehicle.cg
+                            - base_cma * self.cfg["vehicle"]["OMLD"]
+                            + canard.cn_alpha * self.canards.station_m
+                        ) / total_cna
+                    else:
+                        aero.total_cp = float("nan")
+            aero.D += canard.drag_n
+            aero.Cd += canard.drag_n / (atm.q * self.aero.reference_area)
+        return aero
 
     def check_trial(self, kin, atmosphere=None):
         """Guard model inputs; invalid numerical guesses are recoverable."""
@@ -356,6 +406,10 @@ class FlightSim:
         drag = float(plant.aero.D)
         axial_aero = float(plant.aero.A)
         normal_aero = float(plant.aero.N)
+        canard = plant.aero.canard
+        canard_drag = canard.drag_n if canard is not None else 0.0
+        canard_normal = canard.normal_force_n if canard is not None else 0.0
+        canard_pitch = canard.pitch_moment_nm if canard is not None else 0.0
         cp = float(plant.aero.cp)
         cg = float(self.vehicle.cg)
         weight = gravity(mass, kin.h)
@@ -382,20 +436,24 @@ class FlightSim:
         thrust_axial = thrust * math.cos(self.thrust_tilt)
         thrust_normal = thrust * math.sin(self.thrust_tilt)
         body_axial = thrust_axial - axial_aero
-        body_normal = thrust_normal + normal_aero
-        Fx = body_axial * math.cos(kin.theta) - body_normal * math.sin(kin.theta)
-        Fz = body_axial * math.sin(kin.theta) + body_normal * math.cos(kin.theta) - weight
+        body_normal = thrust_normal + normal_aero + canard_normal
+        Fx = (body_axial * math.cos(kin.theta)
+              - body_normal * math.sin(kin.theta)
+              - canard_drag * math.cos(kin.theta - kin.alpha))
+        Fz = (body_axial * math.sin(kin.theta)
+              + body_normal * math.cos(kin.theta)
+              - canard_drag * math.sin(kin.theta - kin.alpha) - weight)
 
         ax = Fx / mass
         az = Fz / mass
 
-        axial_specific_force = body_axial / mass # needed for fluid head pressure
+        axial_specific_force = (body_axial - canard_drag * math.cos(kin.alpha)) / mass
 
         # Thrust line passes through the existing engine/airframe interface.
         thrust_moment = (-(self.vehicle.engine_start_station - cg) * thrust_normal
                          if thrust_normal else 0.0)
         aero_moment = 0.0 if plant.aero.ballistic_coast else -normal_aero * (cp - cg)
-        pitch_moment = aero_moment + thrust_moment
+        pitch_moment = aero_moment + thrust_moment + canard_pitch
         pitch_acceleration = pitch_moment / kin.Iyy
 
         return {
@@ -405,7 +463,8 @@ class FlightSim:
             "thrust_moment": thrust_moment,
             "drag": drag,
             "axial_aero": axial_aero,
-            "normal_aero": normal_aero,
+            "normal_aero": normal_aero + canard_normal,
+            "canard_drag": canard_drag,
             "gravity": weight,
             "Fx": Fx,
             "Fz": Fz,
@@ -540,7 +599,8 @@ class FlightSim:
         kin = self._kinematic_boundary(kin, on_rail)
         atmosphere = self._atmosphere(kin)
         engine_on = self.engine_on(fluid_state.propulsion)
-        aero_out = self.trial_aero(kin, atmosphere, engine_on)
+        aero_out = self.trial_aero(kin, atmosphere, engine_on,
+                                   fluid_state.propulsion.thrust)
         start_plant = PlantOut(
             aero=aero_out,
             thermal=None,
@@ -564,6 +624,7 @@ class FlightSim:
             predicted_kin,
             predicted_atmosphere,
             engine_on,
+            fluid_state.propulsion.thrust,
         )
         if fluid_solve_post_shutdown or fluid_state.propulsion.mode != "shutdown":
             try:
@@ -613,6 +674,7 @@ class FlightSim:
                 next_kin,
                 trial_atmosphere,
                 end_engine_on,
+                endpoint_fluid.propulsion.thrust,
             )
             trial_plant = PlantOut(
                 aero=trial_aero,
@@ -652,7 +714,8 @@ class FlightSim:
         if stopping is not None:
             return None, fluid_state, thermal_out, start_forces, stopping
         # Validate the final correction inside the retry boundary as well.
-        self.trial_aero(next_kin, self._atmosphere(next_kin), end_engine_on)
+        self.trial_aero(next_kin, self._atmosphere(next_kin), end_engine_on,
+                        endpoint_fluid.propulsion.thrust)
         return next_kin, fluid_state, thermal_out, start_forces, shutdown
 
     def run(self, h0: float = 0.0, v0: float = 0.0, *, progress=None,
@@ -725,13 +788,26 @@ class FlightSim:
             constraints=dict(fluid_state.constraints),
             constraint_times=dict(fluid_state.constraint_times),
         )
+        self.roll_analysis = None
+        if "roll" in self.cfg:
+            self.roll_analysis = RollAnalysis(
+                self.cfg["vehicle"]["OMLD"], self.cfg["roll"], self.aero,
+            )
         thermal_out = None
         result.burn_complete = fluid_state.propulsion.mode == "shutdown"
         result.shutdown_reason = fluid_state.propulsion.shutdown_reason
         if self.check_commit(kin, kin) is not None:
             result.termination = "no_ascent"
             return history
-        initial_aero = self.trial_aero(kin, atmosphere, self.engine_on(fluid_state.propulsion))
+        initial_aero = self.trial_aero(kin, atmosphere,
+                                       self.engine_on(fluid_state.propulsion),
+                                       fluid_state.propulsion.thrust)
+        if self.roll_analysis is not None:
+            control = (initial_aero.canard.control_roll_moment_nm
+                       if initial_aero.canard is not None else 0.0)
+            self.roll_analysis.sample(kin, atmosphere, self.vehicle,
+                                      fluid_state.propulsion.thrust, control)
+            result.roll = self.roll_analysis.result
         initial_forces = self.forces(kin, PlantOut(initial_aero, None, fluid_state), mass)
         if record_history:
             result.initial_state = {
@@ -757,7 +833,8 @@ class FlightSim:
             start_atmosphere = self._atmosphere(kin)
             start_sample = self._kinematic_boundary(kin, rail_mode)
             self._record_extrema(result, start_atmosphere, self.trial_aero(
-                start_sample, start_atmosphere, self.engine_on(start_fluid.propulsion)), start_sample)
+                start_sample, start_atmosphere, self.engine_on(start_fluid.propulsion),
+                start_fluid.propulsion.thrust), start_sample)
             checkpoint = (self.prop_system.checkpoint() if fluid_solve_post_shutdown
                           or start_fluid.propulsion.mode != "shutdown" else None)
             duration = macro_end - kin.t
@@ -840,7 +917,8 @@ class FlightSim:
                 left_mass = float(self.vehicle.total_mass)
                 left_atmosphere = self._atmosphere(next_kin)
                 left_aero = self.trial_aero(next_kin, left_atmosphere,
-                                            self.engine_on(left_fluid.propulsion))
+                                            self.engine_on(left_fluid.propulsion),
+                                            left_fluid.propulsion.thrust)
                 left_forces = self.forces(next_kin, PlantOut(left_aero, thermal_out, left_fluid), left_mass)
                 self._record_twr(result, next_kin, left_forces["twr"], kin, start_forces["twr"])
                 self._record_extrema(result, left_atmosphere, left_aero, next_kin)
@@ -855,7 +933,8 @@ class FlightSim:
 
             # Re-evaluate the complete corrected endpoint for history.
             end_atmosphere = self._atmosphere(next_kin)
-            end_aero = self.trial_aero(next_kin, end_atmosphere, end_engine_on)
+            end_aero = self.trial_aero(next_kin, end_atmosphere, end_engine_on,
+                                       fluid_state.propulsion.thrust)
             end_plant = PlantOut(
                 aero=end_aero,
                 thermal=thermal_out,
@@ -896,6 +975,12 @@ class FlightSim:
             if compute_loads:
                 loads = self._evaluate_loads(result, next_kin, end_atmosphere, end_aero,
                                              end_forces, end_engine_on)
+            if self.roll_analysis is not None:
+                control = (end_aero.canard.control_roll_moment_nm
+                           if end_aero.canard is not None else 0.0)
+                self.roll_analysis.sample(
+                    next_kin, end_atmosphere, self.vehicle,
+                    fluid_state.propulsion.thrust, control)
             if record_history:
                 wind_x, wind_z = self._wind(next_kin.h)
                 _, _, airspeed, gamma_air, _ = self.flight_kinematics(
@@ -968,11 +1053,11 @@ class FlightSim:
                           times=result.constraint_times, time=kin.t)
         result.max_q = max(result.max_q, float(atmosphere.q))
         diameter = self.cfg.get("vehicle", {}).get("OMLD")
-        if diameter is not None and math.isfinite(aero.cp):
-            stability = (aero.cp - self.vehicle.cg) / float(diameter)
+        if diameter is not None and math.isfinite(aero.total_cp):
+            stability = (aero.total_cp - self.vehicle.cg) / float(diameter)
             previous = result.min_stability_calibers
             result.min_stability_calibers = stability if previous is None else min(previous, stability)
-            fraction = (aero.cp - self.vehicle.cg) / self.vehicle.length
+            fraction = (aero.total_cp - self.vehicle.cg) / self.vehicle.length
             previous = result.min_stability_length_fraction
             result.min_stability_length_fraction = fraction if previous is None else min(previous, fraction)
             previous = result.max_stability_length_fraction

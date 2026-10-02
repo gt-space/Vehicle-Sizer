@@ -91,6 +91,39 @@ class Aero:
     def _at(self, interpolator: PchipInterpolator, mach: float, alpha_deg: float) -> float:
         return float(np.interp(mach, self.mach, interpolator(alpha_deg)))
 
+    def pitch_moment_derivative(self, mach, alpha, cg):
+        # Use the two table angles nearest the current angle of attack.
+        angle = abs(float(np.degrees(alpha)))
+        lower = int(np.clip(np.searchsorted(self.alpha_deg, angle) - 1,
+                            0, len(self.alpha_deg) - 2))
+        a0, a1 = self.alpha_deg[lower:lower + 2]
+        mach = max(abs(float(mach)), float(self.mach[0]))
+        cn0 = self._at(self._cn, mach, a0)
+        cn1 = self._at(self._cn, mach, a1)
+        cp0 = self._at(self._cp, mach, a0) * INCH
+        cp1 = self._at(self._cp, mach, a1) * INCH
+        diameter = self.candidate["omld"] * INCH
+        return (-(cn1 * (cp1 - cg) - cn0 * (cp0 - cg))
+                / (diameter * np.deg2rad(a1 - a0)))
+
+    def normal_force_derivative(self, mach, alpha):
+        # Use the two aero-table angles nearest the current angle of attack.
+        angle = abs(float(np.degrees(alpha)))
+        lower = int(np.clip(np.searchsorted(self.alpha_deg, angle) - 1,
+                            0, len(self.alpha_deg) - 2))
+        a0, a1 = self.alpha_deg[lower:lower + 2]
+        mach = max(abs(float(mach)), float(self.mach[0]))
+        cn0 = self._at(self._cn, mach, a0)
+        cn1 = self._at(self._cn, mach, a1)
+        return (cn1 - cn0) / np.deg2rad(a1 - a0)
+
+    def fin_normal_force_derivative(self, mach):
+        # Interpolate the fin normal-force slope at this Mach number.
+        if not hasattr(self, "_fin_cna"):
+            self._fin_cna = self.model.parts_table(self.candidate, self.nose)["fin_cna"]
+        mach = max(abs(float(mach)), float(self.mach[0]))
+        return float(np.interp(mach, self.mach, self._fin_cna))
+
     def coefficients(
         self,
         mach: float,
@@ -171,6 +204,7 @@ class Aero:
             Cn=cn,
             N=scale * cn,
             cp=cp,
+            total_cp=cp,
         )
 
 

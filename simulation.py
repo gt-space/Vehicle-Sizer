@@ -198,6 +198,8 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
             final_pitch_rate=0.0,
             geometry_constraints=dict(vehicle.geometry_constraints),
         )
+        if getattr(flight, "roll_analysis", None) is not None:
+            result.roll = flight.roll_analysis.result
         result.termination = "infeasible_operating_state"
         merge_margins(result.constraints, error.constraints,
                       times=result.constraint_times, time=error.time)

@@ -1,0 +1,10 @@
+numpy
+matproplib
+scipy
+meson
+rocketcea
+pyyaml
+h5py
+ussa1976
+matplotlib
+prettytable
