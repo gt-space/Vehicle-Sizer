@@ -9,6 +9,7 @@ import numpy as np
 from Fluids.PropSystem import PropSystem
 from .flight_forces import gravity
 from .loads import Loads
+from .roll import RollAnalysis
 from simulation_types import SimResult
 from constraints import merge_margins
 from simulation_types import (
@@ -493,6 +494,15 @@ class FlightSim:
             constraints=dict(fluid_state.constraints),
             constraint_times=dict(fluid_state.constraint_times),
         )
+        self.roll_analysis = None
+        if "roll" in self.cfg:
+            self.roll_analysis = RollAnalysis(
+                self.cfg["vehicle"]["OMLD"], self.cfg["roll"], self.aero,
+                self.cfg["fin_can"]["fin_count"],
+            )
+        if self.roll_analysis is not None:
+            self.roll_analysis.sample(
+                kin, atmosphere, self.vehicle, fluid_state.propulsion.thrust)
         thermal_out = None
         result.burn_complete = fluid_state.propulsion.mode == "shutdown"
         result.shutdown_reason = fluid_state.propulsion.shutdown_reason
@@ -698,6 +708,10 @@ class FlightSim:
             if compute_loads:
                 loads = self._evaluate_loads(result, next_kin, end_atmosphere, end_aero,
                                              end_forces, end_engine_on)
+            if self.roll_analysis is not None:
+                self.roll_analysis.sample(
+                    next_kin, end_atmosphere, self.vehicle,
+                    fluid_state.propulsion.thrust)
             if record_history:
                 state = {
                     "kinematics": next_kin,
@@ -716,6 +730,8 @@ class FlightSim:
                 progress(kin)
 
         result.termination = "apogee" if result.apogee_reached else ("no_ascent" if kin.vz < 0 else "time_limit")
+        if self.roll_analysis is not None:
+            result.roll = self.roll_analysis.evaluate()
         return history
 
     def _evaluate_loads(self, result, kin, atmosphere, aero, forces, engine_on):

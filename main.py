@@ -111,6 +111,27 @@ def write_history(rows: list[dict], path: Path) -> None:
         writer.writerows(rows)
 
 
+def write_roll_history(roll, path):
+    fields = {
+        "time_s": "time", "roll_rate_rad_s": "p",
+        "roll_angle_rad": "phi", "thrust_roll_torque_Nm": "T_eq",
+        "total_roll_moment_Nm": "roll_moment",
+        "mode_1_rad": "R1", "mode_2_rad": "R2",
+        "lambda_1_per_s": "lambda_1", "lambda_2_per_s": "lambda_2",
+        "omega_1_rad_s": "omega_1", "omega_2_rad_s": "omega_2",
+        "trim_rad": "alpha_trim", "aoa_upper_rad": "alpha_upper",
+        "q_aoa_upper_Pa_rad": "q_alpha_upper",
+        "diagnostic_modes": "diagnostic_modes",
+    }
+    rows = []
+    for i in range(len(roll["time"])):
+        row = {}
+        for column, key in fields.items():
+            row[column] = roll[key][i]
+        rows.append(row)
+    write_history(rows, path)
+
+
 def write_events(history: list, path: Path) -> None:
     """Save substep events without downsampling them to the flight output rate."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,6 +199,14 @@ def main() -> None:
     output_path = project_path(cfg["simulation"]["output"])
     plot_path = project_path(cfg["simulation"]["plot"])
     write_history(rows, output_path)
+    if result.roll is not None:
+        roll_path = output_path.with_name(output_path.stem + "_roll.csv")
+        write_roll_history(result.roll, roll_path)
+        print(f"Roll/AoA history: {roll_path}")
+        print(f"Peak roll AoA envelope: {result.roll['peak_alpha_deg']:.6g} deg "
+              f"at t={result.roll['peak_alpha_time']:.6g} s")
+        print(f"Peak roll q*AoA: {result.roll['peak_q_alpha']:.6g} Pa*rad "
+              f"at t={result.roll['peak_q_alpha_time']:.6g} s")
     events_path = output_path.with_name(output_path.stem + "_events.csv")
     write_events(history, events_path)
     from flight_plots import plot_flight

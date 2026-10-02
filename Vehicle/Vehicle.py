@@ -38,6 +38,7 @@ class Vehicle:
         self.cp: float = None
         self.Ixx: float = None
         self.Iyy: float = None
+        self.Izz = None
 
     def build(self, engine: Engine):
         """Build the configured nose-to-aft section stack."""
@@ -224,6 +225,8 @@ class Vehicle:
             self.Iyy += np.sum(self.engine_mass * (self.station - self.cg)**2)
             # Retain the existing shell-radius roll-inertia approximation.
             self.Ixx += np.sum(self.engine_mass) * (self.cfg["vehicle"]["OMLD"] / 2)**2
+        # Set yaw inertia from the transverse mass distribution.
+        self.Izz = self.Iyy
 
     def update_mass_distribution(self, node_states: dict) -> None:
         """Apply fluid-network axial mass vectors and refresh mass properties."""

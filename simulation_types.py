@@ -127,6 +127,7 @@ class SimResult:
     geometry_constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     constraints: Dict[str, Optional[float]] = field(default_factory=dict)
     history: Optional[list] = None
+    roll: Optional[Dict[str, Any]] = None
     pump_sizing: Dict[str, Dict[str, float]] = field(default_factory=dict)
     constraint_records: Dict[str, ConstraintRecord] = field(default_factory=dict)
     constraint_times: Dict[str, float] = field(default_factory=dict)

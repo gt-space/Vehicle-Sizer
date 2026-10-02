@@ -58,6 +58,26 @@ aero:
   nose: vonkarman
   finish: 20um
   fins_on_boattail: true
+# Temporary roll/AoA diagnostic inputs for inline logging. Izz follows the
+# vehicle's axisymmetric mass model; Cm_alpha and Cl_delta use the aero table.
+# Roll damping follows RocketPy's trapezoidal-fin equation; pitch-rate damping,
+# fin cant, and modal amplitudes are still assumptions.
+# Replace those assumptions before using roll results for design decisions.
+roll:
+  mode: inline
+  Cm_q: -0.5      # Assumed pitch/yaw damping derivative.
+  fin_cant: 0.00436332313   # Assumed fin cant [rad]
+  p0: 0.0         # Initial roll rate [rad/s]
+  R1_0: 0.001     # Assumed small mode 1 disturbance [rad]
+  R2_0: 0.001     # Assumed small mode 2 disturbance [rad]
+  phi0: 0.0       # Initial roll angle [rad]
+  Cl1: 0.0        # First-harmonic roll coefficient; aero table has no value
+  cg_offset: 0.0  # Lateral CG offset from body axis [m]
+  Gamma: 0.0      # Direction of lateral CG offset [rad]
+  thrust_offset_y: 0.0  # Nozzle offset from body axis [m]
+  thrust_offset_z: 0.0  # Nozzle offset from body axis [m]
+  thrust_angle_y: 0.0   # Thrust direction toward body y [rad]
+  thrust_angle_z: 0.0   # Thrust direction toward body z [rad]
 property_models:
   pure_fluid:
     source: table
