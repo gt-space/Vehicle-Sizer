@@ -1,9 +1,8 @@
-"""Quasi-steady momentum/pressure-flow closures for a SUNDIALS DAE.
+"""momentum/pressure-flow models
 
 Branches have parameters, connectivity and discrete modes, but no integrated or
 committed flow state. The network owns y, ydot, initialization and acceptance.
-All variables below are algebraic; line inertia is not part of this model.
-Equation implementations are local, not adapters around the old fluids solver.
+All variables below are algebraic; no line inertia is modeled.
 """
 
 from copy import deepcopy

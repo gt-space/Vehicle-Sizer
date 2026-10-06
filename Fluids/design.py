@@ -1,4 +1,4 @@
-"""Pure design calculations shared by tank sizing and propulsion construction."""
+"""design calculations which are shared by tank sizing and propulsion construction."""
 from copy import deepcopy
 from math import isfinite
 from .helpers.templates import load_template

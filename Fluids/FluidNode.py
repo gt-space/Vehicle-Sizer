@@ -1,8 +1,7 @@
-"""Continuous node physics for the SUNDIALS network, independent of the old solver.
+"""Continuous node physics for the fluid network.
 
-Nodes own definitions and discrete modes, never accepted solution/history. All
 residuals are unscaled SI equations. Components own event guards and state
-mapping; the assembler owns scaling, y/ydot, constraints and consistent restarts.
+mapping; the assembler owns scaling, y/ydot, constraints and restarts (event handling).
 """
 
 from copy import deepcopy

@@ -1,13 +1,7 @@
 """Evaluated fluid and component records.
 
-Records contain data, not physics, connectivity or solver history. Components
-build them for one trial; consumers must treat shared records as read-only.
-Use deepcopy for accepted network snapshots. as_dict returns a detached
-report, not a solver checkpoint. y/ydot and acceptance remain network concerns.
+Records contain data, connectivity, and solver history. 
 
-Mapping access is for reading. Builders write explicitly to trial_values,
-properties, flows, etc., so the distinction between unknowns and derived data
-is visible. Nested dictionaries are mutable; these are not frozen objects.
 """
 
 from collections.abc import Mapping

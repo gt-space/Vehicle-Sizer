@@ -1,6 +1,6 @@
-"""Component assembly and event-driven IDAS integration.
+"""Component assembly and event handling using Sundials IDA solver.
 
-Physics lives in components. This class owns topology, trial routing, numerical
+This class owns topology, trial routing, numerical
 layouts, discrete transitions and accepted snapshots.
 """
 from collections import Counter
