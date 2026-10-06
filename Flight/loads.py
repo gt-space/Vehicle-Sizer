@@ -65,14 +65,29 @@ class Loads:
         effective_force = force - v.mass * acceleration
         return np.cumsum(effective_force)
 
-    def get_normal_load(self, q: float, M: float, alpha: float):
+    def get_normal_load(self, q: float, M: float, alpha: float, *,
+                        thrust_normal: float = 0.0, aerodynamic: bool = True):
 
         v = self.vehicle
         x = v.station
 
-        distribution = self.aero.normal_distribution(M, alpha)
-        cell_cn = self._cell_coefficients(distribution["x"], distribution["dcn_dx"])
-        N = q * self.ref_area * cell_cn
+        N = np.zeros_like(x, dtype=float)
+        if aerodynamic:
+            distribution = self.aero.normal_distribution(M, alpha)
+            cell_cn = self._cell_coefficients(distribution["x"], distribution["dcn_dx"])
+            N = q * self.ref_area * cell_cn
+        if thrust_normal:
+            interface = float(v.engine_start_station)
+            if not np.isfinite(interface) or not v.cell_edges[0] <= interface < v.cell_edges[-1]:
+                raise ValueError("Engine thrust interface must lie within the vehicle grid")
+            if len(x) < 2:
+                raise ValueError("Lateral thrust loads require at least two vehicle stations")
+            # Equivalent forces at adjacent centers preserve both the point
+            # force and its exact moment about COM before inertial relief.
+            right = int(np.clip(np.searchsorted(x, interface), 1, len(x) - 1))
+            fraction = (interface - x[right - 1]) / (x[right] - x[right - 1])
+            N[right - 1] += thrust_normal * (1.0 - fraction)
+            N[right] += thrust_normal * fraction
 
         a_trans = np.sum(N) / v.total_mass
         r = x - v.cg
@@ -92,16 +107,16 @@ class Loads:
         axial_force: float,
         thrust: float,
         engine_on: bool,
-        *, aerodynamic: bool = True,
+        *, aerodynamic: bool = True, thrust_normal: float = 0.0,
     ) -> dict[str, np.ndarray]:
         """Evaluate synchronized aerodynamic, inertial, and internal loads."""
 
         if aerodynamic:
             axial_aero = self.get_axial_forces(q, mach, alpha, engine_on)
-            normal = self.get_normal_load(q, mach, alpha)
         else:
             axial_aero = np.zeros_like(self.vehicle.station)
-            normal = np.zeros_like(self.vehicle.station)
+        normal = self.get_normal_load(q, mach, alpha, thrust_normal=thrust_normal,
+                                      aerodynamic=aerodynamic)
         if not np.isclose(axial_aero.sum(), axial_force, rtol=1e-7, atol=1e-7):
             raise ValueError("Distributed axial force disagrees with flight CA force")
         axial = self.get_axial_load(axial_aero, thrust)
@@ -123,6 +138,11 @@ class Loads:
         widths = np.diff(getattr(v, "cell_edges", np.concatenate((x, [v.length]))))
         V = np.cumsum(N)
         M = np.cumsum(V * widths)
+        # Loads remain defined without a complete load-bearing stiffness model.
+        # Whole-beam slope/displacement are unavailable if any cell has no EI.
+        if np.any(~np.isfinite(EI)) or np.any(EI <= 0):
+            unavailable = np.full_like(x, np.nan, dtype=float)
+            return V, M, unavailable.copy(), unavailable
         kappa = -M / EI
         theta = cumulative_trapezoid(kappa, x=x, initial=0)
 

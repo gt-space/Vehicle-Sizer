@@ -5,12 +5,16 @@ import numpy as np
 class COPV:
     volume: float
     diameter: float
-    wall_thickness: float
     ellipse_ratio: float
     material_density: float
     mass: float | None = None
+    thickness_slope: float = 0.03
+    thickness_intercept: float = 0.004
+    length_override: float | None = None
 
     def __post_init__(self):
+        if self.length_override is not None and (not np.isfinite(self.length_override) or self.length_override <= 0):
+            raise ValueError("COPV length must be finite and positive")
         if any(
             not np.isfinite(value) or value <= 0.0
             for value in (
@@ -22,6 +26,8 @@ class COPV:
             )
         ):
             raise ValueError("COPV geometry and material density must be finite and positive")
+        if any(not np.isfinite(v) or v < 0 for v in (self.thickness_slope, self.thickness_intercept)):
+            raise ValueError("COPV thickness coefficients must be finite and nonnegative")
         if self.ellipse_ratio <= 1.0:
             raise ValueError("COPV ellipse ratio must be greater than one")
         if self.inner_diameter <= 0.0:
@@ -34,6 +40,10 @@ class COPV:
             raise ValueError("COPV mass override must be finite and positive")
 
     @property
+    def wall_thickness(self) -> float:
+        return self.thickness_slope * self.diameter + self.thickness_intercept
+
+    @property
     def inner_diameter(self) -> float:
         return self.diameter - 2.0 * self.wall_thickness
 
@@ -43,6 +53,8 @@ class COPV:
 
     @property
     def cylinder_length(self) -> float:
+        if self.length_override is not None:
+            return self.length_override - 2.0 * self.head_depth
         radius = 0.5 * self.inner_diameter
         head_volume = 4.0 / 3.0 * np.pi * radius**2 * self.head_depth
         return (self.volume - head_volume) / (np.pi * radius**2)
@@ -61,7 +73,12 @@ class COPV:
             np.pi * outer_radius**2 * self.cylinder_length
             + 4.0 / 3.0 * np.pi * outer_radius**2 * outer_head_depth
         )
-        return outer_volume - self.volume
+        # Measured fluid capacity may differ from the approximate geometric
+        # volume when length is supplied; shell mass uses nested surfaces.
+        inner_radius = 0.5 * self.inner_diameter
+        inner_volume = (np.pi * inner_radius**2 * self.cylinder_length
+                        + 4.0 / 3.0 * np.pi * inner_radius**2 * self.head_depth)
+        return outer_volume - inner_volume
 
     @property
     def internal_area(self) -> float:

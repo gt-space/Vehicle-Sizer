@@ -153,7 +153,7 @@ def test_regulator_holds_target_and_hits_capacity():
     with FluidNetwork(nodes, branches, fluid_properties=Properties(),
                       tolerances={'rtol': 1e-7}) as net:
         result = net.initialize()
-        assert net.regulator_modes['regulator'] == 'regulating'
+        assert net.branches['regulator'].mode == 'regulating'
         assert result['mdot']['regulator'] == pytest.approx(result['mdot']['outlet'], rel=1e-6)
         result = net.update(.2)
         assert result['node']['tank']['P'] == pytest.approx(3e5, abs=.1)
@@ -196,11 +196,11 @@ def test_capacity_mode_does_not_cycle_on_sub_tolerance_pressure_drift(rtol):
         net.initialize()
         # Reproduce an exhausted regulator with a tiny positive pressure offset
         # left by the preceding ideal-regulation interval.
-        net.regulator_modes['regulator'] = 'capacity'
+        net.branches['regulator'].mode = 'capacity'
         net._new_session()
         before = len(net.events)
         net._settle_initial_events()
-        assert net.regulator_modes['regulator'] == 'capacity'
+        assert net.branches['regulator'].mode == 'capacity'
         assert len(net.events) == before
         assert net.ydot[net.variable_index['tank.m']] < 0  # Actual supply deficit.
 
@@ -257,15 +257,20 @@ def test_transport_cycle_is_explicit():
         assert net.y is None
 
 
-def test_continuous_flow_reversal_changes_donor():
+@pytest.mark.parametrize('kind', ['loss', 'switch_valve'])
+def test_continuous_flow_reversal_changes_donor(kind):
     fluid = Properties().state_pt('gas', 1e5, 300.).as_dict()
     fluid['phase'] = 'gas'
     nodes = {'tank': gas_tank(5e5, .01),
              'boundary': dict(component='boundary', P=1e5, fluids={'gas': fluid})}
-    with FluidNetwork(nodes, {'line': loss('tank', 'boundary')}, fluid_properties=Properties()) as net:
+    branch = loss('tank', 'boundary')
+    if kind == 'switch_valve':
+        branch.update(component=kind, CdA_before=1e-5, CdA_after=2e-5,
+                      switch_pressure=6e5, sense_node='boundary')
+    with FluidNetwork(nodes, {'line': branch}, fluid_properties=Properties()) as net:
         net.initialize(bcs={'boundary': lambda t: {'P': 1e5 + t * 2e5}})
         result = net.update(3.)
-        assert result['mdot']['line'] < 0 and net.directions['line'] == -1
+        assert result['mdot']['line'] < 0 and net.branches['line'].direction == -1
         assert any(e['name'] == 'reverse' for e in result['events'])
         assert result['branch']['line']['flows']['main']['fluid']['T'] == 300.
 
@@ -302,7 +307,7 @@ def test_condensation_and_evaporation_preserve_inventory_and_energy():
         def supports_saturation(self, fluid):
             return True
         def saturation_bounds(self, fluid):
-            return (1., 1e7)
+            return (1., 3.05e5)  # Gas starts above this range, then enters it.
         def saturation_at_p(self, fluid, pressure):
             liquid = PureFluidProperties(pressure, 300., 1000., 150000. + pressure / 1000.,
                                          150000., 300., 1.4, 1e-5, .03, 500., 1/300.)

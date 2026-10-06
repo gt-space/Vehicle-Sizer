@@ -23,7 +23,6 @@ from constraints import ConstraintRecord, DesignInfeasible, EvaluationFailure, G
 from Fluids.PropSystem import PropSystem
 from Fluids.helpers.templates import load_template
 from Fluids.design import initial_conditions
-from Vehicle.Material import MaterialProperties
 from Vehicle.Engine import Engine
 from Vehicle.Vehicle import Vehicle
 from simulation import project_path, property_sources, simulate
@@ -115,6 +114,23 @@ def domain_records(candidate, model):
     return records
 
 
+def pressurant_inner_radius(cfg, tank):
+    """Match the selected vessel's wall model before checking its capacity."""
+    diameter = float(tank["outer_diameter"])
+    if tank["construction"] == "copv":
+        wall = tank["thickness_slope"] * diameter + tank["thickness_intercept"]
+    elif tank["construction"] == "metal":
+        fos = tank.get("pressure_fos", cfg["advanced"]["tank_pressure_fos"])
+        allowable = tank.get("weld_allowable", cfg["advanced"]["weld_allowable"])
+        wall = fos * tank["design_pressure"] * diameter / (2 * allowable)
+    else:
+        raise ValueError(f"Unknown pressurant construction {tank['construction']!r}")
+    radius = diameter / 2 - wall
+    if not isfinite(radius) or radius <= 0 or tank["ellipse_ratio"] <= 1:
+        raise ValueError("Invalid pressurant diameter, sized wall or ellipse ratio")
+    return radius
+
+
 def primitive_records(cfg, tank_ids):
     """Known coupled input restrictions; do not catch arbitrary ValueErrors."""
     fin, prop = cfg["fin_can"], cfg["prop_system"]
@@ -126,11 +142,11 @@ def primitive_records(cfg, tank_ids):
         "engine.exit_pressure": (prop["Pc_target"] - cfg["engine"]["exit_pressure"] - 1., "Pa"),
     }
     tank = cfg["tanks"][tank_ids["pressurant"]]
-    radius = (tank["outer_diameter"] - 2 * tank["wall_thickness"]) / 2
-    if radius <= 0 or tank["ellipse_ratio"] <= 1:
-        raise ValueError("Invalid fixed COPV diameter, wall or ellipse ratio")
+    radius = pressurant_inner_radius(cfg, tank)
     head_volume = 4 * pi * radius**3 / (3 * tank["ellipse_ratio"])
-    margins["geometry.copv_cylinder"] = ((tank["volume"] - head_volume) / (pi * radius**2) - 1e-9, "m")
+    cylinder = ((tank["volume"] - head_volume) / (pi * radius**2)
+                if tank.get("length") is None else tank["length"] - 2 * radius / tank["ellipse_ratio"])
+    margins["geometry.copv_cylinder"] = (cylinder - 1e-9, "m")
     template = load_template(cfg, validate_pressures=False)
     for branch in template['branches'].values():
         if branch.get('component', branch.get('model')) == 'pump':
@@ -311,7 +327,7 @@ class Evaluator:
             if lo > hi:
                 raise GeometryError({f"geometry.bounds.{name}": hi - lo})
             fraction = (coordinates[name] - lower) / (upper - lower) if upper > lower else 0.
-            value = lo + fraction * (hi - lo)
+            value = float(lo + fraction * (hi - lo))
             set_path(cfg, self.paths[name], value)
             return value
 
@@ -334,7 +350,7 @@ class Evaluator:
         exit_diameter = sqrt(4 * thrust / thrust_per_area / pi)
         diameter = assign("omld", max(exit_diameter + margin,
             self.settings["bounds"]["boattail_aft"][0],
-            copv["outer_diameter"] + 2 * (cfg["press_tank"]["airframe_wall_thickness"] + clearance) + 1e-9))
+            copv["outer_diameter"] + 2 * (clearance) + 1e-9))
         # Span remains a physical length. Its permitted interval moves with D;
         # intersect it with the user's bounds before mapping the search coordinate.
         span_low, span_high = (aero_endpoint(bound, {"omld": diameter / INCH}) * INCH
@@ -350,8 +366,9 @@ class Evaluator:
         assign("boattail_aft", aft_min, diameter)
         root = assign("root", maximum=length)
         assign("tip", maximum=root)
-        radius = (copv["outer_diameter"] - 2 * copv["wall_thickness"]) / 2
-        assign("copv_volume", 4 * pi * radius**3 / (3 * copv["ellipse_ratio"]) + pi * radius**2 * 1e-8)
+        radius = pressurant_inner_radius(cfg, copv)
+        if copv.get("length") is None:
+            assign("copv_volume", 4 * pi * radius**3 / (3 * copv["ellipse_ratio"]) + pi * radius**2 * 1e-8)
 
         if pump_roles(cfg):
             for role, leg in (("oxidizer", "ox"), ("fuel", "fuel")):
@@ -363,12 +380,10 @@ class Evaluator:
             tank_id = self.settings["tank_ids"][role]
             tank, state = cfg["tanks"][tank_id], states[tank_id]
             pressure = Vehicle._max_tank_pressure(SimpleNamespace(cfg=cfg, initial_conditions=states), tank_id)
-            material = MaterialProperties.from_name(tank["material"])
-            efficiency = tank.get("weld_efficiency", cfg["advanced"].get("weld_efficiency", 1.))
-            ratio = 1.5 * pressure / (material.require("yield_strength") * efficiency)
             wall = tank.get("wall_thickness")
             if wall is None:
-                wall = max(ratio * diameter / (2 * (1 + ratio)), cfg["advanced"]["t_wall_min"])
+                wall = (cfg["advanced"]["tank_pressure_fos"] * pressure * diameter
+                        / (2 * cfg["advanced"]["weld_allowable"]))
             radius, tube = diameter / 2 - wall, tank["passthrough_diameter"] / 2
             if radius <= tube + clearance:
                 raise GeometryError({f"{tank_id}.passthrough": radius - tube - clearance})

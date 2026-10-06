@@ -12,6 +12,7 @@ from math import copysign, isfinite, sqrt
 import numpy as np
 
 from .FluidState import BranchState
+from .events import Event
 from errors import TrialDomainError
 
 
@@ -53,6 +54,7 @@ class FluidBranch:
     requires_enthalpy = True
     differential_variable_names = ()
     equation_names = ("flow",)
+    reversible = False
 
     def __init__(self, branch_id, definition, *, phase="liquid"):
         self.id = branch_id
@@ -61,6 +63,9 @@ class FluidBranch:
         self.from_port = definition.get("from_port", definition.get("fluid"))
         self.to_port = definition.get("to_port", definition.get("fluid"))
         self.enabled = True
+        self.direction = definition.get("direction", 1)
+        if self.direction not in (-1, 1):
+            raise ValueError("Branch direction must be -1 or 1")
         self.set_phase(phase)
         design_flow = float(definition.get("design_mdot", 0.0))
         if not isfinite(design_flow):
@@ -95,10 +100,10 @@ class FluidBranch:
                 _port_pressure(node_states_by_id[self.to_node], self.to_port))
 
     def _positive(self, name):
-        value = float(self.parameters[name])
-        if not isfinite(value) or value <= 0:
+        value = self.parameters.get(name)
+        if value is None or not isfinite(float(value)) or float(value) <= 0:
             raise ValueError(f"Branch '{self.id}' requires finite {name} > 0")
-        return value
+        return float(value)
 
     def _check_trial_values(self, trial_values):
         if set(trial_values) != set(self.variable_names):
@@ -146,9 +151,21 @@ class FluidBranch:
     def event_values(self, node_states_by_id):
         return {}
 
+    def events(self, context):
+        if self.active and self.reversible:
+            return {"reverse": Event(self.direction * context.values[self.id]["mdot"])}
+        return {}
+
+    def apply_event(self, name, values, time):
+        if name != "reverse" or not self.reversible:
+            raise ValueError(f"Unknown event: {self.id}.{name}")
+        self.direction *= -1
+        return {}
+
 
 class LossComponent(FluidBranch):
     """Restriction with explicit liquid/gas mode and bidirectional flow."""
+    reversible = True
 
     def __init__(self, branch_id, definition, *, phase="liquid"):
         super().__init__(branch_id, definition, phase=phase)
@@ -170,6 +187,7 @@ class LossComponent(FluidBranch):
 
 class PumpComponent(FluidBranch):
     """Liquid pressure rise minus loss; passive gas restriction after dryout."""
+    reversible = True
 
     def __init__(self, branch_id, definition, *, phase="liquid"):
         super().__init__(branch_id, definition, phase=phase)
@@ -205,10 +223,28 @@ class RegulatorComponent(LossComponent):
     The projected equation preserves the old idealization. Its zero-time flow
     ambiguity and consistent initialization must be addressed by the network.
     """
+    reversible = False
 
     def __init__(self, branch_id, definition):
         super().__init__(branch_id, definition, phase="gas")
         self.target = self._positive("target_pressure")
+        self.mode = None  # Storage targets use a pressure-rate constraint.
+
+    def events(self, context):
+        if not self.active or self.mode is None:
+            return {}
+        if self.mode == "regulating":
+            state = context.evaluated()[1][self.id]
+            return {"close_limit": Event(state.mdot / self.flow_scale),
+                    "capacity_limit": Event((state["max_mdot"] - state.mdot) / self.flow_scale)}
+        delta = (context.nodes[self.to_node]["P"] - self.target) / self.target
+        tolerance = max(context.options["regulator_pressure_tolerance"],
+                        context.options["rtol"] + context.atol[self.to_node]["P"] / self.target)
+        return {"regulate": Event(delta if self.mode == "closed" else -delta, tolerance=tolerance)}
+
+    def apply_event(self, name, values, time):
+        self.mode = {"regulate": "regulating", "close_limit": "closed", "capacity_limit": "capacity"}[name]
+        return {"mode": self.mode}
 
     def set_phase(self, phase):
         if phase != "gas":
@@ -231,6 +267,7 @@ class RegulatorComponent(LossComponent):
 
 
 class BangBangValveComponent(LossComponent):
+    reversible = False
     def __init__(self, branch_id, definition):
         super().__init__(branch_id, definition, phase="gas")
         self.target = self._positive("target_pressure")
@@ -266,6 +303,101 @@ class BangBangValveComponent(LossComponent):
             return {}
         p = node_states_by_id[self.to_node]["P"]
         return {"switch": self.target + self.band - p if self.is_open else p - self.target + self.band}
+
+    def events(self, context):
+        return {name: Event(value, at_zero=True) for name, value in self.event_values(context.nodes).items()}
+
+    def apply_event(self, name, values, time):
+        if name != "switch":
+            return super().apply_event(name, values, time)
+        was_open = self.is_open
+        self.set_open(not was_open)
+        return dict(was_open=was_open, is_open=self.is_open)
+
+
+class SwitchValveComponent(LossComponent):
+    """Two configured restrictions selected by a sensed absolute pressure."""
+
+    def __init__(self, branch_id, definition, *, phase="liquid"):
+        FluidBranch.__init__(self, branch_id, definition, phase=phase)
+        for name in ("CdA_before", "CdA_after"):
+            value = definition.get(name)
+            if value is None or not isfinite(float(value)) or float(value) < 0:
+                raise ValueError(f"{branch_id}.{name} must be finite and nonnegative")
+        self.sense_node = definition.get("sense_node", self.from_node)
+        self.threshold = self._positive("switch_pressure")
+        direction = definition.get("switch_direction", "rising")
+        if direction not in ("rising", "falling"):
+            raise ValueError("switch_direction must be rising or falling")
+        self.sign = 1 if direction == "rising" else -1
+        self.latched = definition.get("latched", True)
+        self.is_switched = definition.get("initially_switched", False)
+        if not isinstance(self.latched, bool) or not isinstance(self.is_switched, bool):
+            raise ValueError("latched and initially_switched must be boolean")
+        self.reset = self._positive("reset_pressure") if not self.latched else None
+        if self.reset is not None and self.sign * (self.threshold - self.reset) <= 0:
+            raise ValueError("reset_pressure must provide hysteresis in switch_direction")
+
+    @property
+    def cda(self):
+        return float(self.parameters["CdA_after" if self.is_switched else "CdA_before"])
+
+    @property
+    def active(self):
+        return self.enabled and self.cda > 0
+
+    def evaluate(self, *args, **kwargs):
+        state = super().evaluate(*args, **kwargs)
+        state.properties.update(is_switched=self.is_switched, effective_CdA=self.cda if self.enabled else 0.)
+        return state
+
+    def events(self, context):
+        events = super().events(context)
+        if self.enabled and not (self.latched and self.is_switched):
+            pressure = context.nodes[self.sense_node]["P"]
+            margin = self.sign * (pressure - self.reset) if self.is_switched else self.sign * (self.threshold - pressure)
+            events["switch"] = Event(margin, at_zero=True)
+        return events
+
+    def apply_event(self, name, values, time):
+        if name != "switch":
+            return super().apply_event(name, values, time)
+        was_switched = self.is_switched
+        self.is_switched = not was_switched
+        return dict(was_switched=was_switched, is_switched=self.is_switched, effective_CdA=self.cda)
+
+
+class ReliefValveComponent(BangBangValveComponent):
+    """Hysteretic two-position relief, discharging only from source to outlet."""
+
+    def __init__(self, branch_id, definition, *, phase="gas"):
+        LossComponent.__init__(self, branch_id, definition, phase=phase)
+        self.open_dp = self._positive("open_dP")
+        self.close_dp = self._positive("close_dP")
+        if self.close_dp >= self.open_dp:
+            raise ValueError("Require 0 < close_dP < open_dP")
+        if self.direction != 1:
+            raise ValueError("Relief valve requires forward direction")
+        self.set_open(definition.get("initially_open", False))
+
+    set_phase = FluidBranch.set_phase
+
+    def mass_flow(self, branch_state, node_states_by_id):
+        return max(0., super().mass_flow(branch_state, node_states_by_id))
+
+    def event_values(self, node_states_by_id):
+        if not self.enabled:
+            return {}
+        p_from, p_to = self.pressures(node_states_by_id)
+        dp = p_from - p_to
+        return {"switch": dp - self.close_dp if self.is_open else self.open_dp - dp}
+
+    def events(self, context):
+        # Port pressures include hydrostatic head, including a tank's liquid port.
+        if not self.enabled:
+            return {}
+        return {name: Event(value, at_zero=True)
+                for name, value in self.event_values(context.evaluated()[0]).items()}
 
 
 class NozzleComponent(FluidBranch):
@@ -357,4 +489,4 @@ class NozzleComponent(FluidBranch):
 
 
 __all__ = ["FluidBranch", "LossComponent", "PumpComponent", "RegulatorComponent",
-           "BangBangValveComponent", "NozzleComponent"]
+           "BangBangValveComponent", "SwitchValveComponent", "ReliefValveComponent", "NozzleComponent"]

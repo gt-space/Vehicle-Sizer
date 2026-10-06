@@ -15,11 +15,13 @@ class PressTank(Section):
 
         super().__init__(cfg)
         self.tank_id = tank_id
-        self.copv = copv
+        self.vessel = copv
+        self.copv = copv # compatibility alias for existing geometry consumers
         self.length = self.copv.length
         self.set_grid()
-        self.wall_thickness = cfg["press_tank"]["airframe_wall_thickness"]
-        self.wall_material = cfg["press_tank"]["airframe_material"]
+        self.wall_thickness = copv.wall_thickness
+        definition = cfg["tanks"][tank_id]
+        self.wall_material = definition.get("material", cfg["nosecone"]["material"])
         self.emissivity = 0.85
 
     def get_fluid_geometry(self) -> PressTankGeometry:
@@ -36,8 +38,8 @@ class PressTank(Section):
         )
 
     def get_mass(self):
-        self.shell_mass = dist.uniform(self._get_airframe_mass(), self.n)
-        mass = self._get_mount_mass() + np.sum(self.shell_mass) + self.copv.mass
+        self.shell_mass = dist.uniform(self.copv.mass, self.n)
+        mass = self.copv.mass
         self.dry_mass = dist.uniform(mass, self.n)
         self.mass = self.dry_mass.copy()
 
@@ -54,35 +56,8 @@ class PressTank(Section):
         self.mass = self.dry_mass + axial_mass
         self.get_MOI()
 
-    def _get_mount_mass(self) -> float:
-        mat = MaterialProperties.from_name(
-            self.cfg["press_tank"]["mount_material"]
-        )
-        sigma = mat.require("yield_strength")
-        P = self.copv.mass * 9.81 * 10.0
-        h = self.cfg["press_tank"]["mount_thickness"]
-        r = self.cfg["vehicle"]["OMLD"] * 0.5
-        L = r - self.cfg["press_tank"]["airframe_wall_thickness"]
-        w = 1.4 * (3 * P * L) / (2 * sigma * h**2)
-        return w * L * h * 4 * mat.density
-
-    def _get_airframe_mass(self) -> float:
-        t = self.cfg["press_tank"]["airframe_wall_thickness"]
-        r_o = self.cfg["vehicle"]["OMLD"] * 0.5
-        r_i = r_o - t
-        rho = MaterialProperties.from_name(
-            self.cfg["press_tank"]["airframe_material"]
-        ).density
-        return geo.annulus_volume(r_o, r_i, self.length) * rho
-
     def get_EI(self):
-        t = self.cfg["press_tank"]["airframe_wall_thickness"]
-        r_o = self.cfg["vehicle"]["OMLD"] * 0.5
-        r_i = r_o - t
-        E = MaterialProperties.from_name(
-            self.cfg["press_tank"]["airframe_material"]
-        ).require("elastic_modulus")
-        self.EI = dist.uniform_full(E * geo.annulus_second_moment(r_o, r_i), self.n)
+        self.EI = np.zeros(self.n)
 
     def get_area(self):
         r = self.cfg["vehicle"]["OMLD"] * 0.5
@@ -91,7 +66,8 @@ class PressTank(Section):
 
     def get_MOI(self):
         r = self.cfg["vehicle"]["OMLD"] * 0.5
-        self.cg = np.sum(self.mass * self.station) / np.sum(self.mass)
+        self.cg = (np.sum(self.mass * self.station) / np.sum(self.mass)
+                   if np.sum(self.mass) > 0 else np.mean(self.station))
         self.Ixx = np.sum(self.mass * r**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 

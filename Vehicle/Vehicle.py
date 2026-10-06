@@ -3,6 +3,7 @@ from Fluids.design import initial_conditions, tank_design_pressure
 from Fluids.helpers.templates import load_template
 
 from .COPV import COPV
+from .MetalPressureVessel import MetalPressureVessel
 from .Engine import Engine
 from .Material import MaterialProperties
 from .sections.AviBay import AviBay
@@ -95,23 +96,38 @@ class Vehicle:
                         "passthrough_wall_thickness"
                     ],
                     ellipse_ratio=definition["ellipse_ratio"],
-                    ullage_factor=definition["ullage_factor"],
+                    ullage_factor=definition.get("ullage_factor"),
+                    volume=definition.get("volume"),
+                    length=definition.get("length"),
                     tank_id=tank_id,
                     weld_efficiency=definition.get("weld_efficiency", self.cfg["advanced"].get("weld_efficiency", 1.0)),
                 )
             elif tank_type == "pressurant":
                 if "volume" in definition and "volume_liters" in definition:
                     raise ValueError(f"Tank {tank_id!r}: specify volume (m^3) or volume_liters, not both")
-                material = MaterialProperties.from_name(definition["material"])
-                copv = COPV(
+                common = dict(
                     volume=(float(definition["volume"]) if "volume" in definition
                             else float(definition["volume_liters"]) * 1.0e-3),
                     diameter=float(definition["outer_diameter"]),
-                    wall_thickness=float(definition["wall_thickness"]),
                     ellipse_ratio=float(definition["ellipse_ratio"]),
-                    material_density=material.density,
                     mass=float(definition["mass"]) if "mass" in definition else None,
                 )
+                construction = definition["construction"]
+                if construction == "copv":
+                    copv = COPV(**common,
+                        length_override=definition.get("length"),
+                        thickness_slope=float(definition["thickness_slope"]),
+                        thickness_intercept=float(definition["thickness_intercept"]),
+                        material_density=float(definition["equivalent_density"]))
+                elif construction == "metal":
+                    material = MaterialProperties.from_name(definition["material"])
+                    copv = MetalPressureVessel(**common,
+                        material_density=material.density,
+                        design_pressure=float(definition["design_pressure"]),
+                        pressure_fos=float(definition.get("pressure_fos", self.cfg["advanced"]["tank_pressure_fos"])),
+                        allowable_stress=float(definition.get("weld_allowable", self.cfg["advanced"]["weld_allowable"])))
+                else:
+                    raise ValueError(f"Unknown pressurant construction {construction!r}; use copv or metal")
                 tanks[tank_id] = PressTank(self.cfg, copv, tank_id=tank_id)
             else:
                 raise ValueError(
@@ -165,15 +181,15 @@ class Vehicle:
                 section = InterTank(
                     self.cfg,
                     length=definition["length"],
-                    area_moment_of_inertia=definition["area_moment_of_inertia"],
-                    feed_system_mass=definition.get("feed_system_mass", 0.0),
-                    avi_mass=definition.get("avi_mass", 0.0),
-                    mass=definition.get("mass"),
+                    stiffness_EI=definition["stiffness_EI"],
+                    stringer_unit_mass=definition["stringer_unit_mass"],
                 )
             elif section_type == "fin_can":
                 section = FinCan(self.cfg, self.engine)
             else:
                 raise ValueError(f"Unknown vehicle section type {section_type!r}")
+            section.stiffness_input = definition.get("stiffness_EI")
+            section.mass_inputs = definition
             sections.append(section)
 
         missing = set(self.tanks) - used_tanks
@@ -219,6 +235,14 @@ class Vehicle:
             self.Iyy += np.sum(self.engine_mass * (self.station - self.cg)**2)
             # Retain the existing shell-radius roll-inertia approximation.
             self.Ixx += np.sum(self.engine_mass) * (self.cfg["vehicle"]["OMLD"] / 2)**2
+        if "Iyy" in self.cfg["vehicle"]:
+            supplied = float(self.cfg["vehicle"]["Iyy"])
+            if not np.isfinite(supplied) or supplied <= 0:
+                raise ValueError("vehicle.Iyy must be finite and positive (dry pitch inertia, kg m^2)")
+            # Replace the entire dry contribution, including the engine, while
+            # retaining fluid inertia and the shift to the current computed COM.
+            dry_cg = np.sum(self.dry_mass * self.station) / np.sum(self.dry_mass)
+            self.Iyy += supplied - np.sum(self.dry_mass * (self.station - dry_cg)**2)
 
     def update_mass_distribution(self, node_states: dict) -> None:
         """Apply fluid-network axial mass vectors and refresh mass properties."""
@@ -271,11 +295,17 @@ class Vehicle:
         if fin is None:
             raise ValueError("Aerodynamic model requires a fin-can section")
         metres_per_inch = 0.0254
+        exit_diameter = self.cfg.get("engine", {}).get("exit_diameter")
+        if exit_diameter is None:
+            exit_diameter = 2.0 * np.sqrt(self.engine.exit_area / np.pi)
+        exit_diameter = float(exit_diameter)
+        if not np.isfinite(exit_diameter) or exit_diameter <= 0:
+            raise ValueError("engine.exit_diameter must be finite and positive (m)")
         return {
             "omld": float(self.cfg["vehicle"]["OMLD"]) / metres_per_inch,
             "length": float(self.length) / metres_per_inch,
             "fineness": float(self.cfg["nosecone"]["fineness_ratio"]),
-            "exit": 2.0 * np.sqrt(self.engine.exit_area / np.pi) / metres_per_inch,
+            "exit": exit_diameter / metres_per_inch,
             "boattail_aft": fin.boattail_aft_diameter / metres_per_inch,
             "boattail_length": fin.length / metres_per_inch,
             "span": fin.span / metres_per_inch,

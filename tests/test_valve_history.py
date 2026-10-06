@@ -38,6 +38,31 @@ class ValveHistoryTests(unittest.TestCase):
         history[0]["plant"].fluids.event_counts = {}
         self.assertEqual(_valve_history(history, "valve"), ([1.0], [False], [0]))
 
+    def test_switch_state_history(self):
+        history = self.history()
+        fluid = history[0]["plant"].fluids
+        fluid.branch = {"valve": {"is_switched": True}}
+        fluid.events = (dict(time_s=.2, kind="branch", component="valve", event="switch",
+                             count=1, was_switched=False, is_switched=True),)
+        fluid.event_counts = {"branch:valve:switch": 1}
+        self.assertEqual(_valve_history(history, "valve"),
+                         ([0., .2, 1.], [False, True, True], [0, 1, 1]))
+        with TemporaryDirectory() as directory:
+            plot_valve_actuations(history, Path(directory) / "switch.png")
+
+    def test_event_csv_preserves_new_component_transition_fields(self):
+        history = self.history()
+        history[0]["plant"].fluids.events = (
+            dict(time_s=.2, kind="branch", component="switch", event="switch",
+                 was_switched=False, is_switched=True, effective_CdA=1.2e-5),)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "events.csv"
+            write_events(history, path)
+            with path.open() as stream:
+                row = next(csv.DictReader(stream))
+            self.assertEqual(row['is_switched'], 'True')
+            self.assertEqual(float(row['effective_CdA']), 1.2e-5)
+
 
 if __name__ == "__main__":
     unittest.main()

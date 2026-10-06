@@ -1,8 +1,7 @@
-# SI units; SUNDIALS/IDAS fluid integration. Wiring is selected by prop_system.template.
 advanced:
   flight:
     trial_max_retries: 10
-    trial_min_dt: 1.0e-06 # s; lower bound for invalid-trial retries
+    trial_min_dt: 1.0e-06
     corrector_max_iterations: 10
     corrector_tolerance: 1.0e-08
     event_max_iterations: 50
@@ -20,19 +19,16 @@ advanced:
     max_iterations: 20
     temperature_tolerance: 0.01
   t_wall_min: 0.001
-  weld_efficiency: 1.0
+  tank_pressure_fos: 1.5
+  weld_allowable: 276000000.0
+  endcap_mass_multiplier: 1.5
 aero:
   finish: 20um
   fins_on_boattail: true
   model: AeroTables/dragmodel.h5
   nose: vonkarman
 avi_bay:
-  avi_mass: 2.0
-  bulkhead_material: carbon_fiber
-  clamshell_material: fiberglass
-  clamshell_thickness: 0.003175
   length: 0.3
-  ring_material: aluminum_6061
 constraints:
   min_stability_calibers: 2.0
   max_aoa_deg: 15.0
@@ -50,7 +46,6 @@ environment:
   altitude_step: 100.0
   max_altitude: 150000.0
 fin_can:
-  hardware_mass: 2.0 # kg; additional fin-can hardware, excluding engine and fins
   boattail_aft_diameter: 0.3032125
   boattail_length: 0.5715
   boattail_wall_thickness: 0.00318
@@ -62,8 +57,6 @@ fin_can:
   sweep_fraction: 0.75
   tip_chord: 0.203
 inter_tank:
-  clamshell_material: carbon_fiber
-  clamshell_wall_thickness: 0.00318
   stringer_count: 4
   stringer_material: aluminum_7075
 launch:
@@ -71,17 +64,11 @@ launch:
   rail_height: 15.0
   velocity: 0.0
 nosecone:
-  wall_thickness: 0.0032 # m; nose shell thickness
+  wall_thickness: 0.0032
   fineness_ratio: 5.0
   material: carbon_fiber
   profile: von_karman
-  reco_mass: 5.0
   tip_radius: 0.01
-press_tank:
-  airframe_material: carbon_fiber
-  airframe_wall_thickness: 0.00318
-  mount_material: aluminum_7075
-  mount_thickness: 0.00318
 prop_system:
   MR_target: 2.0
   Pc_target: 1723689.323292
@@ -143,8 +130,8 @@ simulation:
   t_end: 300.0
 tanks:
   fuel_tank:
-    min_temperature: 80.0 # K; liquid and ullage
-    min_pressure: 68947.57293168 # Pa absolute (10 psia)
+    min_temperature: 80.0
+    min_pressure: 68947.57293168
     thermal:
       model: None
     ellipse_ratio: 1.75
@@ -155,8 +142,8 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   ox_tank:
-    min_temperature: 80.0 # K; liquid and ullage
-    min_pressure: 68947.57293168 # Pa absolute (10 psia)
+    min_temperature: 80.0
+    min_pressure: 68947.57293168
     thermal:
       model: None
     ellipse_ratio: 1.75
@@ -167,17 +154,19 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   press_tank:
-    min_pressure: 4136854.3759008 # Pa absolute (600 psia)
+    min_pressure: 4136854.3759008
     thermal:
       model: None
     design_pressure: 29647456.360622
     ellipse_ratio: 1.75
-    material: 1018_carbon_steel
     min_temperature: 220.0
     outer_diameter: 0.22
     type: pressurant
+    construction: copv
     volume: 0.1
-    wall_thickness: 0.0032
+    thickness_slope: 0.03
+    thickness_intercept: 0.004
+    equivalent_density: 2238.6
 thermal:
   initial_temperature: 288.15
   material_overrides:
@@ -189,26 +178,47 @@ vehicle:
   dx: 0.01
   sections:
   - type: nosecone
+    masses:
+      recovery: 5.0
   - type: avi_bay
+    masses:
+      avionics: 2.0
+      structure: 0.0
   - tank_id: press_tank
     type: press_tank
-  - area_moment_of_inertia: 3.6e-05
-    avi_mass: 2.0
-    feed_system_mass: 5.0
-    length: 0.12
+    masses:
+      structure: 0.0
+      mounts: 0.0
+  - length: 0.12
     type: inter_tank
+    masses:
+      avi_mass: 2.0
+      feed_system_mass: 5.0
+      structure: 0.0
+    stringer_unit_mass: 2.7
+    stiffness_EI: 2590060.99915326
   - tank_id: ox_tank
     type: prop_tank
-  - area_moment_of_inertia: 3.6e-05
-    avi_mass: 2.0
-    feed_system_mass: 5.0
-    length: 0.15
+    masses: {}
+  - length: 0.15
     type: inter_tank
+    masses:
+      avi_mass: 2.0
+      feed_system_mass: 5.0
+      structure: 0.0
+    stringer_unit_mass: 2.7
+    stiffness_EI: 2590060.99915326
   - tank_id: fuel_tank
     type: prop_tank
-  - area_moment_of_inertia: 3.6e-05
-    avi_mass: 2.0
-    feed_system_mass: 5.0
-    length: 0.762
+    masses: {}
+  - length: 0.762
     type: inter_tank
+    masses:
+      avi_mass: 2.0
+      feed_system_mass: 5.0
+      structure: 0.0
+    stringer_unit_mass: 2.7
+    stiffness_EI: 2590060.99915326
   - type: fin_can
+    masses:
+      hardware: 2.0

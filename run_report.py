@@ -33,7 +33,10 @@ def collect_design_summary(cfg, vehicle, propulsion):
                 id=tank_id, type=tank_cfg["type"],
                 volume=float(vessel.volume), length=float(vessel.length),
                 diameter=float(vessel.diameter if hasattr(section, "copv") else section.OMLD),
-                thickness=float(vessel.wall_thickness), material=tank_cfg["material"],
+                thickness=float(vessel.wall_thickness),
+                material=(f"Equivalent density {tank_cfg['equivalent_density']:g} kg/m³"
+                          if hasattr(section, "copv") and tank_cfg.get("construction", "copv") == "copv" and "equivalent_density" in tank_cfg
+                          else tank_cfg.get("material", "N/A")),
                 initial=propulsion.initial_states[tank_id],
             ))
     sl = propulsion.combustion_properties.evaluate(
@@ -41,11 +44,17 @@ def collect_design_summary(cfg, vehicle, propulsion):
         ambient_pressure=101325., expansion_ratio=propulsion.expansion_ratio,
         cstar_efficiency=propulsion.cstar_efficiency, cf_efficiency=propulsion.cf_efficiency,
     )
+    physical_exit_diameter = 2 * np.sqrt(propulsion.throat_area * propulsion.expansion_ratio / np.pi)
     return dict(
         sections=sections, tanks=tanks, length=float(vehicle.length),
         diameter=float(cfg["vehicle"]["OMLD"]),
         dry_inertia={"Ixx": float(vehicle.Ixx), "Iyy": float(vehicle.Iyy)},
         design_mdot=float(propulsion.mdot_total),
+        design_thrust=float(propulsion.design_thrust),
+        throat_area=float(propulsion.throat_area),
+        expansion_ratio=float(propulsion.expansion_ratio),
+        physical_exit_diameter=float(physical_exit_diameter),
+        aero_exit_diameter=float(cfg["engine"].get("exit_diameter", physical_exit_diameter)),
         sea_level_thrust=float(sl.Cf * propulsion.Pc_target * propulsion.throat_area),
     )
 
@@ -110,7 +119,9 @@ def build_run_tables(cfg, result):
         ["Final mass", _number(final["mass_properties"]["total_mass"])],
     ]))
     pressure_rows = [[node_id, _number(node["P"] / PSI)] for node_id, node in nodes.items() if "P" in node]
-    pressure_rows.append(["Nozzle exit (design)", _number(cfg["engine"]["exit_pressure"] / PSI)])
+    if "exit_pressure" in cfg["engine"]:
+        label = "Nozzle exit pressure input" if "expansion_ratio" in cfg["engine"] else "Nozzle exit (design)"
+        pressure_rows.append([label, _number(cfg["engine"]["exit_pressure"] / PSI)])
     tables.append(_table("Pressure ladder at initialization (absolute)", ["Node / location", "Pressure [psia]"], pressure_rows))
     max_speed = max(math.hypot(s["kinematics"].vx, s["kinematics"].vz) for s in states)
     max_mach = max(s["atmosphere"].Ma for s in states)
@@ -129,10 +140,14 @@ def build_run_tables(cfg, result):
         ["Termination", result.termination],
     ]))
     engine, prop = cfg["engine"], cfg["prop_system"]
-    thrust = float(prop["thrust_target"])
+    thrust = float(design["design_thrust"])
     max_thrust = max(s["plant"].fluids.propulsion.thrust for s in states)
     tables.append(_table("Engine", ["Parameter", "Value"], [
         ["Design thrust", f"{thrust / 1000:.2f} kN / {thrust / 4.4482216152605:,.0f} lbf"],
+        ["Throat area [m²]", _number(design["throat_area"], 8)],
+        ["Expansion ratio", _number(design["expansion_ratio"], 4)],
+        ["Physical nozzle exit diameter [m]", _number(design["physical_exit_diameter"], 6)],
+        ["Aero exit diameter [m]", _number(design["aero_exit_diameter"], 6)],
         ["Sea-level thrust (design Pc/MR)", f'{design["sea_level_thrust"] / 1000:.2f} kN'],
         ["Initial launch thrust", f'{initial["plant"].fluids.propulsion.thrust / 1000:.2f} kN'],
         ["Maximum sampled thrust", f"{max_thrust / 1000:.2f} kN"],

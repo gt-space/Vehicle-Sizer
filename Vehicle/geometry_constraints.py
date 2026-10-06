@@ -7,7 +7,7 @@ from constraints import GeometryError
 
 
 def check_copv_to_airframe(section, diameter, clearance=0.0):
-    return (diameter - 2 * section.wall_thickness - section.copv.diameter) / 2 - clearance
+    return (diameter - section.copv.diameter) / 2 - clearance
 
 
 def check_passthrough(tank):

@@ -96,17 +96,20 @@ def history_rows(history: list) -> list[dict]:
             }
         )
         for branch_id, branch in fluids.branch.items():
+            for field in ("is_switched", "effective_CdA"):
+                if field in branch:
+                    row[f"{branch_id}_{field}"] = branch[field]
             if "opening_fraction" in branch:
                 for field in ("opening_fraction", "pressure_error", "max_mdot"):
                     row[f"{branch_id}_{field}"] = branch[field]
                 row[f"{branch_id}_mdot"] = fluids.mdot[branch_id]
-            if "is_open" in branch:
+            if "is_open" in branch or "is_switched" in branch:
                 row[f"{branch_id}_switch_count"] = fluids.event_counts.get(
                     f"branch:{branch_id}:switch", 0
                 )
                 row[f"{branch_id}_switches"] = sum(
                     event["kind"] == "branch" and event["component"] == branch_id
-                    and "is_open" in event for event in fluids.events
+                    and ("is_open" in event or "is_switched" in event) for event in fluids.events
                 )
         rows.append(row)
     return rows
@@ -123,12 +126,16 @@ def write_history(rows: list[dict], path: Path) -> None:
 def write_events(history: list, path: Path) -> None:
     """Save substep events without downsampling them to the flight output rate."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    events = [event for state in history for event in state["plant"].fluids.events]
+    fields = dict.fromkeys(("time_s", "kind", "component", "event", "count", "was_open", "is_open"))
+    # Keep component-specific scalar transition data without a valve-type list.
+    for event in events:
+        fields.update((key, None) for key, value in event.items()
+                      if isinstance(value, (str, int, float, bool)) or value is None)
     with path.open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=(
-            "time_s", "kind", "component", "event", "count", "was_open", "is_open"
-        ), extrasaction="ignore")
+        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(event for state in history for event in state["plant"].fluids.events)
+        writer.writerows(events)
 
 
 def write_structural_loads(history: list, path: Path) -> None:
@@ -166,7 +173,7 @@ def main() -> None:
         "config",
         nargs="?",
         type=Path,
-        default=ROOT / "Configs" / "flight_pressure_fed_regulator.yaml"
+        default=ROOT / "Configs" / "Vespula.yaml"
     )
     parser.add_argument("--dt", type=float)
     parser.add_argument("--t-end", type=float)

@@ -6,13 +6,14 @@ layouts, discrete transitions and accepted snapshots.
 from collections import Counter
 from copy import copy, deepcopy
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import numpy as np
 
 from .FluidNode import (BoundaryComponent, JunctionComponent, VolumeComponent,
                         PropellantTankComponent, CombustorComponent)
 from .FluidBranch import (LossComponent, PumpComponent, RegulatorComponent,
-                          BangBangValveComponent, NozzleComponent)
+                          BangBangValveComponent, SwitchValveComponent, ReliefValveComponent, NozzleComponent)
 from .FluidState import NodeState
 from errors import TrialDomainError, ResidualAcceptanceError, SolverConvergenceError
 from .Sundials.ida_session import IdaSession, IdaStep
@@ -40,7 +41,6 @@ class FluidNetwork:
         self.stop_at_shutdown, self.stop_at_triple_point = stop_at_shutdown, stop_at_triple_point
         self.frozen = False
         self.stop_reason = None
-        self._triple_limits = {}
         self.node_definitions, self.branch_definitions = deepcopy(nodes), deepcopy(branches)
         self.fluid_properties, self.combustion_properties = fluid_properties, combustion_properties
         kinds = {self._kind(b) for b in branches.values()}
@@ -98,17 +98,13 @@ class FluidNetwork:
                 if node not in self.nodes:
                     raise ValueError(f"Branch '{k}' references unknown node '{node}'")
                 self.connections[node].append((sign, k))
-        self.regulator_modes = {}
         regulated = set()
         for k, branch in self.branches.items():
             if isinstance(branch, RegulatorComponent) and isinstance(self.nodes[branch.to_node], VolumeComponent):
                 if branch.to_node in regulated:
                     raise ValueError('Multiple ideal regulators on one storage volume are underdetermined')
                 regulated.add(branch.to_node)
-                self.regulator_modes[k] = 'capacity'
-        self.directions = {k: int(v.get('direction', 1)) for k, v in branches.items()}
-        if any(d not in (-1, 1) for d in self.directions.values()):
-            raise ValueError('Branch directions must be -1 or 1')
+                branch.mode = 'capacity'
         self.constraint_monitor = constraint_monitor
         self.state, self.time = NetworkState(), 0.0
         self.pressure_tracking = PressureTracking(nodes)
@@ -146,11 +142,14 @@ class FluidNetwork:
         classes = {'loss': LossComponent, 'incompressible_loss': LossComponent,
                    'compressible_loss': LossComponent, 'pump': PumpComponent,
                    'regulator': RegulatorComponent, 'bang_bang_valve': BangBangValveComponent,
+                   'switch_valve': SwitchValveComponent, 'relief_valve': ReliefValveComponent,
                    'nozzle': NozzleComponent}
         if kind not in classes:
             raise ValueError(f"Unsupported branch kind '{kind}' for '{key}'")
-        kwargs = {'phase': definition.get('phase', 'gas' if kind == 'compressible_loss' else 'liquid')} if kind in ('loss', 'incompressible_loss', 'compressible_loss', 'pump') else {}
+        kwargs = {'phase': definition.get('phase', 'gas' if kind in ('compressible_loss', 'relief_valve') else 'liquid')} if kind in ('loss', 'incompressible_loss', 'compressible_loss', 'pump', 'switch_valve', 'relief_valve') else {}
         branch = classes[kind](key, definition, **kwargs)
+        if getattr(branch, 'sense_node', branch.from_node) not in self.nodes:
+            raise ValueError(f"Branch {key!r} references an unknown sense_node")
         branch.set_enabled(definition.get('enabled', True))
         return branch
 
@@ -241,7 +240,7 @@ class FluidNetwork:
         while pending or len(ready) < len(self.nodes):
             progress = False
             for key in sorted(pending):
-                branch, direction = self.branches[key], self.directions[key]
+                branch, direction = self.branches[key], self.branches[key].direction
                 donor, port = ((branch.from_node, branch.from_port) if direction > 0
                                else (branch.to_node, branch.to_port))
                 if branch.active and donor not in ready:
@@ -253,7 +252,7 @@ class FluidNetwork:
                 if key in ready:
                     continue
                 incoming = tuple((sign, bid) for sign, bid in self.connections[key]
-                                 if self.branches[bid].active and sign * self.directions[bid] > 0)
+                                 if self.branches[bid].active and sign * self.branches[bid].direction > 0)
                 if any(bid in pending for _, bid in incoming):
                     continue
                 yield ('node', key, incoming)
@@ -269,7 +268,7 @@ class FluidNetwork:
             self._transport_plan = None
             operations = self._transport_operations()
         else:
-            signature = tuple((key, branch.active, self.directions[key]) for key, branch in self.branches.items())
+            signature = tuple((key, branch.active, self.branches[key].direction) for key, branch in self.branches.items())
             if self._transport_plan is None or self._transport_plan[0] != signature:
                 self._transport_plan = (signature, tuple(self._transport_operations()))
             operations = self._transport_plan[1]
@@ -357,8 +356,8 @@ class FluidNetwork:
                 heat = self._heat_for(key, nodes[key], t)
                 out[self.equation_slices[key]] = node.residual(nodes[key], derivatives[key], adjacent[key], heat_rate=heat)
             for key, branch in self.branches.items():
-                if key in self.regulator_modes and branch.active:
-                    mode, q = self.regulator_modes[key], branches[key].mdot
+                if isinstance(branch, RegulatorComponent) and branch.mode is not None and branch.active:
+                    mode, q = branch.mode, branches[key].mdot
                     if mode == 'regulating':
                         target = branch.to_node
                         rows = [self.nodes[target].pressure_rate(nodes[target], derivatives[target]) / branch.target]
@@ -372,59 +371,31 @@ class FluidNetwork:
         except TrialDomainError as error:
             raise TrialDomainError(f'Network trial at t={t:g}: {error}') from error
 
-    def _event_margins(self, t, y, ydot):
+    def _event_specs(self, t, y, ydot):
         values = self._unpack(y)
-        margins = {}
-        # Storage events use raw P/T/inventories, not a full property evaluation.
-        for key, node in self.nodes.items():
-            if isinstance(node, VolumeComponent):
-                for name, value in node.event_values(NodeState(trial_values=values[key])).items():
-                    # End the supported model slightly inside hard property limits.
-                    # This leaves a valid neighborhood for root interpolation.
-                    if name.endswith(('_low', '_high')):
-                        variable = 'P' if 'pressure' in name else 'T_liq' if name.startswith('liquid_') else 'T_ull' if name.startswith('ullage_') else 'T'
-                        index = self.variable_index.get(f'{key}.{variable}')
-                        if index is not None:
-                            value -= 10 * (self.atol[index] + self.options['rtol'] * abs(y[index]))
-                    margins[('node', key, name)] = value
-                if self.stop_at_triple_point:
-                    names = ((node.definition['liquid_fluid'], 'T_liq'), (node.definition['gas_fluid'], 'T_ull')) if node.mode == 'two_phase' else ((node.fluid_name, 'T'),)
-                    for fluid, temperature in names:
-                        if not self.fluid_properties.supports_saturation(fluid):
-                            continue
-                        if fluid not in self._triple_limits:
-                            low, _ = self.fluid_properties.saturation_bounds(fluid)
-                            self._triple_limits[fluid] = (low, self.fluid_properties.saturation_at_p(fluid, low).T)
-                        low_p, low_t = self._triple_limits[fluid]
-                        variable, limit = ('P', low_p) if node.mode == 'saturated' else (temperature, low_t)
-                        index = self.variable_index[f'{key}.{variable}']
-                        buffer = 10 * (self.atol[index] + self.options['rtol'] * abs(y[index]))
-                        margins[('node', key, f'triple_point:{fluid}')] = (values[key][variable] - limit - buffer) / limit
         raw = {key: NodeState(trial_values=values[key]) for key in self.nodes}
         for key, node in self.nodes.items():
             if isinstance(node, BoundaryComponent):
                 raw[key] = node.evaluate({}, boundary_values=self._boundary(key, t))
-        needs_trial = bool(self.regulator_modes) or any(isinstance(n, CombustorComponent) and n.mode == 'combusting' for n in self.nodes.values())
-        evaluated = self.evaluate_trial(t, y) if needs_trial else None
-        for key, branch in self.branches.items():
-            if isinstance(branch, BangBangValveComponent):
-                margins.update({('branch', key, name): v for name, v in branch.event_values(raw).items()})
-            elif key in self.regulator_modes and branch.active:
-                mode = self.regulator_modes[key]
-                if mode == 'regulating':
-                    b = evaluated[1][key]
-                    margins[('branch', key, 'close_limit')] = b.mdot / branch.flow_scale
-                    margins[('branch', key, 'capacity_limit')] = (b['max_mdot'] - b.mdot) / branch.flow_scale
-                else:
-                    delta = (raw[branch.to_node]['P'] - branch.target) / branch.target
-                    margins[('branch', key, 'regulate')] = delta if mode == 'closed' else -delta
-            elif branch.active and isinstance(branch, (LossComponent, PumpComponent)) and not isinstance(branch, RegulatorComponent):
-                margins[('branch', key, 'reverse')] = self.directions[key] * values[key]['mdot']
-        if evaluated:
-            for key, node in self.nodes.items():
-                if isinstance(node, CombustorComponent):
-                    margins.update({('node', key, name): v for name, v in node.event_values(evaluated[0][key]).items()})
-        return margins
+        trial = None
+
+        def evaluated():
+            nonlocal trial
+            if trial is None:
+                trial = self.evaluate_trial(t, y)
+            return trial
+
+        context = SimpleNamespace(time=t, values=values, nodes=raw, evaluated=evaluated,
+            rates=self._unpack(ydot), atol=self._unpack(self.atol),
+            errors=self._unpack(self.atol + self.options['rtol'] * np.abs(y)),
+            options={**self.options, 'stop_at_triple_point': self.stop_at_triple_point})
+        return {(kind, key, name): event
+                for kind, components in (('node', self.nodes), ('branch', self.branches))
+                for key, component in components.items()
+                for name, event in component.events(context).items()}
+
+    def _event_margins(self, t, y, ydot):
+        return {key: event.value for key, event in self._event_specs(t, y, ydot).items()}
 
     def root_values(self, t, y, ydot, out):
         margins = self._event_margins(t, y, ydot)
@@ -505,9 +476,9 @@ class FluidNetwork:
         signature = (tuple(self.variable_index), tuple(self.equation_index), tuple(self.differential),
                      tuple(self.atol), tuple(self.row_scales), self.root_names,
                      tuple((key, getattr(node, 'mode', None)) for key, node in self.nodes.items()),
-                     tuple((key, branch.active, self.directions[key], getattr(branch, 'phase', None),
+                     tuple((key, branch.active, self.branches[key].direction, getattr(branch, 'phase', None),
                             tuple(getattr(branch, 'phases', ()))) for key, branch in self.branches.items()),
-                     tuple(self.regulator_modes.items()), bool(self.axial_specific_force),
+                     tuple((key, getattr(branch, 'mode', None)) for key, branch in self.branches.items()), bool(self.axial_specific_force),
                      self.options['jacobian'], self.options['verify_jacobian'], self.options['suppress_algebraic_error'])
         if self.session is not None and getattr(self, '_session_signature', None) == signature:
             step = self.session.restart(IdaStep(self.time, self.y, self.ydot, np.empty(0, dtype=int), 0),
@@ -600,9 +571,9 @@ class FluidNetwork:
         values = {key: node.initial_values() for key, node in self.nodes.items()}
         for key, branch in self.branches.items():
             values[key] = {'mdot': float(branch.parameters.get('mdot0', branch.parameters.get('design_mdot', 0.01)))}
-            if key in self.regulator_modes:
+            if isinstance(branch, RegulatorComponent) and branch.mode is not None:
                 p = values[branch.to_node]['P']
-                self.regulator_modes[key] = 'regulating' if abs(p - branch.target) <= branch.target * 1e-10 else 'closed' if p > branch.target else 'capacity'
+                branch.mode = 'regulating' if abs(p - branch.target) <= branch.target * 1e-10 else 'closed' if p > branch.target else 'capacity'
         try:
             self._prepare_modes(values)
             self.ydot = np.zeros_like(self.y)
@@ -623,23 +594,14 @@ class FluidNetwork:
         for _ in range(30):
             if self.frozen:
                 return
-            margins = self._event_margins(self.time, self.y, self.ydot)
-            events = [key for key, value in margins.items() if value < -self._settling_tolerance(key)
-                      or (value <= 0 and key[2] in ('dryout', 'switch', 'oxidizer_unavailable', 'fuel_unavailable'))]
+            specs = self._event_specs(self.time, self.y, self.ydot)
+            events = [key for key, event in specs.items()
+                      if event.value < -max(self.options['event_tolerance'], event.tolerance)
+                      or (event.at_zero and event.value <= 0)]
             if not events:
                 return
             self.apply_events(self.time, self.y, self.ydot, events)
         raise RuntimeError('Initial/event mode iteration did not settle')
-
-    def _settling_tolerance(self, event):
-        """Pressure roundoff must not immediately undo a capacity/closure event."""
-        tolerance = self.options['event_tolerance']
-        if event[0] == 'branch' and event[2] == 'regulate':
-            branch = self.branches[event[1]]
-            index = self.variable_index[f'{branch.to_node}.P']
-            tolerance = max(tolerance, self.options['regulator_pressure_tolerance'],
-                            self.options['rtol'] + self.atol[index] / branch.target)
-        return tolerance
 
     def apply_events(self, t, y, ydot, events):
         """Atomically map modes/inventories, initialize and validate a restart."""
@@ -656,54 +618,25 @@ class FluidNetwork:
     def _apply_events(self, t, y, ydot, events):
         self.time = float(t)
         before, event_start = deepcopy(self.state), len(self.events)
-        terminal = [event for event in events if event[2].startswith('triple_point:')]
+        specs = self._event_specs(t, y, ydot)
+        terminal = [event for event in events if event in specs and specs[event].terminal]
         if terminal:
             for kind, key, name in sorted(set(terminal)):
                 self.events.append(dict(time_s=t, kind=kind, component=key, name=name))
-            self._freeze('triple_point')
+            self._freeze(specs[sorted(terminal)[0]].terminal)
             self._record_shutdown(before, event_start)
             return
         values = self._unpack(y)
         for kind, key, name in sorted(set(events)):
-            record = {'time_s': self.time, 'kind': kind, 'component': key, 'name': name}
-            if kind == 'node':
-                node, old = self.nodes[key], values[key]
-                if name == 'dryout':
-                    if node.mode != 'two_phase':
-                        continue
-                    remainder = dict(time_s=t, node=key, fluid=node.definition['liquid_fluid'],
-                                     mass=old['m_liq'], energy=old['U_liq'])
-                    if remainder['mass'] < 0 or remainder['mass'] > 1.01 * node.dry_mass:
-                        raise RuntimeError('Dryout mapping exceeded the numerical remainder budget')
-                    self.remainders.append(remainder)
-                    record['numerical_remainder'] = deepcopy(remainder)
-                    values[key] = dict(m=old['m_ull'], U=old['U_ull'], P=old['P'], T=old['T_ull'])
-                    node.set_mode('gas')
-                elif name in ('oxidizer_unavailable', 'fuel_unavailable'):
-                    node.set_mode('shutdown', (), reason=name)
-                elif name in ('condense', 'evaporate', 'liquid_limit'):
-                    if name == 'condense':
-                        values[key] = dict(m=old['m'], U=old['U'], P=old['P'], quality=1.)
-                        node.set_mode('saturated')
-                    else:
-                        sat = node.fluid_properties.saturation_at_p(node.fluid_name, old['P'])
-                        values[key] = dict(m=old['m'], U=old['U'], P=old['P'], T=sat.T)
-                        node.set_mode('gas' if name == 'evaporate' else 'liquid')
-                else:
-                    raise RuntimeError(f'Property/model domain limit at t={t:g}: {key}.{name}')
-            else:
-                branch = self.branches[key]
-                if name == 'switch':
-                    record['was_open'] = branch.is_open
-                    branch.set_open(not branch.is_open)
-                    record['is_open'] = branch.is_open
-                elif name == 'reverse':
-                    self.directions[key] *= -1
-                elif name in ('regulate', 'close_limit', 'capacity_limit'):
-                    self.regulator_modes[key] = {'regulate': 'regulating', 'close_limit': 'closed', 'capacity_limit': 'capacity'}[name]
-                else:
-                    raise ValueError(f'Unknown event: {kind}.{key}.{name}')
+            component = (self.nodes if kind == 'node' else self.branches)[key]
+            record = dict(time_s=self.time, kind=kind, component=key, name=name)
+            record.update(component.apply_event(name, values[key], self.time))
+            if 'numerical_remainder' in record:
+                self.remainders.append(deepcopy(record['numerical_remainder']))
             self.events.append(record)
+        # A component transition can change dependencies without changing its
+        # variable names; rebuild the Jacobian as well as consistent conditions.
+        self.close()
         self._prepare_modes(values)
         self._record_shutdown(before, event_start)
         self.ydot = np.zeros_like(self.y)
@@ -767,7 +700,7 @@ class FluidNetwork:
             name = list(self.equation_index)[worst]
             raise ResidualAcceptanceError(f'Accepted residual {name}={residual[worst]:.3e} exceeds tolerance')
         for key, branch in self.branches.items():
-            if key in self.regulator_modes and self.regulator_modes[key] == 'regulating':
+            if isinstance(branch, RegulatorComponent) and branch.mode == 'regulating':
                 error = abs(nodes[branch.to_node]['P'] / branch.target - 1.)
                 if error > max(20 * self.options['rtol'], 1e-6):
                     raise RuntimeError(f'Regulator pressure drift at {key}: {error:.3e}')
@@ -879,14 +812,8 @@ class FluidNetwork:
             if step.roots.any():
                 self._accept()  # Record the limiting pre-event state as well.
                 events = [self.root_names[i] for i in np.flatnonzero(step.roots)]
-                for key, node in self.nodes.items():
-                    if isinstance(node, PropellantTankComponent) and node.mode == 'two_phase':
-                        i = self.variable_index[f'{key}.m_liq']
-                        margin = self.y[i] - node.dry_mass
-                        tolerance = min(.01 * node.dry_mass,
-                                        max(10 * self.atol[i], abs(self.ydot[i]) * self.options['event_time_tolerance']))
-                        if self.ydot[i] < 0 and margin <= tolerance:
-                            events.append(('node', key, 'dryout'))
+                events.extend(key for key, event in self._event_specs(self.time, self.y, self.ydot).items()
+                              if event.coincident)
                 # SUNDIALS reports coincident roots; mode preparation handles
                 # downstream phase/chamber changes caused by those events.
                 self.apply_events(self.time, self.y, self.ydot, events)

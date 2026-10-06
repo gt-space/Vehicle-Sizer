@@ -1,0 +1,142 @@
+# Vespula wiring: switch-only pressurization, independent reliefs to ambient.
+# Each switch senses its attached upstream COPV by default.
+circuits:
+  oxidizer:
+    prop: oxidizer
+    tank_id: ox_tank
+  fuel:
+    prop: fuel
+    tank_id: fuel_tank
+  exhaust:
+    prop: exhaust
+  pressurant:
+    prop: pressurant
+    tank_id: press_tank
+nodes:
+  thrust_chamber:
+    component: combustor
+    P0:
+      config: prop_system.Pc_target
+    ambient_node: ambient
+  ambient:
+    component: boundary
+  press_tank:
+    component: pressurant_tank
+    tank_id: press_tank
+    P0:
+      config: tanks.press_tank.design_pressure
+  ox_inj_in:
+    component: junction
+    fluid:
+      config: prop_system.initial_conditions.ox_tank.fluid
+    phase: liquid
+    state0:
+      P:
+        node: ox_inj_in
+      T:
+        config: prop_system.initial_conditions.ox_tank.T
+    P0:
+      node: thrust_chamber
+      relative_rise:
+        config: prop_system.ox_inj_stiffness
+  ox_ullage:
+    component: propellant_tank
+    tank_id: ox_tank
+    P0:
+      node: ox_inj_in
+      rise:
+        config: prop_system.ox_tank_inj_dp
+  fuel_inj_in:
+    component: junction
+    fluid:
+      config: prop_system.initial_conditions.fuel_tank.fluid
+    phase: liquid
+    state0:
+      P:
+        node: fuel_inj_in
+      T:
+        config: prop_system.initial_conditions.fuel_tank.T
+    P0:
+      node: thrust_chamber
+      relative_rise:
+        config: prop_system.fuel_inj_stiffness
+  fuel_ullage:
+    component: propellant_tank
+    tank_id: fuel_tank
+    P0:
+      node: fuel_inj_in
+      rise:
+        config: prop_system.fuel_tank_inj_dp
+branches:
+  OX_TANK_INJ:
+    component: loss
+    circuit: oxidizer
+    from: ox_ullage
+    to: ox_inj_in
+    from_port: liquid
+    CdA:
+      config: prop_system.ox_system_CdA
+  OX_INJ:
+    component: loss
+    circuit: oxidizer
+    from: ox_inj_in
+    to: thrust_chamber
+    to_port: oxidizer
+    CdA:
+      config: prop_system.ox_injector_CdA
+  FUEL_TANK_INJ:
+    component: loss
+    circuit: fuel
+    from: fuel_ullage
+    to: fuel_inj_in
+    from_port: liquid
+    CdA:
+      config: prop_system.fuel_system_CdA
+  FUEL_INJ:
+    component: loss
+    circuit: fuel
+    from: fuel_inj_in
+    to: thrust_chamber
+    to_port: fuel
+    CdA:
+      config: prop_system.fuel_injector_CdA
+  NOZZLE:
+    component: nozzle
+    circuit: exhaust
+    from: thrust_chamber
+    to: ambient
+    from_port: nozzle
+  OX_SWITCH:
+    component: switch_valve
+    circuit: pressurant
+    from: press_tank
+    to: ox_ullage
+    from_port: gas
+    to_port: ullage
+    parameters:
+      config: prop_system.switches.OX_SWITCH
+  OX_RELIEF:
+    component: relief_valve
+    circuit: pressurant
+    from: ox_ullage
+    to: ambient
+    from_port: ullage
+    parameters:
+      config: prop_system.reliefs.OX_RELIEF
+  FUEL_SWITCH:
+    component: switch_valve
+    circuit: pressurant
+    from: press_tank
+    to: fuel_ullage
+    from_port: gas
+    to_port: ullage
+    parameters:
+      config: prop_system.switches.FUEL_SWITCH
+  FUEL_RELIEF:
+    component: relief_valve
+    circuit: pressurant
+    from: fuel_ullage
+    to: ambient
+    from_port: ullage
+    parameters:
+      config: prop_system.reliefs.FUEL_RELIEF

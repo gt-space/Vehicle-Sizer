@@ -43,6 +43,56 @@ def _finish(figure, axes, path, burnout=None):
     plt.close(figure)
 
 
+def plot_thermal_history(history, path, burnout=None):
+    """Plot only recorded thermal states; never extrapolate into coast."""
+    samples = [state for state in history
+               if state["plant"].thermal is not None and state["plant"].thermal.node]
+    if not samples:
+        figure, axis = plt.subplots(figsize=(11, 7))
+        axis.text(0.5, 0.5, "Axial wall temperatures unavailable\nNo thermal samples recorded",
+                  ha="center", va="center", transform=axis.transAxes)
+        axis.set(title="Axial temperature profiles")
+        _finish(figure, axis, path)
+        return
+
+    time = np.asarray([state["kinematics"].t for state in samples], dtype=float)
+    thermal = samples[0]["plant"].thermal
+    node_ids = list(thermal.node)
+    station = np.concatenate([thermal.node[node]["cells"]["station"] for node in node_ids])
+    order = np.argsort(station)
+    wall_history = np.asarray([
+        np.concatenate([state["plant"].thermal.node[node]["cells"]["wall_T"]
+                        for node in node_ids])[order]
+        for state in samples
+    ])
+    figure, axes = plt.subplots(2, 1, figsize=(11, 10))
+    map_axis, axis = axes
+    if len(time) > 1:
+        field = map_axis.pcolormesh(time, station[order], wall_history.T, shading="nearest")
+        map_axis.set_xlim(time[0], time[-1])
+    else:
+        field = map_axis.scatter(np.full(len(station), time[0]), station[order], c=wall_history[0])
+    map_axis.set(xlabel="Time [s]", ylabel="Axial station [m]", title="Axial wall-temperature map")
+    figure.colorbar(field, ax=map_axis, label="Wall temperature [K]")
+    if burnout is not None and time[0] <= burnout <= time[-1]:
+        _mark_burnout(map_axis, burnout)
+    if history and time[-1] < history[-1]["kinematics"].t:
+        map_axis.text(.02, .98, f"Thermal solving stopped; last sample at t = {time[-1]:g} s",
+                      ha="left", va="top", transform=map_axis.transAxes)
+
+    targets = np.arange(max(10., np.ceil(time[0] / 10.) * 10.), time[-1] + .001, 10.)
+    indices = sorted({0, len(time) - 1, *(int(np.abs(time - target).argmin()) for target in targets)})
+    for index in indices:
+        axis.plot(station[order], wall_history[index], label=f"t = {time[index]:g} s")
+    if burnout is not None and time[0] <= burnout <= time[-1]:
+        index = int(np.abs(time - burnout).argmin())
+        axis.plot(station[order], wall_history[index], "k--", linewidth=2,
+                  label=f"Nearest burnout sample: t = {time[index]:g} s")
+    axis.set(xlabel="Axial station [m]", ylabel="Wall temperature [K]",
+             title="Axial profiles every 10 s, plus first and last thermal samples")
+    _finish(figure, axes, path)
+
+
 def _path(base, name):
     return base if name == "kinematics" else base.with_name(f"{base.stem}_{name}{base.suffix}")
 
@@ -96,35 +146,38 @@ def _tank_nodes(history):
 def _valve_history(history, branch_id):
     """Reconstruct substep transitions; endpoint samples cannot resolve fast cycling."""
     first = history[0]["plant"].fluids
+    state_key = "is_switched" if "is_switched" in first.branch[branch_id] else "is_open"
+    previous_key = state_key.replace("is_", "was_")
     key = f"branch:{branch_id}:switch"
     events = [event for state in history for event in state["plant"].fluids.events
               if event["kind"] == "branch" and event["component"] == branch_id
-              and "is_open" in event]
+              and state_key in event]
     if not events and key not in first.event_counts:
         return ([state["kinematics"].t for state in history],
-                [state["plant"].fluids.branch[branch_id]["is_open"] for state in history],
+                [state["plant"].fluids.branch[branch_id][state_key] for state in history],
                 [0] * len(history))
     kin = history[0]["kinematics"]
     initial_count = events[0]["count"] - 1 if events else first.event_counts[key]
-    initial_open = events[0]["was_open"] if events else first.branch[branch_id]["is_open"]
+    initial_open = events[0][previous_key] if events else first.branch[branch_id][state_key]
     times = [kin.t - kin.dt] + [event["time_s"] for event in events]
-    states = [initial_open] + [event["is_open"] for event in events]
+    states = [initial_open] + [event[state_key] for event in events]
     counts = [initial_count] + [event["count"] for event in events]
     return (times + [history[-1]["kinematics"].t], states + [states[-1]], counts + [counts[-1]])
 
 
 def plot_valve_actuations(history, path, burnout=None):
     figure, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
-    valves = [key for key, branch in history[0]["plant"].fluids.branch.items() if "is_open" in branch]
+    valves = [key for key, branch in history[0]["plant"].fluids.branch.items()
+              if "is_open" in branch or "is_switched" in branch]
     for offset, branch_id in enumerate(valves):
         times, states, counts = _valve_history(history, branch_id)
         label = branch_id.replace("_", " ")
+        label += " (0 initial, 1 switched)" if "is_switched" in history[0]["plant"].fluids.branch[branch_id] else " (0 closed, 1 open)"
         axes[0].step(times, np.asarray(states, dtype=float) + 1.2 * offset,
                      where="post", label=label)
         axes[1].step(times, counts, where="post", label=f"{label}: {counts[-1]} switches")
-    axes[0].set(ylabel="Valve state (offset; 0 closed, 1 open)",
-                title="Bang-bang valve actuations")
-    axes[1].set(xlabel="Time [s]", ylabel="Cumulative switches (open + close)")
+    axes[0].set(ylabel="Valve state (offset)", title="Valve actuations")
+    axes[1].set(xlabel="Time [s]", ylabel="Cumulative transitions")
     _finish(figure, axes, path, burnout)
 
 
@@ -307,43 +360,10 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
              title="Wind profile sampled along trajectory")
     _finish(figure, axis, paths["wind"])
 
-    thermal = history[0]["plant"].thermal
-    if thermal is None:
-        figure, axis = plt.subplots(figsize=(11, 7))
-        axis.text(0.5, 0.5, "Axial wall temperatures unavailable\nExternal heating is disabled",
-                  ha="center", va="center", transform=axis.transAxes)
-        axis.set(title="Axial temperature profiles every 10 s")
-        thermal_axes = axis
-    else:
-        figure, thermal_axes = plt.subplots(2, 1, figsize=(11, 10))
-        map_axis, axis = thermal_axes
-        node_ids = list(thermal.node)
-        station = np.concatenate([thermal.node[node]["cells"]["station"] for node in node_ids])
-        order = np.argsort(station)
-        wall_history = np.asarray([
-            np.concatenate([
-                state["plant"].thermal.node[node]["cells"]["wall_T"] for node in node_ids
-            ])[order]
-            for state in history
-        ])
-        field = map_axis.pcolormesh(time, station[order], wall_history.T, shading="nearest")
-        map_axis.set(xlabel="Time [s]", ylabel="Axial station [m]", title="Axial wall-temperature map")
-        figure.colorbar(field, ax=map_axis, label="Wall temperature [K]")
-        _mark_burnout(map_axis, burnout)
-        targets = np.arange(10.0, time[-1] + 0.001, 10.0)
-        indices = sorted({int(np.abs(time - target).argmin()) for target in targets})
-        for index in indices:
-            axis.plot(station[order], wall_history[index], label=f"t = {time[index]:g} s")
-        if burnout is not None:
-            index = int(np.abs(time - burnout).argmin())
-            axis.plot(station[order], wall_history[index], "k--", linewidth=2,
-                      label=f"Burnout: {time[index]:g} s")
-        axis.set(xlabel="Axial station [m]", ylabel="Wall temperature [K]",
-                 title="Axial profiles every 10 s")
-    _finish(figure, thermal_axes, paths["axial_temperatures"])
+    plot_thermal_history(history, paths["axial_temperatures"], burnout)
 
     valve_ids = [branch_id for branch_id, branch in history[0]["plant"].fluids.branch.items()
-                 if "is_open" in branch or "opening_fraction" in branch]
+                 if "is_open" in branch or "is_switched" in branch or "opening_fraction" in branch]
     plot_valve_actuations(history, paths["bang_bang"], burnout)
 
     regulators = [key for key in valve_ids if "opening_fraction" in history[0]["plant"].fluids.branch[key]]

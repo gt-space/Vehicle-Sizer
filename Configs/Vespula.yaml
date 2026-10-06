@@ -1,0 +1,222 @@
+
+advanced:
+  tank_pressure_fos: 1.5
+  weld_allowable: 138000000.0
+  endcap_mass_multiplier: 1.5
+  t_wall_min: 0.001
+  fluid_network:
+    jacobian: colored
+    rtol: 1.0e-5
+    max_step: 0.1
+    residual_retries: 3
+    residual_tolerance: 1.0e-5
+    retry_rtol_factor: 0.1
+    retry_rtol_floor: 1.0e-8
+
+launch:
+  altitude: 630.0
+  rail_height: 15.0
+  velocity: 0.0
+  # Current flight model is vertical/planar: matches the supplied 90 deg rail.
+
+environment:
+  wind:
+    enabled: true
+    profile: AeroTables/WindProfiles/vespula.csv
+  altitude_step: 100.0
+  max_altitude: 150000.0
+
+aero:
+  q_cutoff_Pa: 150
+  model: AeroTables/dragmodel.h5
+  nose: vonkarman
+  finish: 20um                 # PLACEHOLDER surface finish
+  fins_on_boattail: true
+
+nosecone:
+  profile: von_karman
+  fineness_ratio: 4.0          # Manually at aero lower bound; source is 3.95578947.
+  wall_thickness: 0.007      # PLACEHOLDER
+  material: carbon_fiber     # PLACEHOLDER
+  tip_radius: 0.01           # PLACEHOLDER
+avi_bay:
+  length: 0.15               # PLACEHOLDER split within the nose profile
+
+fin_can:
+  fin_count: 4
+  root_chord: 0.4579112
+  tip_chord: 0.2032          # Manually at aero upper bound (8 in); source 0.240538 m.
+  span: 0.144653
+  # Preserve supplied 0.1401318 m sweep with the configured tip chord.
+  sweep_fraction: 0.5501595532508974
+  fin_thickness: 0.00635     #0.25 in
+  boattail_length: 0.508     #20 in
+  boattail_aft_diameter: 0.24130048260096523 # PLACEHOLDER: straight aft body
+  boattail_wall_thickness: 0.00318          # PLACEHOLDER
+  material: carbon_fiber                   # PLACEHOLDER
+
+
+inter_tank:
+  stringer_count: 4
+  stringer_material: aluminum_7075
+
+engine:
+  thrust_tilt_deg: 0.6       # Positive = counterclockwise from body axis, in pitch plane.
+  mass: 25.04084
+  length: 0.495
+  throat_area: 0.003903218
+  expansion_ratio: 4.066
+  exit_pressure: 76221.5718  # Supplied reference; epsilon above bypasses Pe sizing.
+  exit_diameter: 0.14986    # (5.9 in), should be 5.4 but aero tables dont go that low
+  oxidizer: LOX
+  fuel: RP-1
+  cstar_efficiency: 0.9     # performance efficiencies
+  cf_efficiency: 0.9
+
+prop_system:
+  template: Configs/templates/Vespula.yaml
+  Pc_target: 1965006.6
+  MR_target: 2.0
+  design_mdot_oxidizer: 3.185
+  design_mdot_fuel: 1.593
+  nozzle_cd: 1.0
+  ox_inj_stiffness: 0.15017543859649123  # (327.8 - 285) / 285
+  fuel_inj_stiffness: 0.26056140350877194 # (359.26 - 285) / 285
+  ox_tank_inj_dp: 201326.992            # (357 - 327.8) psi
+  fuel_tank_inj_dp: 391208.6824         # (416 - 359.26) psi
+  ox_system_CdA: 0.000151
+  fuel_system_CdA: 0.0000633
+  ox_injector_CdA: 0.000125
+  fuel_injector_CdA: 0.0000555
+  initial_conditions:
+    ox_tank:
+      fluid: Oxygen
+      T: 100.0
+      gas_fluid: Nitrogen
+      gas_T: 298.15
+    fuel_tank:
+      fluid: n-Dodecane
+      T: 298.15
+      gas_fluid: Nitrogen
+      gas_T: 298.15
+    press_tank:
+      fluid: Nitrogen
+      T: 298.15
+  switches:
+    OX_SWITCH:
+      CdA_before: 3.52280714792e-6
+      CdA_after: 4.20364836688e-6
+      switch_pressure: 17237000.0
+      switch_direction: falling
+      initially_switched: false
+      latched: true
+    FUEL_SWITCH:
+      CdA_before: 1.61776257092e-6
+      CdA_after: 2.01606435496e-6
+      switch_pressure: 17237000.0
+      switch_direction: falling
+      initially_switched: false
+      latched: true
+  reliefs:
+    OX_RELIEF:
+      CdA: 5.76902072e-5
+      open_dP: 3102642.0    # 450 psi; provisionally interpreted as differential.
+      close_dP: 2947509.9   # PLACEHOLDER: reseat at 95% of opening dP
+      initially_open: false
+    FUEL_RELIEF:
+      CdA: 4.9612804e-5
+      open_dP: 4481594.0    # 650 psi; provisionally interpreted as differential.
+      close_dP: 4257514.3   # PLACEHOLDER: reseat at 95% of opening dP
+      initially_open: false
+  # No bang-bang branches/losses. No runtime collapse model.
+  # Source collapse_factor=1.2 belongs to sizing; all branch CdAs here are supplied.
+
+tanks:
+
+  ox_tank:
+    type: propellant
+    propellant_mass: 88.0
+    volume: 0.08582
+    length: 2.1913619
+    material: aluminum_6061                 # PLACEHOLDER
+    wall_thickness: 0.006350241300482618     # Approx. ID 2*source radius (0.1143 m).
+    ellipse_ratio: 1.75                     # PLACEHOLDER head shape
+    passthrough_diameter: 0.0
+    passthrough_wall_thickness: 0.0
+    thermal: {model: None}                  # PLACEHOLDER: adiabatic replication
+  fuel_tank:
+    type: propellant
+    propellant_mass: 41.8
+    volume: 0.05976
+    length: 1.428973
+    material: aluminum_6061                 # PLACEHOLDER
+    wall_thickness: 0.006350241300482618
+    ellipse_ratio: 1.75                     # PLACEHOLDER head shape
+    passthrough_diameter: 0.0
+    passthrough_wall_thickness: 0.0
+    thermal: {model: None}
+  press_tank:
+    type: pressurant
+    construction: copv
+    design_pressure: 28957992.0             # Also current initial pressure, 4200 psia.
+    min_temperature: 80.0                  # PLACEHOLDER operating floor
+    volume: 0.04
+    outer_diameter: 0.20929998
+    length: 1.4023661
+    ellipse_ratio: 1.75                     # PLACEHOLDER
+    thickness_slope: 0.03                   # PLACEHOLDER empirical wall model
+    thickness_intercept: 0.004
+    equivalent_density: 2238.6              # PLACEHOLDER
+    thermal: {model: None}
+
+property_models:
+  combustion:
+    source: table
+    table: {lookup_file: FluidTables/sizer_lookups.h5, nfz: 1}
+  pure_fluid:
+    source: table
+    table:
+      lookup_file: FluidTables/sizer_lookups.h5
+      fluids:
+        Nitrogen: {pt: nitrogen_pt, saturation: nitrogen_saturation}
+        Oxygen: oxygen_pt
+        n-Dodecane: ndodecane_pt
+
+vehicle:
+  OMLD: 0.24130048260096523
+  dx: 0.01
+  Iyy: 2293.484691049
+  sections:
+    - {type: nosecone, mass_override: 23.0}
+    - {type: avi_bay, mass_override: 10.0}
+    - type: inter_tank
+      length: 0.17891501959613908
+      mass_override: 10.0
+      stringer_unit_mass: 0.0
+      stiffness_EI: 2590060.99915326
+    - {type: press_tank, tank_id: press_tank, mass_override: 15.0}
+    - type: inter_tank
+      length: 0.49083045
+      mass_override: 10.0
+      stringer_unit_mass: 0.0
+      stiffness_EI: 2590060.99915326
+    - {type: prop_tank, tank_id: fuel_tank, mass_override: 9.37}
+    - type: inter_tank
+      length: 0.34633255
+      mass_override: 10.0
+      stringer_unit_mass: 0.0
+      stiffness_EI: 2590060.99915326
+    - {type: prop_tank, tank_id: ox_tank, mass_override: 13.0}
+    - type: inter_tank
+      length: 0.35185905
+      mass_override: 20.35916
+      stringer_unit_mass: 0.0
+      stiffness_EI: 2590060.99915326
+    - {type: fin_can, mass_override: 7.0}
+
+simulation:
+  dt: 0.1
+  t_end: 300.0
+  fluid_solve_post_shutdown: false
+  output: outputs/vespula/Vespula.csv
+  plot: outputs/vespula/Vespula.png

@@ -1,8 +1,8 @@
 """Continuous node physics for the SUNDIALS network, independent of the old solver.
 
 Nodes own definitions and discrete modes, never accepted solution/history. All
-residuals are unscaled SI equations; the assembler owns equation scaling, y/ydot,
-constraints, event arming, conservative state mapping and consistent restarts.
+residuals are unscaled SI equations. Components own event guards and state
+mapping; the assembler owns scaling, y/ydot, constraints and consistent restarts.
 """
 
 from copy import deepcopy
@@ -11,6 +11,7 @@ from math import isfinite
 import numpy as np
 
 from .FluidState import BranchState, FluidState, NodeState
+from .events import Event
 from errors import TrialDomainError
 
 
@@ -125,6 +126,12 @@ class FluidNode:
 
     def event_values(self, node_state):
         return {}
+
+    def events(self, context):
+        return {name: Event(value) for name, value in self.event_values(context.nodes[self.id]).items()}
+
+    def apply_event(self, name, values, time):
+        raise RuntimeError(f"Property/model domain limit at t={time:g}: {self.id}.{name}")
 
     def _property_limits(self, fluid, pressure, temperature, prefix=""):
         """Positive margins inside the provider's PT domain; no property calls."""
@@ -254,6 +261,7 @@ class VolumeComponent(FluidNode):
         if not np.isfinite(self.volume) or self.volume <= 0:
             raise ValueError("Tank volume must be finite and positive")
         self.set_mode(phase)
+        self._triple_limits = {}
 
     @property
     def fluid_name(self):
@@ -327,9 +335,46 @@ class VolumeComponent(FluidNode):
             return events
         lower, upper = self.fluid_properties.saturation_bounds(self.fluid_name)
         if not lower <= node_state["P"] <= upper:
-            return events
+            # Keep the root registered when a gas can enter the saturation
+            # range later in this segment, without querying outside the table.
+            return {**events, "condense": 1.}
         sat = self.fluid_properties.saturation_at_p(self.fluid_name, node_state["P"])
         return {**events, "condense": node_state["T"] - sat.T}
+
+    def events(self, context):
+        events = super().events(context)
+        errors = context.errors[self.id]
+        for name, event in events.items():
+            if name.endswith(("_low", "_high")):
+                variable = "P" if "pressure" in name else "T_liq" if name.startswith("liquid_") else "T_ull" if name.startswith("ullage_") else "T"
+                events[name] = Event(event.value - 10 * errors.get(variable, 0.))
+        if context.options["stop_at_triple_point"]:
+            names = ((self.definition["liquid_fluid"], "T_liq"), (self.definition["gas_fluid"], "T_ull")) if self.mode == "two_phase" else ((self.fluid_name, "T"),)
+            for fluid, temperature in names:
+                if not self.fluid_properties.supports_saturation(fluid):
+                    continue
+                if fluid not in self._triple_limits:
+                    low, _ = self.fluid_properties.saturation_bounds(fluid)
+                    self._triple_limits[fluid] = (low, self.fluid_properties.saturation_at_p(fluid, low).T)
+                low_p, low_t = self._triple_limits[fluid]
+                variable, limit = ("P", low_p) if self.mode == "saturated" else (temperature, low_t)
+                margin = (context.values[self.id][variable] - limit - 10 * errors[variable]) / limit
+                events[f"triple_point:{fluid}"] = Event(margin, terminal="triple_point")
+        return events
+
+    def apply_event(self, name, values, time):
+        if name == "condense":
+            values.pop("T")
+            values["quality"] = 1.
+            self.set_mode("saturated")
+        elif name in ("evaporate", "liquid_limit"):
+            sat = self.fluid_properties.saturation_at_p(self.fluid_name, values["P"])
+            values.pop("quality")
+            values["T"] = sat.T
+            self.set_mode("gas" if name == "evaporate" else "liquid")
+        else:
+            return super().apply_event(name, values, time)
+        return {}
 
     def output_state(self, node_state):
         output = super().output_state(node_state)
@@ -498,6 +543,31 @@ class PropellantTankComponent(VolumeComponent):
                     **self._property_limits(self.definition["gas_fluid"], node_state["P"], node_state["T_ull"], "ullage_")}
         return super().event_values(node_state)
 
+    def events(self, context):
+        events = super().events(context)
+        if self.mode == "two_phase":
+            rate = context.rates[self.id]["m_liq"]
+            tolerance = min(.01 * self.dry_mass,
+                            max(10 * context.atol[self.id]["m_liq"], abs(rate) * context.options["event_time_tolerance"]))
+            events["dryout"] = Event(events["dryout"].value, at_zero=True,
+                                    coincident=rate < 0 and events["dryout"].value <= tolerance)
+        return events
+
+    def apply_event(self, name, values, time):
+        if name != "dryout":
+            return super().apply_event(name, values, time)
+        if self.mode != "two_phase":
+            return {}
+        remainder = dict(time_s=time, node=self.id, fluid=self.definition["liquid_fluid"],
+                         mass=values["m_liq"], energy=values["U_liq"])
+        if not 0 <= remainder["mass"] <= 1.01 * self.dry_mass:
+            raise RuntimeError("Dryout mapping exceeded the numerical remainder budget")
+        mapped = dict(m=values["m_ull"], U=values["U_ull"], P=values["P"], T=values["T_ull"])
+        values.clear()
+        values.update(mapped)
+        self.set_mode("gas")
+        return {"numerical_remainder": remainder}
+
     def output_state(self, node_state):
         # Propellant geometry takes phase masses, unlike pure-volume geometry.
         output = FluidNode.output_state(self, node_state)
@@ -608,6 +678,18 @@ class CombustorComponent(FluidNode):
 
     def event_values(self, node_state):
         return dict(node_state.evaluation_data["reactants"]) if self.mode == "combusting" else {}
+
+    def events(self, context):
+        if self.mode != "combusting":
+            return {}
+        return {name: Event(value, at_zero=True)
+                for name, value in self.event_values(context.evaluated()[0][self.id]).items()}
+
+    def apply_event(self, name, values, time):
+        if name not in ("oxidizer_unavailable", "fuel_unavailable"):
+            return super().apply_event(name, values, time)
+        self.set_mode("shutdown", (), reason=name)
+        return {}
 
     def output_state(self, node_state):
         output = super().output_state(node_state)

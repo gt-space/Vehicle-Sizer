@@ -27,15 +27,15 @@ soft_penalties:
     upper_target: 0.20
     scale: 0.05
     weight: 0.15
-  tank_pressure_tracking:
-    fuel_tank:
-      pressure_scale_pa: 100000.0
-      time_scale_s: 10.0
-      weight: 0.05
-    ox_tank:
-      pressure_scale_pa: 100000.0
-      time_scale_s: 10.0
-      weight: 0.05
+  # tank_pressure_tracking:
+  #   fuel_tank:
+  #     pressure_scale_pa: 100000.0
+  #     time_scale_s: 10.0
+  #     weight: 0.05
+  #   ox_tank:
+  #     pressure_scale_pa: 100000.0
+  #     time_scale_s: 10.0
+  #     weight: 0.05
   max_q:
     target_pa: 140000.0
     scale_pa: 10000.0
@@ -49,10 +49,10 @@ failure_policy:
   rate_limit: 0.2
   repeated_limit: 3
 evaluation_overrides:
-  constraints.max_length_to_diameter: 30.0
+  constraints.max_length_to_diameter: 35.0
   constraints.min_stability_calibers: 2.0
   constraints.max_aoa_deg: 15.0
-  constraints.goal_apogee: 150000.0
+  constraints.goal_apogee: 140000.0
   constraints.max_burn_duration: 75.0
   simulation.t_end: 600.0
   environment.max_altitude: 300000.0
@@ -99,7 +99,7 @@ bounds:
   - 15000000.0
   - 30000000.0
   copv_volume:
-  - 0.015
+  - 0.04
   - 0.1
   oxidizer_mass:
   - 100.0

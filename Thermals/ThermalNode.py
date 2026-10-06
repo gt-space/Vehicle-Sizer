@@ -131,7 +131,7 @@ class WetNodeModel(DryNodeModel):
             properties["cp"], properties["beta"],
         )
         conductance = np.zeros(node.n)
-        active = active_h > 0.0
+        active = (active_h > 0.0) & (node.internal_area > 0.0)
         area = node.internal_area[active]
         conductance[active] = 1.0 / (
             node.thickness / (2.0 * node.conductivity * area)
@@ -195,8 +195,10 @@ class ThermalNode:
             ("shell mass", self.shell_mass),
             ("internal area", self.internal_area),
         ):
-            if values.shape != (self.n,) or np.any(values <= 0.0):
-                raise ValueError(f"Thermal node {node_id!r} requires positive {name} per cell")
+            invalid_sign = values < 0.0 if name == "internal area" else values <= 0.0
+            if values.shape != (self.n,) or np.any(~np.isfinite(values)) or np.any(invalid_sign):
+                qualifier = "nonnegative" if name == "internal area" else "positive"
+                raise ValueError(f"Thermal node {node_id!r} requires finite {qualifier} {name} per cell")
         if min(self.density, self.specific_heat, self.conductivity, self.thickness) <= 0.0:
             raise ValueError(f"Thermal properties for node {node_id!r} must be positive")
 

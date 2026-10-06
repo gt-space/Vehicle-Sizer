@@ -23,9 +23,8 @@ class Nosecone(Section):
         self.emissivity = 0.85
 
     def get_mass(self):
-        reco_mass = self.cfg["nosecone"]["reco_mass"]
         self.shell_mass = self._get_shell_mass()
-        self.mass = self.shell_mass + dist.uniform(reco_mass, self.n)
+        self.mass = self.shell_mass.copy()
 
     def _get_shell_mass(self) -> np.ndarray:
         x = (np.arange(self.n) + 0.5) * self.dx

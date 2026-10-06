@@ -15,7 +15,7 @@ class TankGeometryTests(unittest.TestCase):
         material = MaterialProperties("test", 2700.0, 276.0e6, 77.0e9)
         pressure = 2.7e6
         tank = PropTank(
-            cfg={"vehicle": {"dx": 0.01, "OMLD": 0.3048}},
+            cfg={"vehicle": {"dx": 0.01, "OMLD": 0.3048}, "advanced": {"tank_pressure_fos": 1.5, "weld_allowable": 276e6, "endcap_mass_multiplier": 1.5}},
             prop_mass=60.0,
             liquid_density=1000.0,
             material=material,
@@ -29,14 +29,13 @@ class TankGeometryTests(unittest.TestCase):
             tank_id="tank",
         )
         ratio = 1.5 * pressure / material.yield_strength
-        expected = ratio * (0.5 * 0.3048) / (1.0 + ratio)
+        expected = ratio * (0.5 * 0.3048)
         self.assertAlmostEqual(tank.wall_thickness, expected)
 
     def test_copv_calculates_length_and_internal_area(self):
         copv = COPV(
             volume=0.02,
             diameter=0.22,
-            wall_thickness=0.0032,
             ellipse_ratio=1.75,
             material_density=2700.0,
             mass=18.2,
@@ -55,7 +54,6 @@ class TankGeometryTests(unittest.TestCase):
         copv = COPV(
             volume=0.02,
             diameter=0.22,
-            wall_thickness=0.0032,
             ellipse_ratio=1.75,
             material_density=density,
         )
@@ -85,7 +83,7 @@ class TankGeometryTests(unittest.TestCase):
         liquid_volume = 0.06
         density = PropsSI("Dmass", "P", pressure, "T", temperature, "Oxygen")
         tank = PropTank(
-            cfg={"vehicle": {"dx": 0.01, "OMLD": 0.3048}},
+            cfg={"vehicle": {"dx": 0.01, "OMLD": 0.3048}, "advanced": {"tank_pressure_fos": 1.5, "weld_allowable": 276e6, "endcap_mass_multiplier": 1.5}},
             prop_mass=density * liquid_volume,
             liquid_density=density,
             material=MaterialProperties(

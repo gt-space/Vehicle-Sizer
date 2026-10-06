@@ -42,6 +42,9 @@ class FlightSim:
         self.vehicle = vehicle
         self.thermal = thermal
         self.loads = Loads(vehicle, aero)
+        self.thrust_tilt = math.radians(float(cfg.get("engine", {}).get("thrust_tilt_deg", 0.0)))
+        if not math.isfinite(self.thrust_tilt):
+            raise ValueError("engine.thrust_tilt_deg must be finite")
         self.aero_q_cutoff = float(cfg.get("aero", {}).get("q_cutoff_Pa", 0.0))
         if not math.isfinite(self.aero_q_cutoff) or self.aero_q_cutoff < 0:
             raise ValueError("aero.q_cutoff_Pa must be finite and nonnegative")
@@ -375,19 +378,31 @@ class FlightSim:
         if not plant.aero.ballistic_coast and not math.isfinite(cp):
             raise ValueError("Nonphysical or nonfinite flight force state")
 
-        Fx = (thrust - axial_aero) * math.cos(kin.theta) - normal_aero * math.sin(kin.theta)
-        Fz = (thrust - axial_aero) * math.sin(kin.theta) + normal_aero * math.cos(kin.theta) - weight
+        # Positive tilt rotates thrust counterclockwise from the body axis.
+        thrust_axial = thrust * math.cos(self.thrust_tilt)
+        thrust_normal = thrust * math.sin(self.thrust_tilt)
+        body_axial = thrust_axial - axial_aero
+        body_normal = thrust_normal + normal_aero
+        Fx = body_axial * math.cos(kin.theta) - body_normal * math.sin(kin.theta)
+        Fz = body_axial * math.sin(kin.theta) + body_normal * math.cos(kin.theta) - weight
 
         ax = Fx / mass
         az = Fz / mass
 
-        axial_specific_force = (thrust - axial_aero) / mass # needed for fluid head pressure
+        axial_specific_force = body_axial / mass # needed for fluid head pressure
 
-        pitch_moment = 0.0 if plant.aero.ballistic_coast else -normal_aero * (cp - cg)
+        # Thrust line passes through the existing engine/airframe interface.
+        thrust_moment = (-(self.vehicle.engine_start_station - cg) * thrust_normal
+                         if thrust_normal else 0.0)
+        aero_moment = 0.0 if plant.aero.ballistic_coast else -normal_aero * (cp - cg)
+        pitch_moment = aero_moment + thrust_moment
         pitch_acceleration = pitch_moment / kin.Iyy
 
         return {
             "thrust": thrust,
+            "thrust_axial": thrust_axial,
+            "thrust_normal": thrust_normal,
+            "thrust_moment": thrust_moment,
             "drag": drag,
             "axial_aero": axial_aero,
             "normal_aero": normal_aero,
@@ -917,7 +932,8 @@ class FlightSim:
 
     def _evaluate_loads(self, result, kin, atmosphere, aero, forces, engine_on):
         loads = self.loads.evaluate(atmosphere.q, atmosphere.Ma, kin.alpha,
-                                    aero.A, forces["thrust"], engine_on=engine_on,
+                                    aero.A, forces["thrust_axial"], engine_on=engine_on,
+                                    thrust_normal=forces["thrust_normal"],
                                     aerodynamic=not aero.ballistic_coast)
         for name in ("axial", "normal", "shear", "bending"):
             values = np.asarray(loads[name])

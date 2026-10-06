@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.optimize import root_scalar
 from ..Material import mp
 from .Section import Section
 from ..utils import distribute as dist
@@ -13,8 +12,8 @@ class AviBay(Section):
         self.OMLD = cfg["vehicle"]["OMLD"]
         self.length = cfg["avi_bay"]["length"]
         self.set_grid()
-        self.wall_thickness = cfg["avi_bay"]["clamshell_thickness"]
-        self.wall_material = cfg["avi_bay"]["clamshell_material"]
+        self.wall_thickness = 0.0
+        self.wall_material = cfg["nosecone"]["material"]
         self.emissivity = 0.85
 
         L_total = self.OMLD * cfg["nosecone"]["fineness_ratio"]
@@ -33,54 +32,19 @@ class AviBay(Section):
             raise ValueError(f"Unknown nosecone profile: {profile}")
 
     def get_mass(self):
-        lump_masses = self._get_bulkhead_mass() + self.cfg["avi_bay"]["avi_mass"]
-        self.shell_mass = self._get_shell_mass()
-        self.mass = self.shell_mass + dist.uniform(lump_masses, self.n)
-
-    def _get_shell_mass(self) -> np.ndarray:
-        mat = mp.get_material(self.cfg["avi_bay"]["clamshell_material"])
-        t = self.cfg["avi_bay"]["clamshell_thickness"]
-        rho = mat.get("density")
         self.surf_area = 2 * np.pi * self.radius * self.dx
-        return rho * self.surf_area * t
-
-    def _get_bulkhead_mass(self) -> float:
-        a = 9.81 * 10.0
-        P = self.cfg["avi_bay"]["avi_mass"] * a
-
-        mat = mp.get_material(self.cfg["avi_bay"]["bulkhead_material"])
-        nu = mat.get("poisson_ratio", T=350.0)
-        T = 350.0
-        sigma = mat.get("yield_strength", T=T)
-
-        r = (self.OMLD * 0.5) - self.cfg["avi_bay"]["clamshell_thickness"]
-        t = self._get_bulkhead_thickness(P, r, nu, sigma)
-        rho = mat.get("density")
-        return np.pi * r**2 * t * rho
-
-    def _get_bulkhead_thickness(self, P, r, nu, sigma) -> float:
-        FOS = 1.5
-
-        def f(t):
-            return (P / t**2) * (1 + nu) * (0.485 * np.log(r / t) + 0.52) - sigma
-
-        # Stronger materials can put the root below the former 1 mm bracket.
-        t_bounds = (min(1e-6, r * 1e-6), min(0.1, r))
-        sol = root_scalar(f, bracket=t_bounds, method='brentq')
-        return sol.root * FOS
+        self.shell_mass = np.zeros(self.n)
+        self.mass = np.zeros(self.n)
 
     def get_EI(self):
-        t = self.cfg["avi_bay"]["clamshell_thickness"]
-        r_i = np.maximum(self.radius - t, 0.0)
-        mat = mp.get_material(self.cfg["avi_bay"]["clamshell_material"])
-        E = mat.get("elastic_modulus")
-        self.EI = E * geo.annulus_second_moment(self.radius, r_i)
+        self.EI = np.zeros(self.n)
 
     def get_area(self):
         self.lat_area = 2 * self.radius * self.dx
 
     def get_MOI(self):
-        self.cg = np.sum(self.mass * self.station) / np.sum(self.mass)
+        self.cg = (np.sum(self.mass * self.station) / np.sum(self.mass)
+                   if np.sum(self.mass) > 0 else np.mean(self.station))
         self.Ixx = np.sum(self.mass * self.radius**2)
         self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 

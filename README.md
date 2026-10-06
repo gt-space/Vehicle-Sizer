@@ -1,98 +1,47 @@
-# Vehicle-Sizer
+# Vehicle Sizer
 
-## Run
+Builds a rocket from YAML, simulates propulsion and planar flight, calculates tank heating and structural loads, and searches for low launch-mass designs subject to constraints.
 
-Use Python 3.12 with sundials4py, NumPy, SciPy,
-CoolProp, RocketCEA, h5py, PyYAML, pandas, matplotlib, ussa1976, prettytable and matprotlib.
-Install the material library with `python -m pip install matprotlib`.
-Install CLI table formatting with `python -m pip install prettytable`.
-`main.py` prints the assembled section order, tank geometry, launch/shutdown
-masses, initial absolute pressures, flight performance, engine data, and body-axis
-inertias. Izz is reported as Iyy under the transverse-symmetry assumption; it
-is not independently calculated by the planar model. Reported flight maxima
-use the initial state and accepted samples; incomplete burns/apogees are labeled.
-Each CLI run also writes `<output_stem>_structural_loads.csv`, with one row per
-recorded time and vehicle station (cell center, measured from the nose).
-Columns include time [s], station and cell width [m], internal axial/shear forces
-[kN], distributed axial aerodynamic/normal forces [kN/m], and internal bending
-moment [kN m]. Signs are preserved from the load model (axial compression is
-positive). Distributed values use each cell's actual width. The export streams
-every tenth recorded time sample, plus the final sample, retaining all vehicle
-stations. This reduces the structural-load CSV to approximately one tenth of
-its full size; simulation resolution and plots are unchanged.
+Use Python 3.12+ and the project virtual environment. Run commands from the project root.
 
 ```bash
-python main.py Configs/flight_pump_fed_regulator.yaml
-python examples/run_propulsion.py Configs/flight_pressure_fed_bang_bang.yaml --duration 1 --dt 1
-python optimizer.py Configs/optimizer.yaml --output outputs/optimization
-python -m pytest -q
+python3 -m venv .venv
+.venv/bin/python -m pip install numpy scipy PyYAML h5py CoolProp ussa1976 matplotlib sundials4py pytest
 ```
 
-Both optimizer drivers use `maxiter` as a generation budget and
-`max_evaluations` as a candidate budget. The initial population is evaluated
-before generation 1; `maxiter: 0` evaluates only that population. Score-spread
-early stopping is disabled, since equal rejected/unresolved scores do not
-establish convergence. The first exhausted budget stops the search; winner
-verification is an additional evaluation outside the search budget.
+Inputs are a vehicle configuration file ([config_Name].yaml), its propulsion template (defines how fluid system nodes connect), and the referenced property, aero, and optional wind files. Table configs need `FluidTables/sizer_lookups.h5` and `AeroTables/dragmodel.h5`. Config dimensions use SI. You can find lookup tables here: https://app.notion.com/p/Elytra-Vehicle-Sizing-a6388149302944a9abf85dbf69d75622
 
-## Simulation API
+To simulate a flight:
 
-```python
-from Configs.loader import load_config
-from simulation import simulate
-
-cfg = load_config("Configs/flight_pressure_fed_regulator.yaml")
-result = simulate(cfg)
-print(result.dry_mass, result.initial_mass, result.apogee)
+```bash
+.venv/bin/python main.py Configs/flight_pressure_fed_regulator.yaml
 ```
 
-`compute_loads=True` evaluates load distributions
-`simulation.fluid_stop_at_triple_point: true` freezes the entire
-fluid network when any stored fluid with saturation data reaches the lower
-saturation-domain boundary, never turn this off, I don't know how to get around this as it would
-require modeling solids - gross'
+Outputs are a terminal summary, flight/event/load CSVs, and PNG plots at the config's `simulation.output` and `simulation.plot` paths. Use `--dt` or `--t-end` to change the run; `--enforce-constraints` applies the saved flight limits.
 
-Example mission objective and constraints
-```yaml
-constraints:
-  goal_apogee: 10000.0       # m
-  max_burn_duration: 60.0   # s
-  min_rail_twr: 1.2
+Run an optimization with a new output directory:
+
+```bash
+.venv/bin/python optimizer.py Configs/optimizer_pressure_fed.yaml --output outputs/search_01
 ```
 
+The search writes configs, evaluation records, failure details, and a summary. Accepted designs produce `best.yaml`; successful verification produces `verified.yaml`. Use `--max-evaluations` to limit the search.
+You need to make an optmiziation configuration specific to your flight config, examples are in Configs folder.
 
+Run tests:
 
-## Flight coordinates
+```bash
+.venv/bin/python -m pytest -q
+```
 
-Flight propagation uses planar 3DOF: downrange `x`, altitude `h`, velocities
-`vx`/`vz`, pitch angle `theta` (radians from horizontal), and pitch rate `q`.
-The launch rail is vertical. Angle of attack comes from pitch minus the
-air-relative flight-path angle; flight propagation does not use an AoA schedule.
-Pitch dynamics use `Iyy`. CSV output and trajectory plots include the new states;
-`velocity_m_s` and `SimResult.final_velocity` remain vertical velocity.
-`constraints.max_aoa_deg` defaults to 15 degrees and can be tightened. A converged
-endpoint exceeding it returns `infeasible_operating_state` with a negative margin
-in degrees. Invalid predictor/corrector guesses (including AoA outside the aero
-deck) instead restore the segment checkpoint and halve its timestep. Configure
-`advanced.flight.trial_max_retries` (default 10) and `trial_min_dt` (default
-1e-6 s) to bound recovery. Exhaustion is a numerical failure, not evidence of a
-physical constraint violation. These checks run before thermal/history commits.
-Apogee is localized from the ascent side to
-avoid requesting reverse-flow aerodynamics after the intended end of the run.
-
-SUNDIALS still advances the fluid network. Flight retains checkpoint/rollback,
-rail-exit localization, and one-sided thrust integration at engine shutdown.
-Material names follow matprotlib, for example `aluminum_6061`, `carbon_fiber`,
-and `fiberglass`.
-
-## Diameter-dependent fin span
-
-The aero deck accepts exposed fin span from `0.5 * OMLD` to `1.2 * OMLD`.
-`fin_can.span` stays in metres in flight configs; the aero adapter converts it
-into inches. Root chord, tip chord, and thickness retain their dimensional bounds.
-The supplied optimizer configs allow span from 0.1016 to 0.48768 m (the envelope
-across the deck's 8–16 inch diameters). With `conditional_geometry: true`, each
-candidate's span is mapped into the intersection of your configured span bounds
-and its diameter-dependent aero bounds. With this setting disabled, invalid spans
-are rejected by the aero geometry constraints. No flight-config span is automatically
-resized when you edit its diameter.
+| Folder | Purpose |
+| --- | --- |
+| [Configs](Configs/README.md) | Flight inputs, search settings, network wiring |
+| [Vehicle](Vehicle/README.md) | Geometry, mass distribution, inertia, stiffness |
+| [Fluids](Fluids/README.md) | Propulsion sizing and fluid-network solving |
+| [Flight](Flight/README.md) | Trajectory, aerodynamic forces, structural loads |
+| [Thermals](Thermals/README.md) | Wall temperatures and fluid heat transfer |
+| [FluidTables](FluidTables/README.md) | Fluid and combustion property tables |
+| [AeroTables](AeroTables/README.md) | Aerodynamic tables and interpolation |
+| [examples](examples/README.md) | Propulsion runs and parallel search tools |
+| [tests](tests/README.md) | Automated checks |

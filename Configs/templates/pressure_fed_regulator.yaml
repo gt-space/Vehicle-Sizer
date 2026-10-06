@@ -61,6 +61,33 @@ nodes:
       rise:
         config: prop_system.fuel_tank_inj_dp
 branches:
+  # Optional valve examples (areas in m^2, pressures in Pa; values illustrative).
+  # To switch the existing tank/feed restriction, replace OX_TANK_INJ below:
+  # OX_TANK_INJ:
+  #   component: switch_valve
+  #   circuit: oxidizer
+  #   from: ox_ullage
+  #   to: ox_inj_in
+  #   from_port: liquid
+  #   CdA_before: 1.0e-5
+  #   CdA_after: 2.0e-5
+  #   sense_node: ox_ullage       # defaults to the from node; absolute pressure
+  #   switch_pressure: 2.0e6
+  #   switch_direction: falling  # rising or falling
+  #   initially_switched: false
+  #   latched: true              # false requires reset_pressure for hysteresis
+  #   # reset_pressure: 2.2e6    # above switch_pressure for a falling switch
+  # To add a vent from the ullage to the existing ambient boundary:
+  # OX_RELIEF:
+  #   component: relief_valve
+  #   circuit: pressurant
+  #   from: ox_ullage
+  #   to: ambient
+  #   from_port: ullage
+  #   CdA: 1.0e-6
+  #   open_dP: 3.0e6             # source port pressure minus outlet port pressure
+  #   close_dP: 2.8e6            # require 0 < close_dP < open_dP
+  #   initially_open: false
   OX_TANK_INJ:
     component: loss
     circuit: oxidizer

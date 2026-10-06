@@ -44,12 +44,9 @@ class FinCan(Section):
         # Nozzle interference is returned as a signed construction constraint.
 
     def get_mass(self):
-        hardware_mass = float(self.cfg["fin_can"]["hardware_mass"])
-        if not np.isfinite(hardware_mass) or hardware_mass < 0:
-            raise ValueError("Fin-can hardware_mass must be finite and nonnegative")
         self.fin_shell_mass = self._get_fin_mass()
         self.boattail_shell_mass = self._get_boattail_mass_vector()
-        hardware_mass = dist.uniform(self.fin_shell_mass + hardware_mass, self.n)
+        hardware_mass = dist.uniform(self.fin_shell_mass, self.n)
         self.mass = (
             hardware_mass
             + self.boattail_shell_mass

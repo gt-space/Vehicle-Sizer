@@ -24,10 +24,10 @@ def pattern(network):
     while pending:
         progress = False
         for key in sorted(pending):
-            incoming = [(bid, b.from_node if network.directions[bid] > 0 else b.to_node)
+            incoming = [(bid, b.from_node if b.direction > 0 else b.to_node)
                         for sign, bid in network.connections[key]
                         for b in (network.branches[bid],)
-                        if b.active and sign * network.directions[bid] > 0]
+                        if b.active and sign * b.direction > 0]
             if not all(donor in fluid for _, donor in incoming):
                 continue
             node = network.nodes[key]
@@ -52,17 +52,17 @@ def pattern(network):
                 continue
             deps |= own[bid]
             if isinstance(node, (VolumeComponent, JunctionComponent)):
-                donor = b.from_node if network.directions[bid] > 0 else b.to_node
+                donor = b.from_node if b.direction > 0 else b.to_node
                 deps |= fluid[donor]
         mask[network.equation_slices[key], sorted(deps)] = True
     for key, b in network.branches.items():
         deps = own[key].copy()
         if b.active:
-            donor = b.from_node if network.directions[key] > 0 else b.to_node
+            donor = b.from_node if b.direction > 0 else b.to_node
             deps |= pressure[b.from_node] | pressure[b.to_node] | fluid[donor]
             # Nozzle equations read chamber cstar; regulator rate constraint
             # reads target thermodynamic gradients and inventory derivatives.
-            if key in network.regulator_modes:
+            if getattr(b, 'mode', None) is not None:
                 deps |= own[b.to_node]
         mask[network.equation_slices[key], sorted(deps)] = True
     return mask

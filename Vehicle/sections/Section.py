@@ -34,9 +34,48 @@ class Section(ABC):
 
     def build(self):
         self.get_mass()
-        self.get_EI()
+        self.apply_mass_inputs()
+        self.build_stiffness()
         self.get_area()
         self.get_MOI()
+
+    def build_stiffness(self):
+        """Build local bending rigidity without depending on section name/order."""
+        configured = getattr(self, "stiffness_input", None)
+        if configured is None:
+            self.get_EI()
+        else:
+            value = float(configured)
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError("stiffness_EI must be finite and positive (N m^2)")
+            self.EI = np.full(self.n, value)
+        self.EI = np.asarray(self.EI, dtype=float)
+        if self.EI.shape != (self.n,) or np.any(~np.isfinite(self.EI)) or np.any(self.EI < 0):
+            raise ValueError("Section stiffness must have one finite nonnegative value per cell")
+
+    def apply_mass_inputs(self):
+        """Override calculated section dry mass, then add freely named hardware."""
+        inputs = getattr(self, "mass_inputs", {})
+        override = inputs.get("mass_override", inputs.get("mass"))
+        manual = inputs.get("masses", {})
+        if not isinstance(manual, dict):
+            raise ValueError("masses must be a mapping of names to kg")
+        values = np.asarray(list(manual.values()), dtype=float)
+        if np.any(~np.isfinite(values)) or np.any(values < 0):
+            raise ValueError("manual masses must be finite and nonnegative")
+        if override is not None:
+            override = float(override)
+            if not np.isfinite(override) or override <= 0:
+                raise ValueError("mass override must be finite and positive")
+            calculated_total = float(np.sum(self.mass))
+            total = override
+            self.mass = np.full(self.n, total / self.n)
+            if hasattr(self, "shell_mass"):
+                self.shell_mass = self.shell_mass * (override / calculated_total) if calculated_total > 0 else np.zeros(self.n)
+        else:
+            self.mass = self.mass + values.sum() / self.n
+        if hasattr(self, "dry_mass"):
+            self.dry_mass = self.mass.copy()
 
     def set_grid(self):
         """Cells exactly cover the section; stations denote cell centers [m]."""

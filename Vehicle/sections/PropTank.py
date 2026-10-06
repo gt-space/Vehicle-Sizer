@@ -39,13 +39,20 @@ class PropTank(Section):
         ullage_factor: float,
         tank_id: str,
         weld_efficiency: float = 1.0,
+        volume: Optional[float] = None,
+        length: Optional[float] = None,
     ):
 
         super().__init__(cfg)
         self.tank_id = tank_id
         self.passthrough_diameter = float(passthrough_diameter)
         self.ellipse_ratio = float(ellipse_ratio)
-        self.ullage_factor = float(ullage_factor)
+        self.ullage_factor = float(ullage_factor) if ullage_factor is not None else None
+        self.volume_input = float(volume) if volume is not None else None
+        self.length_input = float(length) if length is not None else None
+        for name, value in (("volume", self.volume_input), ("length", self.length_input)):
+            if value is not None and (not np.isfinite(value) or value <= 0):
+                raise ValueError(f"Tank {name} must be finite and positive")
         self.OMLD = float(cfg["vehicle"]["OMLD"])
         self.prop_mass = float(prop_mass)
         self.material = material
@@ -68,7 +75,7 @@ class PropTank(Section):
             raise ValueError("Passthrough wall thickness must be positive")
         if self.liquid_density <= 0.0:
             raise ValueError("Initial propellant density must be positive")
-        if self.ullage_factor <= 1.0:
+        if self.volume_input is None and (self.ullage_factor is None or not np.isfinite(self.ullage_factor) or self.ullage_factor <= 1.0):
             raise ValueError("Ullage factor must be greater than one")
         if self.ellipse_ratio <= 1.0:
             raise ValueError("Tank ellipse ratio must be greater than one")
@@ -91,13 +98,13 @@ class PropTank(Section):
         e = self.ellipse_ratio
         rho = self.material.density
 
-        k = (
-            2 * e
-            + (1 / np.sqrt(e**2 - 1))
-            * np.log((e + np.sqrt(e**2 - 1)) / (e - np.sqrt(e**2 - 1)))
-        )
-
-        V_end = ((1/4) * np.pi * (D - 2*t) * t * k) / (2 * e)
+        a = D * 0.5
+        c = a / e
+        area = 4 * np.pi * ((a**3.2 + 2 * (a*c)**1.6) / 3)**(1/1.6)
+        multiplier = float(self.cfg["advanced"]["endcap_mass_multiplier"])
+        if not np.isfinite(multiplier) or multiplier <= 0:
+            raise ValueError("endcap_mass_multiplier must be finite and positive")
+        V_end = area * t * multiplier
         V_cyl = geo.annulus_volume(D * 0.5, D * 0.5 - t, self.cyl_length)
         if D_pass > 0.0 and t_pass >= 0.5 * D_pass:
             raise ValueError("Passthrough wall consumes its internal diameter")
@@ -116,12 +123,11 @@ class PropTank(Section):
     def get_thickness(self, supplied: Optional[float] = None) -> float:
         """Return supplied gauge or pressure-size it from the fixed OML diameter."""
 
-        allowable = self.material.require("yield_strength") * self.weld_efficiency
-        ratio = 1.5 * self.max_pressure / allowable
-        required = max(
-            ratio * (0.5 * self.OMLD) / (1.0 + ratio),
-            self.t_wall_min,
-        )
+        allowable = float(self.cfg["advanced"]["weld_allowable"])
+        fos = float(self.cfg["advanced"]["tank_pressure_fos"])
+        if not np.isfinite(allowable) or allowable <= 0 or not np.isfinite(fos) or fos < 1:
+            raise ValueError("weld_allowable must be positive and tank_pressure_fos >= 1")
+        required = fos * self.max_pressure * (0.5 * self.OMLD) / allowable
         self.required_wall_thickness = required
         if supplied is None:
             return required
@@ -138,6 +144,8 @@ class PropTank(Section):
         return supplied
 
     def _tank_volume(self) -> float:
+        if self.volume_input is not None:
+            return self.volume_input
         return self._liquid_capacity() * self.ullage_factor
 
     def _liquid_capacity(self) -> float:
@@ -187,10 +195,11 @@ class PropTank(Section):
             (4.0 / 3.0) * np.pi * radius**2 * head_depth * beta**3
         )
         cylinder_area = np.pi * (radius**2 - pass_radius**2)
-        self.cyl_length = (self.volume - head_volume) / cylinder_area
+        self.cyl_length = ((self.volume - head_volume) / cylinder_area
+                           if self.length_input is None else self.length_input - 2.0 * head_depth)
         if self.cyl_length <= 0.0:
             raise ValueError(
-                "Requested tank volume is smaller than its endcap volume"
+                "Tank volume/length must leave a positive cylinder between the endcaps"
             )
         self.length = self.cyl_length + 2.0 * head_depth
 
@@ -216,7 +225,8 @@ class PropTank(Section):
         return self.surf_area.copy()
 
     def get_thermal_shell_mass(self) -> np.ndarray:
-        area = self.get_thermal_internal_area()
+        # Shell exists even where the passthrough removes fluid capacity.
+        area = self.get_thermal_oml_area()
         return np.sum(self.shell_mass) * area / np.sum(area)
 
     def get_thermal_internal_area(self) -> np.ndarray:
