@@ -33,28 +33,28 @@ avi_bay:
 engine:
   cf_efficiency: 0.95
   cstar_efficiency: 0.9
-  exit_pressure: 66794.41202594012
+  exit_pressure: 69440.9982498481
   fuel: RP-1
   length: 0.5715
-  mass: 24.0 # 6 kg injector + 18 kg chamber/nozzle; boattail remains calculated.
+  mass: 24.0
   oxidizer: LOX
 environment:
   wind:
-    enabled: false
+    enabled: true
     profile: AeroTables/WindProfiles/RAP_HWM.csv
   altitude_step: 100.0
   max_altitude: 300000.0
 fin_can:
-  boattail_aft_diameter: 0.24752442875466096
-  boattail_length: 0.5854210616517307
+  boattail_aft_diameter: 0.25046139309757176
+  boattail_length: 0.5787413882762543
   boattail_wall_thickness: 0.00318
   fin_count: 4
-  fin_thickness: 0.006912142657945399
+  fin_thickness: 0.008687854065765277
   material: carbon_fiber
-  root_chord: 0.4607423123811729
-  span: 0.3511871277753288
-  sweep_fraction: 0.8536938901043448
-  tip_chord: 0.20013155474689767
+  root_chord: 0.4919639477860767
+  span: 0.370288510341321
+  sweep_fraction: 0.9630657705746801
+  tip_chord: 0.1957742437396176
 inter_tank:
   stringer_count: 4
   stringer_material: aluminum_7075
@@ -64,13 +64,13 @@ launch:
   velocity: 0.0
 nosecone:
   wall_thickness: 0.0032
-  fineness_ratio: 5.7
+  fineness_ratio: 4.2635954408076175
   material: carbon_fiber
   profile: von_karman
   tip_radius: 0.01
 prop_system:
-  MR_target: 2.2
-  Pc_target: 1463927.9694781723
+  MR_target: 2.1596993754625875
+  Pc_target: 1401161.1036052422
   fuel_inj_stiffness: 0.24
   fuel_tank_inj_dp: 275790.291727
   initial_conditions:
@@ -89,7 +89,7 @@ prop_system:
       fluid: Nitrogen
   nozzle_cd: 1.0
   ox_inj_stiffness: 0.24
-  ox_tank_inj_dp: 206842.71879525 # 30 psi
+  ox_tank_inj_dp: 206842.71879525
   regulator:
     FUEL_REGULATOR:
       capacity_factor: 5.0
@@ -100,7 +100,7 @@ prop_system:
       collapse_factor: 1.2
       tank_id: ox_tank
   template: Configs/templates/pressure_fed_regulator.yaml
-  thrust_target: 15677.600822128927
+  thrust_target: 20906.893907550508
 property_models:
   combustion:
     source: table
@@ -133,7 +133,7 @@ tanks:
     material: aluminum_6061
     passthrough_diameter: 0.1016
     passthrough_wall_thickness: 0.00254
-    propellant_mass: 108
+    propellant_mass: 126.15006759811472
     type: propellant
     ullage_factor: 1.1
   ox_tank:
@@ -145,20 +145,20 @@ tanks:
     material: aluminum_6061
     passthrough_diameter: 0.0
     passthrough_wall_thickness: 0
-    propellant_mass: 240
+    propellant_mass: 282.40177250038374
     type: propellant
     ullage_factor: 1.1
   press_tank:
     min_pressure: 4136854.3759008
     thermal:
       model: None
-    design_pressure: 2.9579e7
+    design_pressure: 26678464.742342323
     ellipse_ratio: 1.75
     min_temperature: 160.0
     outer_diameter: 0.2794
     type: pressurant
     construction: copv
-    volume: 0.07
+    volume: 0.07980022278425686
     thickness_slope: 0.03
     thickness_intercept: 0.004
     equivalent_density: 2238.6
@@ -169,7 +169,7 @@ thermal:
       specific_heat: 800.0
   sink_temperature: 288.15
 vehicle:
-  OMLD: 0.3048
+  OMLD: 0.3176109834219019
   dx: 0.01
   sections:
   - type: nosecone
@@ -180,46 +180,47 @@ vehicle:
       cube: 4.0
       clamshell: 1.25
       mounting: 2.0
+      counterweight: 10
   - tank_id: press_tank
     type: press_tank
     masses:
-      press_tank_shell: 6.89 # kg, uniform addition over the sized COPV; no mass override.
+      press_tank_shell: 6.89
       mounting: 2.0
       fitting: 1.0
-  - length: 0.3302 # 13 in
+  - length: 0.3302
     type: inter_tank
     masses:
       stringers: 0.88
       clamshell: 1.63
       components: 4.0
       canards: 3.0
-    stringer_unit_mass: 0.0 # Stringer total is supplied above; do not add it twice.
-    stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
+    stringer_unit_mass: 0.0
+    stiffness_EI: 3270000.0
   - tank_id: ox_tank
     type: prop_tank
-    masses: {} # Optional prop_tank_shell [kg]: uniform addition over the sized tank.
-  - length: 0.2794 # 11 in
+    masses: {}
+  - length: 0.2794
     type: inter_tank
     masses:
       stringers: 0.74
       clamshell: 1.38
       components: 4.0
       battery: 0.0
-    stringer_unit_mass: 0.0 # Stringer total is supplied above.
-    stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
+    stringer_unit_mass: 0.0
+    stiffness_EI: 3270000.0
   - tank_id: fuel_tank
     type: prop_tank
-    masses: {} # Optional prop_tank_shell [kg]: uniform addition over the sized tank.
-  - length: 0.3048 # 12 in
+    masses: {}
+  - length: 0.3048
     type: inter_tank
     masses:
       stringers: 0.81
-      clamshell: 1.50
+      clamshell: 1.5
       main_valves: 4.0
       tubing_solenoids: 3.0
       thrust_structure: 3.0
-    stringer_unit_mass: 0.0 # Stringer total is supplied above; visible entries sum to 12.31 kg.
-    stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
+    stringer_unit_mass: 0.0
+    stiffness_EI: 3270000.0
   - type: fin_can
     masses:
       hardware: 2.0
