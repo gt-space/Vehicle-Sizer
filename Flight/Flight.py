@@ -34,7 +34,9 @@ class FlightSim:
         prop_system: PropSystem,
         vehicle: Any,
         thermal: Optional[Any] = None,
+        *, ignore_feasibility: bool = False,
     ) -> None:
+        self.ignore_feasibility = bool(ignore_feasibility)
         self.cfg = cfg
         self.env = env
         self.aero = aero
@@ -94,7 +96,7 @@ class FlightSim:
         limit = self.cfg.get("constraints", {}).get("max_aoa_deg")
         if limit is not None:
             margin = float(limit) - abs(math.degrees(kin.alpha))
-            if margin < 0:
+            if margin < 0 and not self.ignore_feasibility:
                 raise OperatingInfeasible({"max_aoa_deg": margin}, time=kin.t)
         self.check_trial(kin, self._atmosphere(kin))
         return None

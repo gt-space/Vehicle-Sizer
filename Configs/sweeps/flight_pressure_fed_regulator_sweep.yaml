@@ -1,14 +1,15 @@
 # Optional sensitivity settings. The base vehicle config is not edited.
-# ALL VALUES USE THE EXISTING SIZER UNITS (SI)
+# ALL VALUES USE THE EXISTING SIZER UNITS (SI): Pa, m^3, m^2, N, degrees, etc.
 # Choose values: [v1, v2, ...] OR start/stop/step OR start/stop/num.
 # A parameter with enabled: false is kept at its original vehicle-config value.
-base_config: Configs/for_sweep_flight_pressure_fed_regulator.yaml
+base_config: Configs/flight_pressure_fed_regulator.yaml
 
 sweep:
   mode: one_at_a_time        # one_at_a_time | full_grid
   max_cases: 10000           # includes the standalone baseline case
   workers: 6                 # 1 = serial; 2/4/8 = parallel; 'auto' = up to 4
-  ignore_feasibility: true   # keep completed flights even if design constraints fail
+  ignore_feasibility: true   # bypass engineering feasibility stopping; keep margins
+  ignore_wind: true          # disable wind for sweep cases; base YAML is unchanged
 
   parameters:
     chamber_pressure:        # prop_system.Pc_target [Pa]

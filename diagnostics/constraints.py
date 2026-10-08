@@ -73,7 +73,7 @@ UNITS = {"max_q": "Pa", "max_burn_duration": "s", "goal_apogee": "m",
          "max_length_to_diameter": "1"}
 
 
-def vehicle_limit_margins(cfg, vehicle):
+def vehicle_limit_margins(cfg, vehicle, *, reject_infeasible=True):
     """Assess optional static vehicle limits before spending time on flight."""
     limit = cfg.get('constraints', {}).get('max_length_to_diameter')
     if limit is None:
@@ -82,7 +82,7 @@ def vehicle_limit_margins(cfg, vehicle):
     if not all(isfinite(v) and v > 0 for v in (length, diameter)):
         raise ValueError('L/D requires finite positive vehicle length and body diameter')
     margins = {'max_length_to_diameter': float(limit) - length / diameter}
-    if margins['max_length_to_diameter'] < 0:
+    if reject_infeasible and margins['max_length_to_diameter'] < 0:
         raise DesignInfeasible(margins)
     return margins
 

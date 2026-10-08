@@ -43,7 +43,9 @@ def _make_cea(engine_cfg: Dict[str, Any]):
 class PropSystem:
     """Size and bind one declarative template, then expose the IDAS network to flight."""
 
-    def __init__(self, cfg, tanks, fluid_properties=None, combustion_properties=None):
+    def __init__(self, cfg, tanks, fluid_properties=None, combustion_properties=None,
+                 *, ignore_feasibility=False):
+        self.ignore_feasibility = bool(ignore_feasibility)
         self.design_config = deepcopy(cfg)
         if {'external_heating', 'nodes'} & self.design_config.get('thermal', {}).keys():
             raise ValueError('Select thermal.model per dynamic model instead of legacy global heating flags')
@@ -75,7 +77,7 @@ class PropSystem:
         self._size_branches(circuits, nodes, branches)
         if set(self.pump_sizing) != set(self.cfg.get("pumps", {})):
             raise ValueError("Every configured pump must be referenced by exactly one template branch")
-        if any(value < 0 for value in self.sizing_constraints.values()):
+        if not self.ignore_feasibility and any(value < 0 for value in self.sizing_constraints.values()):
             raise DesignInfeasible(self.sizing_constraints, self.pump_sizing)
         self.battery_sizing = {}
         if "battery" in self.cfg:
@@ -667,7 +669,7 @@ class PropSystem:
             if "min_pressure" in limits:
                 initial[f"tank.{tank_id}.Pmin"] = float(state["P"]) - limits["min_pressure"]
         self.initial_constraints = initial
-        if any(value < 0 for value in initial.values()):
+        if not self.ignore_feasibility and any(value < 0 for value in initial.values()):
             raise DesignInfeasible(initial, self.pump_sizing)
 
     def _constraint_margins(self, state):

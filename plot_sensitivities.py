@@ -4,7 +4,7 @@ from sensitivity import SweepResults
 
 
 
-RESULTS_DIR = Path(__file__).resolve().parent / 'outputs/sensitivity/vespula'
+RESULTS_DIR = Path(__file__).resolve().parent / 'outputs/sensitivity/flight_pressure_fed_regulator'
 
 
 results = SweepResults.load(RESULTS_DIR)
@@ -25,11 +25,6 @@ results.plot(
     save=True,
 )
 
-results.plot(
-    x='ox_injector_stiffness',
-    y='apogee',
-    save=True,
-)
 
 results.plot_history(
     y='thrust_N',

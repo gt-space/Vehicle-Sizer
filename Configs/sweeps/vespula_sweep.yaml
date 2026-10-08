@@ -8,6 +8,8 @@ sweep:
   mode: one_at_a_time       # one_at_a_time | full_grid
   max_cases: 10000          # includes the standalone baseline case
   workers: 4                # 1 = serial; 2/4/8 = parallel processes; 'auto' = up to 4
+  ignore_feasibility: false  # true = bypass engineering-limit stopping; retain margins
+  ignore_wind: false         # true = disable wind in sweep only; keep base YAML intact
   parameters:
     chamber_pressure:      # prop_system.Pc_target [Pa]
       enabled: true
@@ -16,7 +18,7 @@ sweep:
       step: 100000
 
     ox_injector_stiffness:  # prop_system.ox_inj_stiffness [-]
-      enabled: true
+      enabled: false
       values: [0.10, 0.15, 0.20, 0.25]
 
     fuel_injector_stiffness: # prop_system.fuel_inj_stiffness [-]
