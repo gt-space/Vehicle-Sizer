@@ -50,13 +50,17 @@ class SweepResults:
                        for row in csv.DictReader(stream)]
         return cls(folder, summary, spec)
 
-    def fields(self) -> list[str]:
-        return sorted({key for row in self.summary for key in row})
+    def fields(self, contains: str | None = None) -> list[str]:
+        """List saved scalar field names; optionally filter by substring."""
+        names = sorted({key for row in self.summary for key in row})
+        return names if contains is None else [name for name in names if contains.lower() in name.lower()]
 
-    def history_fields(self) -> list[str]:
+    def history_fields(self, contains: str | None = None) -> list[str]:
+        """List history columns; optionally filter by substring."""
         with h5py.File(self.folder / 'histories.h5') as store:
-            return sorted({key for group in store.values()
-                           for key in json.loads(group.attrs['columns'])})
+            names = sorted({key for group in store.values()
+                            for key in json.loads(group.attrs['columns'])})
+        return names if contains is None else [name for name in names if contains.lower() in name.lower()]
 
     def history(self, case_id: str) -> dict[str, np.ndarray]:
         with h5py.File(self.folder / 'histories.h5') as store:
@@ -154,8 +158,16 @@ class SweepResults:
             samples.append((x, history))
         return history_gradient(samples, y)
 
-    def plot(self, x: str, y: str, **kwargs):
-        """Plot two scalar fields; ``x``/``y`` are names in ``fields()``.
+    def plot(self, x: str, y=None, **kwargs):
+        """Plot one or more scalar fields, optionally using two y-axes.
+
+        ``x`` is a field from fields(). ``y``/``y2`` may each be a field name,
+        a list of field names, or {field_name: custom_legend_label}.
+        ``y2`` creates a right-side y-axis. ``y2label``, ``y2scale``, ``y2lim``
+        configure it. ``labels`` is an optional mapping overriding legend names.
+        Single-trace plots default to black; multi-trace plots use colors.
+
+        Existing single-trace calls and saving behavior are unchanged.
 
         Keyword options (all optional):
             kind: 'auto' (line for swept x, scatter otherwise), 'line', 'scatter'.
@@ -185,6 +197,17 @@ class SweepResults:
         """
         from .plotting import plot_scalar
         return plot_scalar(self, x, y, **kwargs)
+
+    def plot_case_history(self, y=None, *, x='time_s', y2=None, case_id='baseline', **kwargs):
+        """Plot one saved flight's history using multiple lines and/or two y-axes.
+
+        Example: plot_case_history(y='thrust_N', y2='altitude_m',
+        y2scale=1e3, ylabel='Thrust (N)', y2label='Altitude (km)').
+        y/y2 can be strings, lists, or {field: legend_label} dictionaries.
+        Existing plot_history(y, group_by) is for comparing a sweep of cases.
+        """
+        from .plotting import plot_case_history
+        return plot_case_history(self, y, x=x, y2=y2, case_id=case_id, **kwargs)
 
     def plot_history(self, y: str, group_by: str, **kwargs):
         """Plot flight-history ``y`` against time, grouped by sweep parameter.

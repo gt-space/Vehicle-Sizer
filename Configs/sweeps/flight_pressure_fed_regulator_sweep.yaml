@@ -64,9 +64,9 @@ sweep:
 
     weld_allowable:          # advanced.weld_allowable [Pa], not weld efficiency
       enabled: true
-      start: 100000000
-      stop: 180000000
-      step: 5000000
+      start: 82737088
+      stop: 772212817
+      step: 3.4474e+7
 
     # Pressure-fed regulator-specific parameters
     prop_system.regulator.OX_REGULATOR.capacity_factor:      # baseline 5.0 [-]

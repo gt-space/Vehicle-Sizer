@@ -162,42 +162,215 @@ def _add_colorbar(fig, ax, colormap, norm, label):
     fig.colorbar(mappable, ax=ax, label=label, pad=0.025)
 
 
-def plot_scalar(results, x: str, y: str, *, filters=None, include_infeasible=False,
+def _field_spec(spec, name):
+    """Normalize field name, ordered list, or {field: legend_label}."""
+    if spec is None:
+        return []
+    if isinstance(spec, str):
+        return [(spec, spec)]
+    if isinstance(spec, dict):
+        pairs = list(spec.items())
+    elif isinstance(spec, (tuple, list)):
+        pairs = [(field, field) for field in spec]
+    else:
+        raise TypeError(f'{name} must be a field name, list, tuple, or field-to-label dict')
+    if not all(isinstance(field, str) and field and isinstance(label, str)
+               for field, label in pairs):
+        raise ValueError(f'{name} field names and labels must be nonempty strings')
+    return pairs
+
+
+def plot_scalar(results, x: str, y=None, *, y2=None, y2label=None,
+                y2lim=None, y2scale='linear', labels=None,
+                filters=None, include_infeasible=False,
                 kind='auto', title=None, xlabel=None, ylabel=None,
                 figsize=(8, 5), grid=True, legend=None, legend_title=None,
                 xlim=None, ylim=None, xscale='linear', yscale='linear',
                 save=None, filename=None, file_format=None, show=None,
                 dpi=160, ax=None, **style):
-    """Plot scalar values; positive numeric xscale/yscale divide display coordinates.
+    """Plot multiple scalar fields sharing x; optionally put y2 fields on right.
 
-    Axis-scale strings (e.g. 'log') retain ordinary Matplotlib behavior.
+    y/y2: str, [str, ...], or {field: legend_label}. Missing values are skipped
+    per trace, so optional template fields can coexist with other traces.
+    xscale, yscale and y2scale accept display divisors or Matplotlib axis types.
+    Single traces default to black; multiple traces use the color cycle.
     """
-    points = results.scalar_points(x, y, filters=filters,
-                                   include_infeasible=include_infeasible)
-    if not points:
-        raise ValueError(f'No valid scalar data for x={x!r}, y={y!r}; '
-                         f'available: {results.fields()}')
+    left = _field_spec(y, 'y')
+    right = _field_spec(y2, 'y2')
+    if not left and not right:
+        raise ValueError('Supply at least one field in y= or y2=')
+    if labels is not None:
+        if not isinstance(labels, dict):
+            raise TypeError('labels must be a dictionary of field names to labels')
+        left = [(field, labels.get(field, label)) for field, label in left]
+        right = [(field, labels.get(field, label)) for field, label in right]
+    if kind not in ('auto', 'line', 'scatter'):
+        raise ValueError("kind must be 'auto', 'line', or 'scatter'")
+
     x_mode, x_divisor = _axis_setting(xscale, 'xscale')
     y_mode, y_divisor = _axis_setting(yscale, 'yscale')
+    y2_mode, y2_divisor = _axis_setting(y2scale, 'y2scale')
     fig, axes, owns_axes = _axes(ax, figsize)
+    secondary = None
+    handles = []
+    trace_count = len(left) + len(right)
+    colors = plt.rcParams['axes.prop_cycle'].by_key().get('color', ['C0'])
     try:
-        _plot_line_or_scatter(axes,
-                              np.asarray([p[0] for p in points], dtype=float) / x_divisor,
-                              np.asarray([p[1] for p in points], dtype=float) / y_divisor,
-                              kind=kind,
-                              default_kind='line' if x in results.parameters else 'scatter',
-                              style=style)
+        for i, (target, (field, field_label), divisor) in enumerate(
+                [(axes, pair, y_divisor) for pair in left] +
+                [(None, pair, y2_divisor) for pair in right]):
+            if target is None:
+                if secondary is None:
+                    secondary = axes.twinx()
+                target = secondary
+            points = results.scalar_points(x, field, filters=filters,
+                                           include_infeasible=include_infeasible)
+            if not points:
+                raise ValueError(f'No valid scalar data for x={x!r}, y={field!r}; '
+                                 f'available: {results.fields()}')
+            plot_style = dict(style)
+            plot_style.setdefault('label', field_label)
+            if trace_count == 1:
+                plot_style.setdefault('color', 'black')
+            else:
+                plot_style.setdefault('color', colors[i % len(colors)])
+            xx = np.asarray([point[0] for point in points], dtype=float) / x_divisor
+            yy = np.asarray([point[1] for point in points], dtype=float) / divisor
+            selected_kind = ('line' if x in results.parameters else 'scatter') if kind == 'auto' else kind
+            if selected_kind == 'line':
+                plot_style.setdefault('marker', 'o')
+                artist, = target.plot(xx, yy, **plot_style)
+            else:
+                artist = target.scatter(xx, yy, **plot_style)
+            handles.append((artist, field_label))
+
+        axes.set(xlabel=x if xlabel is None else xlabel,
+                 ylabel=(left[0][0] if ylabel is None and left else
+                         '' if ylabel is None else ylabel),
+                 xscale=x_mode, yscale=y_mode)
+        if xlim is not None:
+            axes.set_xlim(xlim)
+        if ylim is not None:
+            axes.set_ylim(ylim)
+        axes.grid(bool(grid), alpha=0.3)
+        if secondary is not None:
+            secondary.set(ylabel=(right[0][0] if y2label is None else y2label),
+                          yscale=y2_mode)
+            if y2lim is not None:
+                secondary.set_ylim(y2lim)
+        if title is not None:
+            axes.set_title(title)
+        if legend is None:
+            legend = trace_count > 1 or 'label' in style
+        if legend:
+            axes.legend([item[0] for item in handles],
+                        [item[0].get_label() for item in handles], title=legend_title)
+        default_name = _filename('scalar', *(field for field, _ in left + right), 'vs', x)
+        if owns_axes:
+            fig.tight_layout()
+        destination = _destination(results, fig, save, filename, file_format, default_name)
+        if destination is not None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(destination, dpi=dpi, bbox_inches='tight')
+        if show is None:
+            show = destination is None and owns_axes
+        if show:
+            plt.show()
+        return fig
     except Exception:
         if owns_axes:
             plt.close(fig)
         raise
-    return _finish(results, fig, axes, default_xlabel=x, default_ylabel=y,
-                   default_name=_filename('scalar', y, 'vs', x),
-                   title=title, xlabel=xlabel, ylabel=ylabel,
-                   grid=grid, legend=legend, legend_title=legend_title,
-                   xlim=xlim, ylim=ylim, xscale=x_mode, yscale=y_mode,
-                   save=save, filename=filename, file_format=file_format,
-                   show=show, dpi=dpi, owns_axes=owns_axes)
+
+
+def plot_case_history(results, y=None, *, x='time_s', y2=None, case_id='baseline',
+                      labels=None, title=None, xlabel=None, ylabel=None,
+                      y2label=None, figsize=(9, 5), grid=True, legend=None,
+                      legend_title=None, xlim=None, ylim=None, y2lim=None,
+                      xscale='linear', yscale='linear', y2scale='linear',
+                      save=None, filename=None, file_format=None, show=None,
+                      dpi=160, ax=None, **style):
+    """Plot multiple history variables for one flight case, with a right y-axis.
+
+    y/y2 can be a field, [fields], or {field: label}. x defaults to time_s.
+    Historical data is read only from saved histories.h5; no rerun required.
+    """
+    left = _field_spec(y, 'y')
+    right = _field_spec(y2, 'y2')
+    if not left and not right:
+        raise ValueError('Supply at least one field in y= or y2=')
+    if labels is not None:
+        if not isinstance(labels, dict):
+            raise TypeError('labels must be a dictionary of field names to labels')
+        left = [(field, labels.get(field, label)) for field, label in left]
+        right = [(field, labels.get(field, label)) for field, label in right]
+    history = results.history(case_id)
+    times = history.get(x)
+    if times is None:
+        raise ValueError(f'{x!r} is not in history for {case_id!r}')
+    for field, label in left + right:
+        if field not in history:
+            raise ValueError(f'{field!r} not available in history for {case_id!r}; '
+                             f'available: {list(history)}')
+    x_mode, x_divisor = _axis_setting(xscale, 'xscale')
+    y_mode, y_divisor = _axis_setting(yscale, 'yscale')
+    y2_mode, y2_divisor = _axis_setting(y2scale, 'y2scale')
+    fig, axes, owns_axes = _axes(ax, figsize)
+    secondary = None
+    artists = []
+    count = len(left) + len(right)
+    colors = plt.rcParams['axes.prop_cycle'].by_key().get('color', ['C0'])
+    try:
+        for i, (field, label) in enumerate(left + right):
+            if i < len(left):
+                target, divisor = axes, y_divisor
+            else:
+                if secondary is None:
+                    secondary = axes.twinx()
+                target, divisor = secondary, y2_divisor
+            line_style = dict(style)
+            line_style.setdefault('label', label)
+            line_style.setdefault('color', 'black' if count == 1 else colors[i % len(colors)])
+            line, = target.plot(np.asarray(times, dtype=float) / x_divisor,
+                                np.asarray(history[field], dtype=float) / divisor,
+                                **line_style)
+            artists.append(line)
+        axes.set(xlabel=x if xlabel is None else xlabel,
+                 ylabel=(left[0][0] if ylabel is None and left else
+                         '' if ylabel is None else ylabel),
+                 xscale=x_mode, yscale=y_mode)
+        axes.grid(bool(grid), alpha=0.3)
+        if xlim is not None:
+            axes.set_xlim(xlim)
+        if ylim is not None:
+            axes.set_ylim(ylim)
+        if secondary is not None:
+            secondary.set(ylabel=right[0][0] if y2label is None else y2label,
+                          yscale=y2_mode)
+            if y2lim is not None:
+                secondary.set_ylim(y2lim)
+        if title is not None:
+            axes.set_title(title)
+        if legend is None:
+            legend = count > 1 or 'label' in style
+        if legend:
+            axes.legend(artists, [item.get_label() for item in artists], title=legend_title)
+        if owns_axes:
+            fig.tight_layout()
+        destination = _destination(results, fig, save, filename, file_format,
+                                   _filename('case_history', case_id, *(field for field, _ in left + right)))
+        if destination is not None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(destination, dpi=dpi, bbox_inches='tight')
+        if show is None:
+            show = destination is None and owns_axes
+        if show:
+            plt.show()
+        return fig
+    except Exception:
+        if owns_axes:
+            plt.close(fig)
+        raise
 
 
 def plot_history(results, y: str, group_by: str, *, filters=None,

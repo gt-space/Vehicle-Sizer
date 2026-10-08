@@ -17,15 +17,21 @@ results = SweepResults.load(RESULTS_DIR)
 results.plot(
     x='weld_allowable',
     y='apogee',
-    title='Apogee versus Weld Allowable',
-    xlabel='Weld Allowable (MPa)',
+    y2={
+        'design_summary.tank.fuel_tank.shell_mass': 'Fuel Tank',
+        'design_summary.tank.ox_tank.shell_mass': 'LOX Tank',
+    },
+    title='Apogee and Tank Mass versus Weld Allowable',
+    xlabel='Weld Allowable (ksi)',
     ylabel='Apogee (km)',
-    xscale=1e6,          # Pa → MPa
-    yscale=1e3,          # m → km
+    y2label='Tank Shell Mass (kg)',
+    xscale=6.895e6,
+    yscale=1e3,
     kind='line',
-    marker='o',
-    save=True,
-    filename='apogee_vs_weld_allowable',
+    marker=None,
+    show=True,         # Display the plot
+    save=True,         # Also save to file
+    filename='apogee_and_tank_mass',
     file_format='png',
 )
 

@@ -132,44 +132,6 @@ results.plot(
 )
 ```
 
-### Cleaner figures and custom image files
-
-The scalar `plot()` and `plot_derivative()` methods now draw individual curves in
-**black** by default. A single history (or a single `plot_history_derivative(at=...)`
-curve) is black as well. Pass `color='blue'` to override. Multiple histories use a
-continuous color gradient when there are more than eight cases, replacing a long
-legend with a parameter colorbar and a distinct dashed black baseline.
-
-```python
-results.plot(
-    x='chamber_pressure', y='apogee',
-    xlabel='Chamber pressure (Pa)', ylabel='Apogee (m)',
-    save=True, filename='apogee_vs_pc', file_format='png',
-)
-
-results.plot_history(
-    y='thrust_N', group_by='chamber_pressure',
-    title='Thrust over burn', xlabel='Time (s)', ylabel='Thrust (N)',
-    active_only=True,     # zoom to the active thrust portion, not the coast
-    colorbar=True,        # show continuous Pc scale instead of 31-entry legend
-    color_scale=1e6,      # label the colorbar in MPa (source Pc stored in Pa)
-    colorbar_label='Chamber pressure (MPa)',
-    cmap='viridis', figsize=(10, 5.5), linewidth=1.6,
-    save=True, filename='thrust_sweep', file_format='jpeg',
-)
-```
-
-For fewer traces, legends remain automatic. Use `colorbar=False, legend=False`
-if you want a completely legend-free multi-curve plot. Set `max_traces=10` to
-plot an evenly spaced subset plus the baseline (within the ten-curve budget).
-`active_only=True` changes only the viewed x-axis limits; it does not truncate
-any saved simulation data. Explicit `xlim=(0, 50)` overrides auto zoom.
-
-`filename='my_plot'` implies saving to `<results_dir>/plots/my_plot.png` by
-itself, or to `.jpeg`/`.svg`/`.pdf` if `file_format` requests that type.
-`save='some/exact/path.jpg'` continues to save at the exact path relative to
-the working directory, as before; `file_format` can override the extension.
-
 ### Common plotting options
 
 All four methods accept:
@@ -180,8 +142,6 @@ All four methods accept:
 | `xlabel`, `ylabel` | Human-readable axis labels (defaults are raw result field names) |
 | `save=False` (or omitted) | No file written; plot is shown when created on fresh axes |
 | `save=True` | Automatically save a PNG in `<results folder>/plots/` |
-| `filename='my_plot'` | Save with custom name in `<results folder>/plots/` (or use an absolute path); implies saving |
-| `file_format='jpeg'` | Choose output format (`png`, `jpeg`, `jpg`, `svg`, `pdf`, etc.); overrides suffix |
 | `save='path/to/name.png'` | Save to a specific path (relative paths use the process working directory) |
 | `show=True/False` | Explicitly open/hide Matplotlib's interactive window (default: show only unsaved plots created by the call) |
 | `figsize=(8, 5)`, `dpi=160` | Figure size in inches and saved image resolution |
@@ -191,8 +151,6 @@ All four methods accept:
 | `ax=existing_ax` | Draw onto an existing Matplotlib axis for custom/combined figures |
 | `filters={'cf_efficiency': 0.90}` | Fix other swept parameters for one-dimensional full-grid comparisons |
 | `include_infeasible=True` | Also plot results from infeasible candidates, if they have valid data |
-| `colorbar`, `cmap`, `colorbar_label`, `color_scale` | History plot numeric colormap; default colorbar for >8 cases |
-| `active_only=True`, `max_traces=10` | History plot active-time zoom and optional even trace subsampling |
 
 `results.plot(...)` and `results.plot_derivative(...)` additionally accept `kind='line'` or
 `kind='scatter'`; the scalar plot defaults to a line for independent sweep inputs and
@@ -238,3 +196,106 @@ by default.
 - **Thrust-target redesign** is limited by fixed existing hardware assumptions. Report both design and achieved thrust. The module does not rewrite the physical propulsion or aerodynamic equations.
 - No special treatment is applied to categorical fields or arbitrary arbitrary-component geometry. Dotted config paths must refer to existing numeric values.
 - Automatic resume and cached derivative HDF5 output are not implemented; derivatives are recalculated cheaply from persisted sweep data.
+
+
+## More outputs, multiple traces, and dual y-axes
+
+For each simulation with design reporting, `summary.csv` now exposes the actual
+sized-vehicle tank and section measurements as numeric scalar fields:
+
+- `design_summary.tank.fuel_tank.mass` – dry fuel tank mass (including section hardware)
+- `design_summary.tank.fuel_tank.shell_mass` – calculated structural shell mass
+- `design_summary.tank.ox_tank.mass` / `.shell_mass` – oxidizer tank
+- `design_summary.tank.press_tank.mass` / `.shell_mass` – pressurant tank
+- `design_summary.tank.total_mass`, `.total_shell_mass`, `.total_hardware_mass`
+- `design_summary.tank.<tank_id>.volume`, `.length`, `.diameter`, `.thickness`
+- `design_summary.section.<section_id>.mass`, `.length`, `.station` – all sections
+- The previously available result fields (`apogee`, `dry_mass`, `max_q`,
+  `pump_sizing.*`, `gg_sizing.*`, `load_peaks.*`, and others) remain available.
+
+`mass` is the installed **dry section mass**, including any manual masses attached to
+that tank section. `shell_mass` is just its wall/shell mass, calculated by the
+sizer. `hardware_mass = mass - shell_mass`. For a welded tank stress sweep,
+`shell_mass` is normally the most informative plot. The COPV shell mass need not
+vary with weld allowable if its construction uses a fixed empirical mass model.
+
+Inspect the names actually present in your results:
+
+```python
+print(results.fields('tank'))       # substring match, case insensitive
+print(results.fields('mass'))
+print(results.history_fields('pressure'))
+```
+
+**To get newly exported tank/section masses, rerun the sweep once** after
+updating the package (with `outputs.record_history: true`). Existing results
+can already plot multiple lines using the scalar fields they contain.
+`outputs.record_history: true` also enables plotting saved time histories.
+
+### Several tank masses on one axis
+
+```python
+results.plot(
+    x='weld_allowable',
+    y={
+        'design_summary.tank.fuel_tank.shell_mass': 'Fuel tank shell',
+        'design_summary.tank.ox_tank.shell_mass': 'Oxidizer tank shell',
+        'design_summary.tank.press_tank.shell_mass': 'COPV shell',
+    },
+    xscale=6.894757e6,  # Pa to ksi
+    xlabel='Weld Allowable (ksi)', ylabel='Shell Mass (kg)',
+    title='Tank structural mass versus weld allowable',
+    save=True, filename='tank_masses', file_format='png',
+)
+```
+
+### Apogee (left y-axis) and tank shells (right y-axis)
+
+```python
+results.plot(
+    x='weld_allowable',
+    y={'apogee': 'Apogee'},
+    y2={
+        'design_summary.tank.fuel_tank.shell_mass': 'Fuel shell',
+        'design_summary.tank.ox_tank.shell_mass': 'LOX shell',
+    },
+    xscale=6.894757e6, yscale=1e3, y2scale=1,
+    xlabel='Weld Allowable (ksi)',
+    ylabel='Apogee (km)', y2label='Tank Shell Mass (kg)',
+    save=True, filename='apogee_and_tank_mass', file_format='png',
+)
+```
+
+For scalar plots, `y` and `y2` each accept a field string, list of field strings,
+or dictionary mapping field name to legend label. A single trace defaults to
+black; multiple traces use distinguishable colors and a combined legend.
+`labels={'apogee': 'Peak Altitude'}` optionally overrides legend labels.
+`ylim`, `yscale` affect the left axis; `y2lim`, `y2scale` affect the right axis.
+Numeric scale arguments **divide** displayed values, without altering saved
+numerical data. Use `xscale=6.894757e6` for Pa -> ksi, `yscale=1e3` for m -> km.
+
+### Multiple history traces for one flight, including y2
+
+```python
+results.plot_case_history(
+    case_id='baseline',
+    x='time_s',                       # can be another numeric history field
+    y={'thrust_N': 'Thrust'},
+    y2={'altitude_m': 'Altitude'},
+    y2scale=1e3,
+    xlabel='Flight Time (s)',
+    ylabel='Thrust (N)', y2label='Altitude (km)',
+    save=True, filename='baseline_thrust_altitude', file_format='jpeg',
+)
+```
+
+`plot_case_history` plots fields from a **single** saved flight using two axes.
+The existing `plot_history(y, group_by)` is unchanged and still compares one
+history quantity across all cases using sweep-value colors and a colorbar.
+
+**Limits:** Non-numeric metadata such as tank material, shutdown reason and
+complex solver objects cannot be drawn as continuous numeric curves; they
+remain separate from scalar values. The available columns depend on the
+propulsion template and enabled output options; requesting a missing field
+raises an error that lists available choices. Solver internals not exported
+by the simulation aren't automatically accessible.
