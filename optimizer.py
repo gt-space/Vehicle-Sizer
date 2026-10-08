@@ -300,6 +300,8 @@ class Evaluator:
         self.bounds = [settings["bounds"][name] for name in self.names]
         self.count = 0
         self.best = None
+        self.population_size = None
+        self.started = time.perf_counter()
         self.failure_monitor = FailureMonitor(settings.get('failure_policy'))
 
     def decode(self, values):
@@ -468,6 +470,7 @@ class Evaluator:
                      termination=result.termination, warnings=result.warnings,
                      apogee=result.apogee, dry_mass=result.dry_mass,
                      burn_duration=result.burn_duration, violations=contributions,
+                     simulation_seconds=result.final_time,
                      constraints={k: asdict(v) for k, v in result.constraint_records.items()},
                      elapsed_seconds=time.perf_counter() - started)
         with (self.output / "evaluations.jsonl").open("a") as stream:
@@ -476,7 +479,21 @@ class Evaluator:
             self.best = entry
             (self.output / "best.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
             (self.output / "best.json").write_text(json.dumps(entry, indent=2, allow_nan=False))
-        print(f"{self.count}: score={score:.6g}, accepted={result.accepted}, {result.termination}", flush=True)
+        progress = f"Run {self.count}/{self.settings['max_evaluations']}"
+        if self.population_size is not None:
+            generation, member = divmod(self.count - 1, self.population_size)
+            progress += f" | generation {generation} | population {member + 1}/{self.population_size}"
+        apogee = "N/A" if result.apogee is None else f"{result.apogee:,.1f} m"
+        mass = "N/A" if result.initial_mass is None else f"{result.initial_mass:.2f} kg"
+        best = "N/A" if self.best is None else f"{self.best['score']:.6g}"
+        total_wall = time.perf_counter() - self.started
+        print(
+            f"{progress} | score={score:.6g} | best={best} | apogee={apogee} | mass={mass}"
+            f" | sim={result.final_time:.2f} s | wall={entry['elapsed_seconds']:.2f} s"
+            f" | total wall={total_wall:.1f} s | avg={total_wall / self.count:.2f} s/run"
+            f" | accepted={result.accepted} | {result.termination}",
+            flush=True,
+        )
         try:
             self.failure_monitor.observe(entry)
         except SearchFailureLimit as error:
@@ -620,6 +637,10 @@ def optimize(settings, output):
         with GenerationBudgetSolver(evaluator, evaluator.bounds, rng=settings["seed"],
                                     popsize=settings["popsize"], maxiter=settings["maxiter"],
                                     x0=x0, polish=False, workers=1) as solver:
+            evaluator.population_size = solver.num_population_members
+            print(f"Search: {settings['max_evaluations']} evaluations, "
+                  f"{evaluator.population_size} candidates per population; "
+                  "generation 0 is the initial population.", flush=True)
             solver.solve()
         stop = "generation budget exhausted"
     except EvaluationBudget:

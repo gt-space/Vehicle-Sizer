@@ -173,7 +173,7 @@ def main() -> None:
         "config",
         nargs="?",
         type=Path,
-        default=ROOT / "Configs" / "Vespula.yaml"
+        default=ROOT / "Configs" / "flight_pressure_fed_regulator.yaml"
     )
     parser.add_argument("--dt", type=float)
     parser.add_argument("--t-end", type=float)

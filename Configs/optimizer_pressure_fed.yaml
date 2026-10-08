@@ -52,7 +52,7 @@ evaluation_overrides:
   constraints.max_length_to_diameter: 35.0
   constraints.min_stability_calibers: 2.0
   constraints.max_aoa_deg: 15.0
-  constraints.goal_apogee: 140000.0
+  constraints.goal_apogee: 150000.0
   constraints.max_burn_duration: 75.0
   simulation.t_end: 600.0
   environment.max_altitude: 300000.0
@@ -96,16 +96,16 @@ bounds:
   - 10000.0
   - 25000.0
   copv_pressure:
-  - 15000000.0
+  - 20000000.0
   - 30000000.0
   copv_volume:
-  - 0.04
+  - 0.05
   - 0.1
   oxidizer_mass:
   - 100.0
   - 300.0
   fuel_mass:
-  - 40.0
+  - 70.0
   - 150.0
 constraint_scales:
   max_length_to_diameter: 5.0 # Five L/D units = one normalized violation
