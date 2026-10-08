@@ -5,7 +5,7 @@ Keep dense native linear algebra; reduce expensive Python residual calls.
 """
 import numpy as np
 from ..FluidNode import BoundaryComponent, VolumeComponent, CombustorComponent, JunctionComponent
-from errors import TrialDomainError, LookupBoundsError
+from diagnostics.errors import TrialDomainError, LookupBoundsError
 
 
 def pattern(network):

@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import numpy as np
 import pytest
-import flight_plots
+import reporting.flight_plots as flight_plots
 
 
 def state(t, thermal=True):

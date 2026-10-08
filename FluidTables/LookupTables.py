@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 import h5py
 import numpy as np
-from errors import LookupBoundsError
+from diagnostics.errors import LookupBoundsError
 
 
 def _json_attribute(attributes: h5py.AttributeManager, name: str) -> Any:

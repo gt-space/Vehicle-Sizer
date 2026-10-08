@@ -6,6 +6,8 @@ YAML inputs for vehicle construction, propulsion, flight, and optimization.
 - `vehicle.sections` sets assembly order. Named `masses` entries add uniformly distributed kilograms; `mass_override` replaces the section total.
 - Tank-section `masses.press_tank_shell` or `masses.prop_tank_shell` adds shell mass while retaining the sized vessel.
 - `prop_system.template` selects the [network wiring](templates/README.md).
+- `flight_pump_fed_regulator_gg.yaml` uses turbine-driven pumps, fixed GG fuel/oxidizer drains, and regulator pressurization. GG design assumptions and parameters are documented in [Fluids](../Fluids/README.md#gas-generator-consumption-approximation).
+- `optimizer_gg.yaml` uses the GG regulator flight config with the same bounds and search settings as the epump search.
 - `optimizer_epump.yaml` uses the e-pump flight config and the pressure-fed optimizer bounds, adding independent fuel and oxidizer pump pressure rises.
 - `optimizer_pressure_fed.yaml` selects the base flight config, variable bounds, limits, penalties, and evaluation budget. Omit a soft-penalty entry to disable it.
 

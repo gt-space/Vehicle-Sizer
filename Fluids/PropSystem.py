@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping, Optional, Tuple
 from math import isfinite
 from copy import deepcopy
-from constraints import DesignInfeasible
+from diagnostics.constraints import DesignInfeasible
 from Fluids.helpers.battery import size_battery
 from Fluids.helpers.pump_curve import scaled_pump_curve
-from Fluids.design import initial_conditions, pump_definition, size_electric_pump
+from Fluids.design import initial_conditions, pump_definition, size_pump, size_gas_generator
 from Fluids.helpers.templates import load_template
 from Thermals.heat_sources import thermal_model
 
@@ -71,7 +71,7 @@ class PropSystem:
             raise ValueError("Specify engine.throat_area or prop_system.thrust_target")
         self._size_engine()
         circuits, nodes, branches = self._bind_template(geometries)
-        self.pump_sizing, self.sizing_constraints = {}, {}
+        self.pump_sizing, self.gg_sizing, self.sizing_constraints = {}, {}, {}
         self._size_branches(circuits, nodes, branches)
         if set(self.pump_sizing) != set(self.cfg.get("pumps", {})):
             raise ValueError("Every configured pump must be referenced by exactly one template branch")
@@ -79,11 +79,12 @@ class PropSystem:
             raise DesignInfeasible(self.sizing_constraints, self.pump_sizing)
         self.battery_sizing = {}
         if "battery" in self.cfg:
-            if not self.pump_sizing:
+            electric_pumps = [p for p in self.pump_sizing.values() if p["drive"] == "electric"]
+            if not electric_pumps:
                 raise ValueError("Battery sizing requires electric pumps")
             self.battery_sizing = size_battery(
                 self.cfg["battery"],
-                1000 * sum(pump["required_power_kw"] for pump in self.pump_sizing.values()))
+                1000 * sum(pump["required_power_kw"] for pump in electric_pumps))
         self.circuits, self.node_definitions, self.branch_definitions = circuits, nodes, branches
         self._bind_outputs()
         self._configure_constraints()
@@ -337,27 +338,54 @@ class PropSystem:
         def design_flow(branch):
             circuit = circuits[branch["circuit"]]
             flow = branch.get("design_mdot", circuit.get("design_mdot", design_flows.get(circuit["prop"])))
-            if flow is None or not isfinite(float(flow)) or float(flow) <= 0:
-                raise ValueError(f"Branch {branch} requires a finite positive design_mdot")
+            if (flow is None or not isfinite(float(flow)) or float(flow) < 0
+                    or (float(flow) == 0 and branch["component"] != "mass_flow")):
+                raise ValueError(f"Branch {branch} requires a valid finite design_mdot")
             return float(flow)
 
+        self._prepare_branch_design(circuits, branches)
+        self._resolve_primary_design_flows(circuits, branches, design_flow, design_flows)
+
+        self._size_pumps(circuits, nodes, branches, design_flow)
+        self._size_gas_generators(circuits, nodes, branches)
+        self._finalize_mass_flow_branches(branches)
+        self._size_restrictions(circuits, nodes, branches, design_flow, circuit_properties)
+        self._size_pressurant_feeds(circuits, nodes, branches, design_flow)
+
+    @staticmethod
+    def _prepare_branch_design(circuits, branches):
         for branch_id, branch in branches.items():
-            circuit_id = branch["circuit"]
-            if circuit_id not in circuits:
-                raise ValueError(
-                    f"Branch '{branch_id}' references unknown circuit '{circuit_id}'"
-                )
-            branch_type = branch.get("component", branch.get("model"))
-            circuit = circuits[circuit_id]
-            branch["fluid"] = circuit["fluid"]
-            if 'require_choked' in branch:
-                raise ValueError('require_choked was removed; configure tank pressure floors instead')
-            if branch_type in ("switch_valve", "relief_valve"):
-                # Restriction areas are explicit inputs, independent of design flow.
+            if branch["circuit"] not in circuits:
+                raise ValueError(f"Branch '{branch_id}' references unknown circuit '{branch['circuit']}'")
+            branch["fluid"] = circuits[branch["circuit"]]["fluid"]
+            if "require_choked" in branch:
+                raise ValueError("require_choked was removed; configure tank pressure floors instead")
+
+    @staticmethod
+    def _resolve_primary_design_flows(circuits, branches, design_flow, design_flows):
+        for branch in branches.values():
+            if branch["component"] in ("mass_flow", "switch_valve", "relief_valve"):
                 continue
+            circuit = circuits[branch["circuit"]]
             if circuit["prop"] in design_flows or "design_mdot" in circuit:
                 branch.setdefault("design_mdot", design_flow(branch))
 
+    @staticmethod
+    def _finalize_mass_flow_branches(branches):
+        for branch in branches.values():
+            if branch["component"] == "mass_flow":
+                target = float(branch["target_mdot"])
+                if not isfinite(target) or target < 0:
+                    raise ValueError("Mass-flow target must be finite and nonnegative")
+                if "design_mdot" in branch and float(branch["design_mdot"]) != target:
+                    raise ValueError("Mass-flow design_mdot must equal target_mdot")
+                branch["design_mdot"] = target
+
+    def _size_pumps(self, circuits, nodes, branches, design_flow):
+        for branch_id, branch in branches.items():
+            branch_type = branch.get("component", branch.get("model"))
+            circuit_id = branch["circuit"]
+            circuit = circuits[circuit_id]
             if branch_type == "pump":
                 pump_id = branch["pump_id"]
                 if pump_id in self.pump_sizing:
@@ -371,10 +399,11 @@ class PropSystem:
                     raise ValueError(f"Pump {pump_id!r} design node pressures do not match its pressure rise")
                 inlet_temperature = float(circuit["state0"]["T"])
                 liquid = self.fluid_properties.state_pt(circuit["fluid"], inlet_pressure, inlet_temperature)
-                sizing = size_electric_pump(definition, design_flow(branch), liquid.rho)
+                sizing = size_pump(definition, design_flow(branch), liquid.rho)
                 sizing.update(inlet_pressure_pa=inlet_pressure, inlet_temperature_k=inlet_temperature)
                 self.pump_sizing[pump_id] = sizing
-                self.sizing_constraints[f"pump.{pump_id}.max_power"] = sizing["power_margin_kw"]
+                if sizing["drive"] == "electric":
+                    self.sizing_constraints[f"pump.{pump_id}.max_power"] = sizing["power_margin_kw"]
                 branch.update(dP=sizing["pressure_rise_pa"], gas_CdA=float(definition["gas_CdA"]))
                 if "curve" in definition:
                     curve = scaled_pump_curve(sizing["design_mdot"], sizing["pressure_rise_pa"], **definition["curve"])
@@ -383,6 +412,12 @@ class PropSystem:
                                   curve_max_mdot=curve.max_mdot)
                 continue
 
+
+    def _size_restrictions(self, circuits, nodes, branches, design_flow, circuit_properties):
+        for branch_id, branch in branches.items():
+            branch_type = branch.get("component", branch.get("model"))
+            circuit_id = branch["circuit"]
+            circuit = circuits[circuit_id]
             if branch_type in ("loss", "incompressible_loss"):
                 if branch["CdA"] is not None:
                     continue
@@ -414,6 +449,12 @@ class PropSystem:
                 )
                 continue
 
+
+    def _size_pressurant_feeds(self, circuits, nodes, branches, design_flow):
+        for branch_id, branch in branches.items():
+            branch_type = branch.get("component", branch.get("model"))
+            circuit_id = branch["circuit"]
+            circuit = circuits[circuit_id]
             if branch_type in ("bang_bang_valve", "regulator"):
                 if branch["CdA"] is not None:
                     continue
@@ -527,6 +568,59 @@ class PropSystem:
                 branch["design_temperature"] = temperature_mid
                 branch["eol_pressure"] = eol_pressure
                 branch["target_pressure"] = downstream_pressure
+
+    def _size_gas_generators(self, circuits, nodes, branches):
+        assigned_pumps, assigned_branches = set(), set()
+        for gg_id, definition in self.cfg.get("gas_generators", {}).items():
+            pump_ids = definition["pumps"]
+            if not pump_ids or len(set(pump_ids)) != len(pump_ids):
+                raise ValueError("GG requires unique pump references")
+            power = 0.0
+            for pump_id in pump_ids:
+                if pump_id in assigned_pumps or pump_id not in self.pump_sizing:
+                    raise ValueError("GG pumps must exist and belong to exactly one drive")
+                sizing = self.pump_sizing[pump_id]
+                if sizing["drive"] != "gas_generator":
+                    raise ValueError("GG requires gas_generator-driven pumps")
+                assigned_pumps.add(pump_id)
+                power += sizing["required_shaft_power_w"]
+            feeds = {}
+            for role in ("fuel", "oxidizer"):
+                branch_id = definition[f"{role}_branch"]
+                if branch_id in assigned_branches or branch_id not in branches:
+                    raise ValueError("GG drains must exist and belong to exactly one drive")
+                branch = branches[branch_id]
+                if branch["component"] != "mass_flow" or circuits[branch["circuit"]]["prop"] != role:
+                    raise ValueError("GG drain must be a mass_flow branch of the matching propellant")
+                source = nodes[branch["from"]]
+                if source["component"] != "propellant_tank" or branch.get("from_port") != "liquid":
+                    raise ValueError("GG approximation currently requires direct tank liquid drains")
+                if any(k in branch for k in ("target_mdot", "design_mdot")):
+                    raise ValueError("GG drain flows are calculated; remove explicit flow overrides")
+                assigned_branches.add(branch_id)
+                feeds[role] = branch
+            stiffness = float(definition["stiffness"])
+            if not isfinite(stiffness) or stiffness < 0:
+                raise ValueError("GG stiffness must be finite and nonnegative")
+            pressures = {role: float(nodes[b["from"]]["P0"]) for role, b in feeds.items()}
+            pressure = min(pressures.values()) / (1 + stiffness)
+            # Reuse design nozzle coordinates; GG sizing only consumes chamber T, gamma and R.
+            properties = self.combustion_properties.evaluate(
+                chamber_pressure=pressure,
+                mixture_ratio=float(definition["mixture_ratio"]),
+                ambient_pressure=self.design_ambient_pressure,
+                expansion_ratio=self.expansion_ratio,
+            ).as_dict()
+            sizing = size_gas_generator(power, pressure, definition, properties)
+            sizing.update(upstream_pressures_pa=pressures,
+                          feed_stiffness={role: p / pressure - 1 for role, p in pressures.items()})
+            self.gg_sizing[gg_id] = sizing
+            for role, branch in feeds.items():
+                branch.update(target_mdot=sizing[f"{role}_mdot"], design_mdot=sizing[f"{role}_mdot"],
+                              required_phase="liquid")
+        turbine_pumps = {k for k, p in self.pump_sizing.items() if p["drive"] == "gas_generator"}
+        if assigned_pumps != turbine_pumps:
+            raise ValueError("Every gas_generator pump must belong to one GG drive")
 
     def _bind_outputs(self):
         """Discover engine reporting connections; IDs belong to templates."""

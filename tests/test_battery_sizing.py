@@ -8,7 +8,7 @@ from Fluids.helpers.battery import size_battery
 from Fluids.PropSystem import PropSystem
 from Vehicle.Vehicle import Vehicle
 from simulation import property_sources, simulate
-from run_report import build_run_tables
+from reporting.run_report import build_run_tables
 
 
 @pytest.fixture(scope='module')

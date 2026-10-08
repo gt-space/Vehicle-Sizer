@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import time
 import traceback
 from collections import Counter, deque
-from errors import failure_details, SearchFailureLimit, LookupBoundsError, UnsupportedPhaseChangeError
+from diagnostics.errors import failure_details, SearchFailureLimit, LookupBoundsError, UnsupportedPhaseChangeError
 
 from scipy.optimize._differentialevolution import DifferentialEvolutionSolver
 import yaml
@@ -19,7 +19,7 @@ import yaml
 from AeroTables import DragModel
 from AeroTables.dragmodel import _end as aero_endpoint
 from Configs.loader import load_config
-from constraints import ConstraintRecord, DesignInfeasible, EvaluationFailure, GeometryError, configured_limits, finalize
+from diagnostics.constraints import ConstraintRecord, DesignInfeasible, EvaluationFailure, GeometryError, configured_limits, finalize
 from Fluids.PropSystem import PropSystem
 from Fluids.helpers.templates import load_template
 from Fluids.design import initial_conditions
@@ -27,7 +27,7 @@ from Vehicle.sections.PressTank import PressTank
 from Vehicle.Vehicle import Vehicle
 from simulation import project_path, property_sources, simulate
 from simulation_types import SimResult
-from constraints import vehicle_limit_margins
+from diagnostics.constraints import vehicle_limit_margins
 
 INCH = 0.0254
 AERO_PATHS = {
@@ -403,7 +403,8 @@ class Evaluator:
             vehicle_limit_margins(cfg, vehicle)
         except DesignInfeasible as error:
             result = SimResult(termination="infeasible_initial_design", constraints=dict(error.constraints),
-                               battery_sizing=deepcopy(getattr(vehicle, "battery_sizing", {})))
+                               battery_sizing=deepcopy(getattr(vehicle, "battery_sizing", {})),
+                               gg_sizing=deepcopy(getattr(propulsion, "gg_sizing", {})))
             if isinstance(error, GeometryError):
                 result.geometry_constraints, result.constraints = result.constraints, {}
             return finalize(result, configured_limits(cfg)), self.redundant(propulsion, cfg)
@@ -411,6 +412,7 @@ class Evaluator:
         if any(r.margin < 0 for r in records.values()):
             result = rejection(records)
             result.battery_sizing = deepcopy(vehicle.battery_sizing)
+            result.gg_sizing = deepcopy(propulsion.gg_sizing)
             return result, self.redundant(propulsion)
         result = simulate(cfg, pure_properties=self.pure, combustion_properties=self.combustion,
                           aero_model=self.model)
@@ -460,6 +462,11 @@ class Evaluator:
                      search_coordinates=list(map(float, values)), score_class=candidate_class(result), failure=failure,
                      failure_details=details,
                      battery_sizing=result.battery_sizing,
+                     gg_sizing={name: {key: sizing[key] for key in (
+                         "required_shaft_power_w", "inlet_pressure_pa", "outlet_pressure_pa",
+                         "upstream_pressures_pa", "mixture_ratio", "design_mdot",
+                         "fuel_mdot", "oxidizer_mdot")}
+                         for name, sizing in result.gg_sizing.items()},
                      pressure_tracking=result.pressure_tracking,
                      min_stability_length_fraction=result.min_stability_length_fraction,
                      max_stability_length_fraction=result.max_stability_length_fraction,
@@ -631,7 +638,7 @@ def optimize(settings, output, *, workers=None, timeout=None, candidates_per_wor
     if not isfinite(timeout) or timeout <= 0:
         raise ValueError('worker timeout must be finite and positive')
     if workers > 1 or resume or profile:
-        from optimizer_workers import optimize_parallel
+        from optimizer.workers import optimize_parallel
         return optimize_parallel(settings, output, workers=workers, timeout=timeout,
                                  candidates_per_worker=candidates_per_worker,
                                  resume=resume, profile=profile)
@@ -686,11 +693,3 @@ def main():
     print(json.dumps(summary, indent=2))
     if not summary["accepted"]:
         print("No accepted design survived verification." if summary["search_accepted"] else "No accepted design found.")
-
-
-if __name__ == "__main__":
-    # Worker helpers import optimizer; reuse this module rather than loading a
-    # second copy with different exception classes when invoked as a script.
-    import sys
-    sys.modules['optimizer'] = sys.modules[__name__]
-    main()

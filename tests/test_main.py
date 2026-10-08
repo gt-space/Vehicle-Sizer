@@ -4,7 +4,7 @@ import main
 import csv
 from types import SimpleNamespace
 from copy import deepcopy
-from constraints import finalize
+from diagnostics.constraints import finalize
 from simulation_types import SimResult
 
 

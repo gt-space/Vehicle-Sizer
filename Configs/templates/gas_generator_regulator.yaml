@@ -1,0 +1,193 @@
+# Pump-fed GG network; design pressures derive from the flight config.
+# The GG example uses 80 psia tanks, a 250 psia chamber, 270/260 psi fuel/ox pump rises,
+# and 310 psia injector manifolds after the configured line losses.
+circuits:
+  oxidizer:
+    prop: oxidizer
+    tank_id: ox_tank
+  fuel:
+    prop: fuel
+    tank_id: fuel_tank
+  exhaust:
+    prop: exhaust
+  pressurant:
+    prop: pressurant
+    tank_id: press_tank
+nodes:
+  thrust_chamber:
+    component: combustor
+    P0:
+      config: prop_system.Pc_target
+    ambient_node: ambient
+  ambient:
+    component: boundary
+  press_tank:
+    component: pressurant_tank
+    tank_id: press_tank
+    P0:
+      config: tanks.press_tank.design_pressure
+  ox_inj_in:
+    component: junction
+    fluid: {config: prop_system.initial_conditions.ox_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: ox_inj_in}
+      T: {config: prop_system.initial_conditions.ox_tank.T}
+    P0:
+      node: thrust_chamber
+      relative_rise:
+        config: prop_system.ox_inj_stiffness
+  ox_pump_out:
+    component: junction
+    fluid: {config: prop_system.initial_conditions.ox_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: ox_pump_out}
+      T: {config: prop_system.initial_conditions.ox_tank.T}
+    P0:
+      node: ox_inj_in
+      rise:
+        config: prop_system.ox_inj_pumpout_dp
+  ox_pump_in:
+    component: junction
+    fluid: {config: prop_system.initial_conditions.ox_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: ox_pump_in}
+      T: {config: prop_system.initial_conditions.ox_tank.T}
+    P0:
+      node: ox_pump_out
+      drop:
+        config: prop_system.pumps.oxidizer_pump.pressure_rise_pa
+  ox_ullage:
+    component: propellant_tank
+    tank_id: ox_tank
+    P0:
+      node: ox_pump_in
+      rise:
+        config: prop_system.ox_pumpin_tank_dp
+  fuel_inj_in:
+    component: junction
+    fluid: {config: prop_system.initial_conditions.fuel_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: fuel_inj_in}
+      T: {config: prop_system.initial_conditions.fuel_tank.T}
+    P0:
+      node: thrust_chamber
+      relative_rise:
+        config: prop_system.fuel_inj_stiffness
+  fuel_pump_out:
+    component: junction
+    fluid: {config: prop_system.initial_conditions.fuel_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: fuel_pump_out}
+      T: {config: prop_system.initial_conditions.fuel_tank.T}
+    P0:
+      node: fuel_inj_in
+      rise:
+        config: prop_system.fuel_inj_pumpout_dp
+  fuel_pump_in:
+    component: junction
+    fluid: {config: prop_system.initial_conditions.fuel_tank.fluid}
+    phase: liquid
+    state0:
+      P: {node: fuel_pump_in}
+      T: {config: prop_system.initial_conditions.fuel_tank.T}
+    P0:
+      node: fuel_pump_out
+      drop:
+        config: prop_system.pumps.fuel_pump.pressure_rise_pa
+  fuel_ullage:
+    component: propellant_tank
+    tank_id: fuel_tank
+    P0:
+      node: fuel_pump_in
+      rise:
+        config: prop_system.fuel_pumpin_tank_dp
+branches:
+  OX_TANK_PUMP:
+    component: loss
+    circuit: oxidizer
+    from: ox_ullage
+    to: ox_pump_in
+    from_port: liquid
+  OX_PUMP:
+    component: pump
+    circuit: oxidizer
+    from: ox_pump_in
+    to: ox_pump_out
+    pump_id: oxidizer_pump
+  OX_PUMP_INJ:
+    component: loss
+    circuit: oxidizer
+    from: ox_pump_out
+    to: ox_inj_in
+  OX_INJ:
+    component: loss
+    circuit: oxidizer
+    from: ox_inj_in
+    to: thrust_chamber
+    to_port: oxidizer
+  OX_REGULATOR:
+    component: regulator
+    circuit: pressurant
+    from: press_tank
+    to: ox_ullage
+    from_port: gas
+    to_port: ullage
+    parameters:
+      config: prop_system.regulator.OX_REGULATOR
+  FUEL_TANK_PUMP:
+    component: loss
+    circuit: fuel
+    from: fuel_ullage
+    to: fuel_pump_in
+    from_port: liquid
+  FUEL_PUMP:
+    component: pump
+    circuit: fuel
+    from: fuel_pump_in
+    to: fuel_pump_out
+    pump_id: fuel_pump
+  FUEL_PUMP_INJ:
+    component: loss
+    circuit: fuel
+    from: fuel_pump_out
+    to: fuel_inj_in
+  FUEL_INJ:
+    component: loss
+    circuit: fuel
+    from: fuel_inj_in
+    to: thrust_chamber
+    to_port: fuel
+  FUEL_REGULATOR:
+    component: regulator
+    circuit: pressurant
+    from: press_tank
+    to: fuel_ullage
+    from_port: gas
+    to_port: ullage
+    parameters:
+      config: prop_system.regulator.FUEL_REGULATOR
+  NOZZLE:
+    component: nozzle
+    circuit: exhaust
+    from: thrust_chamber
+    to: ambient
+    from_port: nozzle
+  GG_FUEL:
+    component: mass_flow
+    circuit: fuel
+    from: fuel_ullage
+    from_port: liquid
+    to: ambient
+    required_phase: liquid
+  GG_OX:
+    component: mass_flow
+    circuit: oxidizer
+    from: ox_ullage
+    from_port: liquid
+    to: ambient
+    required_phase: liquid

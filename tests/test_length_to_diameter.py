@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from constraints import DesignInfeasible, finalize, vehicle_limit_margins
+from diagnostics.constraints import DesignInfeasible, finalize, vehicle_limit_margins
 from simulation_types import SimResult
-from optimizer import candidate_score
+from optimizer.core import candidate_score
 
 
 @pytest.mark.parametrize('length,margin', [(5., 5.), (6.25, 0.)])

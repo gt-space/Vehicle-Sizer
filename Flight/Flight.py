@@ -7,11 +7,11 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from Fluids.PropSystem import PropSystem
-from errors import TrialDomainError
+from diagnostics.errors import TrialDomainError
 from .flight_forces import gravity
 from .loads import Loads
 from simulation_types import SimResult
-from constraints import OperatingInfeasible, merge_margins
+from diagnostics.constraints import OperatingInfeasible, merge_margins
 from simulation_types import (
     AeroOut,
     AtmosState,

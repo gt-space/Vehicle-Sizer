@@ -5,11 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 import simulation
-from constraints import EvaluationFailure
-from errors import LookupBoundsError
+from diagnostics.constraints import EvaluationFailure
+from diagnostics.errors import LookupBoundsError
 from FluidTables.PropertyModels import TableCombustionPropertySource
 from simulation_types import SimResult
-from warning import caution, collect_warnings
+from diagnostics.warnings import caution, collect_warnings
 
 
 @pytest.fixture(scope="module")

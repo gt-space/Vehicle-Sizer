@@ -5,12 +5,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from errors import (LookupBoundsError, ModelDomainExceeded, SolverConvergenceError,
+from diagnostics.errors import (LookupBoundsError, ModelDomainExceeded, SolverConvergenceError,
                     SolverSetupError, ResidualAcceptanceError, InfrastructureError,
                     SearchFailureLimit, failure_details)
 from Fluids.Sundials.ida_session import IdaSession
-from optimizer import FailureMonitor
-import optimizer_workers as search
+from optimizer.core import FailureMonitor
+import optimizer.workers as search
 
 
 def session():
@@ -204,7 +204,11 @@ for index in a.worker_batch:
              score=1.5, score_class='completed_infeasible')
     (job/'result.json').write_text(json.dumps(row))
 ''')
-    monkeypatch.setattr(search, '__file__', str(stub))
+    popen = search.subprocess.Popen
+    def launch_stub(command, **kwargs):
+        assert command[:3] == [search.sys.executable, '-m', 'optimizer.workers']
+        return popen([command[0], str(stub), *command[3:]], **kwargs)
+    monkeypatch.setattr(search.subprocess, 'Popen', launch_stub)
     monkeypatch.setattr(search, 'exit_kind', lambda code: 'native_crash' if code == 99 else 'worker_error')
     (tmp_path/'search.yaml').write_text('failure_policy:\n  native_retries: 1\n')
     rows = search.launch_batch(tmp_path, [(1, [0.])], 5.)

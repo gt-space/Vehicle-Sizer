@@ -11,7 +11,7 @@ import numpy as np
 
 from .FluidState import BranchState, FluidState, NodeState
 from .events import Event
-from errors import TrialDomainError, UnsupportedPhaseChangeError
+from diagnostics.errors import TrialDomainError, UnsupportedPhaseChangeError
 
 
 Adjacent = list[tuple[float, BranchState]]

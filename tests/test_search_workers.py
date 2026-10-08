@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import optimizer_workers as search
+import optimizer.workers as search
 
 
 @pytest.mark.parametrize('budget,expected,generations', [(100, 32, 3), (11, 11, 0)])
@@ -59,7 +59,11 @@ for index in a.worker_batch:
     (job/'result.json').write_text(json.dumps(row))
     if index==2: break
 ''')
-    monkeypatch.setattr(search, '__file__', str(stub))
+    popen = search.subprocess.Popen
+    def launch_stub(command, **kwargs):
+        assert command[:3] == [search.sys.executable, '-m', 'optimizer.workers']
+        return popen([command[0], str(stub), *command[3:]], **kwargs)
+    monkeypatch.setattr(search.subprocess, 'Popen', launch_stub)
     (tmp_path/'mode.json').write_text(json.dumps(failure))
     tasks = [(i, [float(i)]) for i in range(1, 5)]
     rows = search.launch_batch(tmp_path, tasks, timeout=1.)

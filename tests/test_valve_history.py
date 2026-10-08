@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 
-from flight_plots import _valve_history, plot_valve_actuations
+from reporting.flight_plots import _valve_history, plot_valve_actuations
 from main import write_events
 
 

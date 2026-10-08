@@ -22,14 +22,14 @@ Outputs are a terminal summary, flight/event/load CSVs, and PNG plots at the con
 Run an optimization with a new output directory:
 
 ```bash
-.venv/bin/python optimizer.py Configs/optimizer_pressure_fed.yaml --output outputs/search_01
+.venv/bin/python -m optimizer Configs/optimizer_pressure_fed.yaml --output outputs/search_01
 ```
 
 The search writes configs, evaluation records, failure details, and a summary. Accepted designs produce `best.yaml`; successful verification produces `verified.yaml`. Use `--max-evaluations` to limit the search.
 Run independent candidates in separate processes with `--workers`:
 
 ```bash
-.venv/bin/python optimizer.py Configs/optimizer_epump.yaml --output outputs/epump_search_01 --workers 4 --max-evaluations 100
+.venv/bin/python -m optimizer Configs/optimizer_epump.yaml --output outputs/epump_search_01 --workers 4 --max-evaluations 100
 ```
 
 Workers reuse property tables and recycle after `--candidates-per-worker` candidates (default 3). `--timeout` limits each candidate's wall time (default 300 seconds). Parallel searches use deferred population updates and can follow a different trajectory from serial searches with the same seed. Resume a worker search by repeating its command with `--resume`; keep the original config, evaluation budget, and source files unchanged. The saved results are replayed before unfinished work continues. The default is one serial worker; `workers`, `worker_timeout`, and `candidates_per_worker` can also be set in the optimizer config.
@@ -43,6 +43,9 @@ Run tests:
 
 | Folder | Purpose |
 | --- | --- |
+| [optimizer](optimizer/README.md) | Design searches, process workers, profiling |
+| [diagnostics](diagnostics/README.md) | Errors, feasibility constraints, warnings |
+| [reporting](reporting/README.md) | Flight plots and run summaries |
 | [Configs](Configs/README.md) | Flight inputs, search settings, network wiring |
 | [Vehicle](Vehicle/README.md) | Geometry, mass distribution, inertia, stiffness |
 | [Fluids](Fluids/README.md) | Propulsion sizing and fluid-network solving |
@@ -50,5 +53,5 @@ Run tests:
 | [Thermals](Thermals/README.md) | Wall temperatures and fluid heat transfer |
 | [FluidTables](FluidTables/README.md) | Fluid and combustion property tables |
 | [AeroTables](AeroTables/README.md) | Aerodynamic tables and interpolation |
-| [examples](examples/README.md) | Propulsion runs and parallel search tools |
+| [examples](examples/README.md) | Standalone propulsion, optimizer, and profiling examples |
 | [tests](tests/README.md) | Automated checks |

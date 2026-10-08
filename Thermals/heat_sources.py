@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from math import isfinite
 from collections.abc import Mapping
 
-from errors import TrialDomainError
+from diagnostics.errors import TrialDomainError
 
 
 def thermal_model(config):

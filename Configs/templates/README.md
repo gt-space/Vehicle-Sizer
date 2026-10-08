@@ -20,3 +20,8 @@ prop_system:
 ```
 
 Run that flight config with `main.py`. The template produces the network used by vehicle sizing and fluid simulation; it is not a standalone run config.
+
+`gas_generator_regulator.yaml` extends the pump-fed regulator wiring with two
+liquid-only `mass_flow` drains. Select it with
+`Configs/flight_pump_fed_regulator_gg.yaml`; `prop_system.gas_generators` supplies
+the drive and drain references and design inputs.

@@ -14,7 +14,7 @@ immutable geometry to the fluid network.
 
 `vehicle.Iyy` supplies whole dry-vehicle pitch inertia; fluid contributions and COM remain calculated. `engine.exit_diameter` can set the aero exit input independently of physical nozzle area.
 
-Called by `simulation.py` and `optimizer.py`. Run from the project root:
+Called by `simulation.py` and `optimizer/core.py`. Run from the project root:
 
 ```bash
 .venv/bin/python main.py Configs/flight_pressure_fed_regulator.yaml

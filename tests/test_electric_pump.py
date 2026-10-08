@@ -124,7 +124,7 @@ def test_api_preserves_pump_margins_and_sizing(failed):
                environment=dict(max_altitude=1000, altitude_step=100), aero={})
     cfg["engine"].update(mass=30, length=.5)
     ox, fuel, _ = support.tanks()
-    vehicle = SimpleNamespace(tanks={"ox_tank": ox, "fuel_tank": fuel},
+    vehicle = SimpleNamespace(tanks={"ox_tank": ox, "fuel_tank": fuel}, battery_sizing={},
                               build=lambda engine: None, aero_candidate=lambda: {})
     flight = SimpleNamespace(run=lambda **kwargs: None, result=SimResult())
     with patch.object(simulation, "Vehicle", return_value=vehicle), \

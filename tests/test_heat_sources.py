@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from errors import TrialDomainError
+from diagnostics.errors import TrialDomainError
 from Fluids.FluidState import FluidState, NodeState
 from Thermals.heat_sources import build_heat_source, evaluate_heat, thermal_model
 

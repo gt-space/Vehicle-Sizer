@@ -12,10 +12,10 @@ import numpy as np
 
 from .FluidNode import (BoundaryComponent, JunctionComponent, VolumeComponent,
                         PropellantTankComponent, CombustorComponent)
-from .FluidBranch import (LossComponent, PumpComponent, RegulatorComponent,
+from .FluidBranch import (MassFlowComponent, LossComponent, PumpComponent, RegulatorComponent,
                           BangBangValveComponent, SwitchValveComponent, ReliefValveComponent, NozzleComponent)
 from .FluidState import NodeState
-from errors import TrialDomainError, ResidualAcceptanceError, SolverConvergenceError
+from diagnostics.errors import TrialDomainError, ResidualAcceptanceError, SolverConvergenceError
 from .Sundials.ida_session import IdaSession, IdaStep
 from .Sundials.jacobian import install as install_jacobian
 from Thermals.heat_sources import build_heat_source, evaluate_heat, NoHeating, Aeroheating
@@ -139,14 +139,14 @@ class FluidNetwork:
 
     def _make_branch(self, key, definition):
         kind = self._kind(definition)
-        classes = {'loss': LossComponent, 'incompressible_loss': LossComponent,
+        classes = {'mass_flow': MassFlowComponent, 'loss': LossComponent, 'incompressible_loss': LossComponent,
                    'compressible_loss': LossComponent, 'pump': PumpComponent,
                    'regulator': RegulatorComponent, 'bang_bang_valve': BangBangValveComponent,
                    'switch_valve': SwitchValveComponent, 'relief_valve': ReliefValveComponent,
                    'nozzle': NozzleComponent}
         if kind not in classes:
             raise ValueError(f"Unsupported branch kind '{kind}' for '{key}'")
-        kwargs = {'phase': definition.get('phase', 'gas' if kind in ('compressible_loss', 'relief_valve') else 'liquid')} if kind in ('loss', 'incompressible_loss', 'compressible_loss', 'pump', 'switch_valve', 'relief_valve') else {}
+        kwargs = {'phase': definition.get('phase', 'gas' if kind in ('compressible_loss', 'relief_valve') else 'liquid')} if kind in ('mass_flow', 'loss', 'incompressible_loss', 'compressible_loss', 'pump', 'switch_valve', 'relief_valve') else {}
         branch = classes[kind](key, definition, **kwargs)
         branch.set_enabled(definition.get('enabled', True))
         return branch
@@ -291,7 +291,10 @@ class FluidNetwork:
                 if select_modes and branch.active and not isinstance(branch, NozzleComponent):
                     if len(source) != 1:
                         raise ValueError(f"Branch '{key}' needs one donor fluid")
+                    was_active = branch.active
                     branch.set_phase(next(iter(source.values())).phase)
+                    if branch.active != was_active:
+                        return None
                     if set(values[key]) != set(branch.variable_names):
                         return None
                 branches[key] = branch.evaluate(values[key], nodes, source, directions)

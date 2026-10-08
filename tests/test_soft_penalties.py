@@ -3,7 +3,7 @@ from copy import deepcopy
 import pytest
 
 from Fluids.helpers.pressure_tracking import PressureTracking, absolute_linear_integral
-from optimizer import candidate_score, soft_penalties
+from optimizer.core import candidate_score, soft_penalties
 from test_optimizer import accepted
 from types import SimpleNamespace
 from Flight.Flight import FlightSim

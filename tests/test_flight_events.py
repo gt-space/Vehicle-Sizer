@@ -189,8 +189,8 @@ def test_apogee_is_localized_before_reversed_airflow_query(monkeypatch):
 
 @pytest.mark.parametrize('angle', [-16., 16.])
 def test_aoa_exceedance_is_a_signed_operating_constraint(monkeypatch, angle):
-    from constraints import OperatingInfeasible, finalize
-    from errors import TrialDomainError
+    from diagnostics.constraints import OperatingInfeasible, finalize
+    from diagnostics.errors import TrialDomainError
     from simulation_types import KinematicsState, SimResult
     sim = flight(monkeypatch)
     sim.cfg['constraints'] = {'max_aoa_deg': 15.}
@@ -263,7 +263,7 @@ def test_trial_recovery_is_bounded_and_restores_state(monkeypatch):
 
 
 def test_mission_aoa_limit_is_checked_only_after_convergence(monkeypatch):
-    from constraints import OperatingInfeasible
+    from diagnostics.constraints import OperatingInfeasible
     from simulation_types import KinematicsState
     sim = flight(monkeypatch)
     sim.cfg['constraints'] = {'max_aoa_deg': 5.}
@@ -278,7 +278,7 @@ def test_mission_aoa_limit_is_checked_only_after_convergence(monkeypatch):
 
 
 def test_converged_violation_rolls_back_before_commit(monkeypatch):
-    from constraints import OperatingInfeasible
+    from diagnostics.constraints import OperatingInfeasible
     thermal = IntegratingThermal()
     sim = flight(monkeypatch, thermal=thermal)
     sim.cfg['constraints'] = {'max_aoa_deg': 5.}

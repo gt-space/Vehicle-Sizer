@@ -9,7 +9,7 @@ import numpy as np
 from scipy.optimize import root_scalar
 
 from Fluids import FluidsDef
-from warning import caution
+from diagnostics.warnings import caution
 from .LookupTables import LookupTables
 
 

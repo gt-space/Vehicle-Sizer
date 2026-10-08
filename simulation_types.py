@@ -2,7 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
-from constraints import ConstraintRecord, feasibility
+from diagnostics.constraints import ConstraintRecord, feasibility
 
 @dataclass
 class KinematicsState:
@@ -135,7 +135,8 @@ class SimResult:
     initial_state: Optional[dict] = None
     design_summary: Dict[str, Any] = field(default_factory=dict)
     battery_sizing: Dict[str, Any] = field(default_factory=dict)
-    pump_sizing: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    pump_sizing: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    gg_sizing: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     constraint_records: Dict[str, ConstraintRecord] = field(default_factory=dict)
     constraint_times: Dict[str, float] = field(default_factory=dict)
     min_rail_twr: Optional[float] = None

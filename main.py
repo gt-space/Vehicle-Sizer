@@ -10,7 +10,7 @@ import numpy as np
 
 from Configs.loader import load_config
 from simulation import ROOT, project_path, property_sources, simulate
-from run_report import print_run_summary
+from reporting.run_report import print_run_summary
 
 
 def history_rows(history: list) -> list[dict]:
@@ -231,7 +231,7 @@ def main() -> None:
     write_events(history, events_path)
     loads_path = output_path.with_name(output_path.stem + "_structural_loads.csv")
     write_structural_loads(history, loads_path)
-    from flight_plots import plot_flight
+    from reporting.flight_plots import plot_flight
     plots = plot_flight(history, rows, plot_path)
     print(f"Run complete: {time.perf_counter() - setup_started:.1f} s total.", flush=True)
 

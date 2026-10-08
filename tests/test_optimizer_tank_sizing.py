@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import yaml
 
-import optimizer as opt
+import optimizer.core as opt
 from Configs.loader import load_config
 from Vehicle.Vehicle import Vehicle
 

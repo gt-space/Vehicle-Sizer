@@ -6,9 +6,9 @@ from .helpers.templates import load_template
 
 def pump_definition(prop: dict, pump_id: str) -> dict:
     definition = prop["pumps"][pump_id]
-    if definition.get("drive") != "electric":
-        raise ValueError(f"Pump {pump_id!r} requires drive: electric")
-    for key in ("pressure_rise_pa", "efficiency", "max_power_kw", "gas_CdA"):
+    if definition.get("drive") not in {"electric", "gas_generator"}:
+        raise ValueError(f"Pump {pump_id!r} requires drive: electric or gas_generator")
+    for key in ("pressure_rise_pa", "efficiency", "gas_CdA") + (("max_power_kw",) if definition["drive"] == "electric" else ()):
         value = float(definition[key])
         if not isfinite(value) or value <= 0:
             raise ValueError(f"Pump {pump_id!r} {key} must be finite and positive")
@@ -17,8 +17,8 @@ def pump_definition(prop: dict, pump_id: str) -> dict:
     return definition
 
 
-def size_electric_pump(definition: dict, mdot: float, rho: float) -> dict:
-    """Design-point electrical draw; efficiency includes pump, motor and drive."""
+def size_pump(definition: dict, mdot: float, rho: float) -> dict:
+    """Shared design power; efficiency is pump-only for a turbine drive."""
     if any(not isfinite(v) or v <= 0 for v in (mdot, rho)):
         raise ValueError("Pump design mass flow and liquid density must be finite and positive")
     rise = float(definition["pressure_rise_pa"])
@@ -26,10 +26,51 @@ def size_electric_pump(definition: dict, mdot: float, rho: float) -> dict:
     power = rise * flow / (1000 * float(definition["efficiency"]))
     if not isfinite(power):
         raise ValueError("Pump design power must be finite")
-    return dict(design_mdot=mdot, inlet_density=rho, volume_flow_m3_s=flow,
-                pressure_rise_pa=rise, required_power_kw=power,
-                max_power_kw=float(definition["max_power_kw"]),
-                power_margin_kw=float(definition["max_power_kw"]) - power)
+    result = dict(design_mdot=mdot, inlet_density=rho, volume_flow_m3_s=flow,
+                  pressure_rise_pa=rise, hydraulic_power_w=rise * flow,
+                  drive=definition.get("drive", "electric"))
+    if result["drive"] == "electric":
+        result.update(required_power_kw=power,
+                      max_power_kw=float(definition["max_power_kw"]),
+                      power_margin_kw=float(definition["max_power_kw"]) - power)
+    else:
+        result["required_shaft_power_w"] = 1000 * power
+    return result
+
+
+def size_electric_pump(definition: dict, mdot: float, rho: float) -> dict:
+    """Compatibility entry point; efficiency includes pump, motor and drive."""
+    return size_pump({**definition, "drive": "electric"}, mdot, rho)
+
+
+def size_gas_generator(power_w, inlet_pressure_pa, definition, properties):
+    """Fixed design demand from constant-property isentropic turbine expansion."""
+    outlet = float(definition["turbine_outlet_pressure_pa"])
+    efficiency = float(definition["efficiency"])
+    mr = float(definition["mixture_ratio"])
+    temperature, gamma, gas_constant = (float(properties[k]) for k in ("T", "gamma", "R"))
+    if (not all(isfinite(v) and v > 0 for v in
+                (power_w, inlet_pressure_pa, outlet, efficiency, mr, temperature, gas_constant))
+            or not isfinite(gamma) or gamma <= 1 or efficiency > 1 or outlet >= inlet_pressure_pa):
+        raise ValueError("GG requires positive finite power/properties, gamma > 1, 0 < efficiency <= 1 and inlet > outlet pressure")
+    # Temporary perfect-gas cp [J/(kg K)]; replace with tabulated chamber cp.
+    cp = gamma * gas_constant / (gamma - 1)
+    ratio = inlet_pressure_pa / outlet
+    temperature_ratio = ratio ** (-(gamma - 1) / gamma)
+    delta_t = temperature * (1 - temperature_ratio)
+    work = efficiency * cp * delta_t
+    if not all(isfinite(v) and v > 0 for v in (cp, work)):
+        raise ValueError("GG design specific work must be finite and positive")
+    mdot = power_w / work
+    if not isfinite(mdot) or mdot <= 0:
+        raise ValueError("GG design specific work and flow must be finite and positive")
+    return dict(required_shaft_power_w=power_w, inlet_pressure_pa=inlet_pressure_pa,
+                outlet_pressure_pa=outlet, efficiency=efficiency, mixture_ratio=mr,
+                pressure_ratio=ratio, temperature_ratio=temperature_ratio,
+                inlet_temperature_k=temperature, isentropic_delta_t_k=delta_t,
+                gamma=gamma, R=gas_constant, cp_j_kg_k=cp, cp_source="gamma_R_placeholder",
+                specific_shaft_work_j_kg=work, design_mdot=mdot,
+                fuel_mdot=mdot / (1 + mr), oxidizer_mdot=mdot * mr / (1 + mr))
 
 
 def tank_design_pressure(cfg: dict, tank_id: str, *, fallback=None) -> float:

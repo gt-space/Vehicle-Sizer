@@ -25,13 +25,12 @@ import tempfile
 import traceback
 from threading import Event
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
+ROOT = Path(__file__).resolve().parents[1]
 import numpy as np
 import yaml
-import optimizer as opt
-from errors import failure_details, InfrastructureError, SearchFailureLimit
-from warning import caution
+import optimizer.core as opt
+from diagnostics.errors import failure_details, InfrastructureError, SearchFailureLimit
+from diagnostics.warnings import caution
 
 
 def write_json(path, value, *, optional=False, retry_seconds=3.):
@@ -71,10 +70,9 @@ def exit_kind(returncode):
 
 
 def fingerprints():
-    files = [ROOT/'optimizer.py', ROOT/'simulation.py', ROOT/'constraints.py',
-             ROOT/'simulation_types.py', ROOT/'warning.py', ROOT/'errors.py']
-    files.extend((ROOT/'optimizer_workers.py', ROOT/'examples/run_optimizer_search.py', ROOT/'examples/search_timing.py'))
-    for folder in ('Fluids', 'Flight', 'FluidTables', 'Vehicle', 'Configs'):
+    files = [ROOT/'simulation.py', ROOT/'simulation_types.py']
+    for folder in ('optimizer', 'diagnostics', 'reporting',
+                   'Fluids', 'Flight', 'FluidTables', 'Vehicle', 'Configs'):
         files.extend((ROOT/folder).rglob('*.py'))
         files.extend((ROOT/folder).rglob('*.yaml'))
     return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(set(files))}
@@ -117,7 +115,7 @@ def worker(output, indices):
             cfg, settings = opt.load_config(output/'base.yaml'), opt.load_config(output/'search.yaml')
             profiled = settings.get('profile', index % 16 == 0)
             if profiled and timing is None:
-                from examples.search_timing import install
+                from optimizer.timing import install
                 timing = install()
             if timing is not None:
                 timing.enabled = profiled
@@ -160,7 +158,7 @@ def worker(output, indices):
             row.update(evaluation=index, index=index, coordinates=task['coordinates'], patch_version=patch_version, source_version=source_version,
                        wall_seconds=time.perf_counter()-started, cpu_seconds=time.process_time()-cpu_started,
                        profiled=profiled, model_cache_hit=reused_models, loading_cpu_seconds=loading_cpu,
-                       timing_version=(hashlib.sha256((ROOT/'examples/search_timing.py').read_bytes()).hexdigest()
+                       timing_version=(hashlib.sha256((ROOT/'optimizer/timing.py').read_bytes()).hexdigest()
                                        if profiled else None),
                        recovered_fluid_retries=[d for p in tracked for d in p.network.retry_diagnostics],
                        load_peaks=simulation_results[-1].load_peaks if simulation_results else {})
@@ -228,7 +226,7 @@ def launch_batch(output, tasks, timeout, *, stop_event=None):
         current, started = pending[0], time.perf_counter()
         status = 'worker_error'
         with (first/'stdout.log').open('w') as stdout, (first/'stderr.log').open('w') as stderr:
-            with subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
+            with subprocess.Popen([sys.executable, '-m', 'optimizer.workers',
                     '--output', str(output), '--worker-batch', *map(str, pending)],
                     cwd=ROOT, stdout=stdout, stderr=stderr) as process:
                 while True:

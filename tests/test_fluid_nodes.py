@@ -377,7 +377,7 @@ def test_real_oxygen_nitrogen_tank_closes_with_shared_vehicle_geometry(tables):
 
 
 def test_nodes_share_trial_error_type_and_keep_assembly_errors_distinct():
-    from errors import TrialDomainError as SharedError
+    from diagnostics.errors import TrialDomainError as SharedError
     assert TrialDomainError is SharedError
     node, values = wet_tank()
     for changed in ({"P": -1.}, {"m_liq": 0.}, {"U_liq": np.nan}):

@@ -3,10 +3,10 @@ from copy import deepcopy
 
 import pytest
 
-from constraints import EvaluationFailure, finalize
-from errors import UnsupportedPhaseChangeError, ModelDomainExceeded, failure_details
+from diagnostics.constraints import EvaluationFailure, finalize
+from diagnostics.errors import UnsupportedPhaseChangeError, ModelDomainExceeded, failure_details
 from Fluids.FluidNode import VolumeComponent, PropellantTankComponent
-from optimizer import FailureMonitor, candidate_class, candidate_score
+from optimizer.core import FailureMonitor, candidate_class, candidate_score
 from simulation_types import SimResult
 
 
@@ -86,7 +86,7 @@ def test_phase_change_during_network_initialization_is_a_model_domain_error():
 def test_optimizer_records_phase_error_and_continues_without_constraint(tmp_path, monkeypatch, phase):
     import json
     import time
-    from optimizer import Evaluator
+    from optimizer.core import Evaluator
 
     evaluator = Evaluator.__new__(Evaluator)
     evaluator.settings = dict(max_evaluations=2, constraint_scales={}, unit_scales={})

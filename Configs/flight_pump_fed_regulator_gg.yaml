@@ -1,0 +1,273 @@
+# Pump-fed GG consumption approximation with regulator pressurization.
+# GG and turbine hardware masses are not automatically sized by this model.
+advanced:
+  flight:
+    trial_max_retries: 10
+    trial_min_dt: 1.0e-06
+    corrector_max_iterations: 10
+    corrector_tolerance: 1.0e-08
+    event_max_iterations: 50
+    event_time_tolerance: 1.0e-06
+  fluid_network:
+    jacobian: colored
+    max_step: 1.0
+    residual_retries: 3
+    residual_tolerance: 1.0e-05
+    retry_rtol_factor: 0.1
+    retry_rtol_floor: 1.0e-08
+    rtol: 1.0e-05
+  heating:
+    convergence_tolerance: 0.001
+    max_iterations: 20
+    temperature_tolerance: 0.01
+  t_wall_min: 0.001
+  tank_pressure_fos: 1.5
+  weld_allowable: 138000000.0
+  endcap_mass_multiplier: 1.5
+aero:
+  q_cutoff_Pa: 0.01
+  finish: 20um
+  fins_on_boattail: true
+  model: AeroTables/dragmodel.h5
+  nose: vonkarman
+avi_bay:
+  length: 0.25
+engine:
+  cf_efficiency: 0.95
+  cstar_efficiency: 0.9
+  exit_pressure: 66794.41202594012
+  fuel: RP-1
+  length: 0.5715
+  mass: 24.0 # 6 kg injector + 18 kg chamber/nozzle; boattail remains calculated.
+  oxidizer: LOX
+environment:
+  wind:
+    enabled: false
+    profile: AeroTables/WindProfiles/RAP_HWM.csv
+  altitude_step: 100.0
+  max_altitude: 300000.0
+fin_can:
+  boattail_aft_diameter: 0.24752442875466096
+  boattail_length: 0.5854210616517307
+  boattail_wall_thickness: 0.00318
+  fin_count: 4
+  fin_thickness: 0.006912142657945399
+  material: carbon_fiber
+  root_chord: 0.4607423123811729
+  span: 0.3511871277753288
+  sweep_fraction: 0.8536938901043448
+  tip_chord: 0.20013155474689767
+inter_tank:
+  stringer_count: 4
+  stringer_material: aluminum_7075
+launch:
+  altitude: 0.0
+  rail_height: 15.0
+  velocity: 0.0
+nosecone:
+  wall_thickness: 0.0032
+  fineness_ratio: 5.7
+  material: carbon_fiber
+  profile: von_karman
+  tip_radius: 0.01
+prop_system:
+  MR_target: 2.2
+  Pc_target: 1723689.32329375 # 250 psia;
+  fuel_inj_stiffness: 0.24
+  initial_conditions:
+    fuel_tank:
+      T: 298.15
+      fluid: n-Dodecane
+      gas_T: 298.15
+      gas_fluid: Nitrogen
+    ox_tank:
+      T: 100.0
+      fluid: Oxygen
+      gas_T: 293.0
+      gas_fluid: Nitrogen
+    press_tank:
+      T: 298.15
+      fluid: Nitrogen
+  nozzle_cd: 1.0
+  ox_inj_stiffness: 0.24
+  regulator:
+    FUEL_REGULATOR:
+      capacity_factor: 8.0
+      collapse_factor: 1.2
+      tank_id: fuel_tank
+    OX_REGULATOR:
+      capacity_factor: 8.0
+      collapse_factor: 1.2
+      tank_id: ox_tank
+  fuel_inj_pumpout_dp: 206842.71879525 # 30 psi differential
+  fuel_pumpin_tank_dp: 68947.57293175 # 10 psi differential
+  ox_inj_pumpout_dp: 137895.1458635 # 20 psi differential
+  ox_pumpin_tank_dp: 68947.57293175 # 10 psi differential
+  pumps:
+    fuel_pump:
+      curve: &id001
+        points:
+        - - 0.0
+          - 3600000
+        - - 1.09
+          - 3450000
+        - - 1.6
+          - 3160000
+        - - 2.172
+          - 2548600
+        - - 2.8
+          - 1830000
+        - - 3.25
+          - 1250000
+        - - 4.2
+          - 0.0
+        reference_mdot: 2.172
+      drive: gas_generator
+      efficiency: 0.5 # Pump-only efficiency; turbine efficiency is configured below.
+      gas_CdA: 0.00015
+      pressure_rise_pa: 1861584.46915725 # 270 psi rise; 80 psia tank, 250 psia chamber.
+    oxidizer_pump:
+      curve: *id001
+      drive: gas_generator
+      efficiency: 0.5 # Pump-only efficiency; turbine efficiency is configured below.
+      gas_CdA: 0.00024
+      pressure_rise_pa: 1792636.89622550 # 260 psi rise; 80 psia tank, 250 psia chamber.
+  gas_generators:
+    main:
+      pumps: [fuel_pump, oxidizer_pump]
+      fuel_branch: GG_FUEL
+      oxidizer_branch: GG_OX
+      efficiency: 0.4 # Turbine efficiency multiplying the isentropic enthalpy drop.
+      turbine_outlet_pressure_pa: 206835 # Fixed absolute design outlet pressure.
+      mixture_ratio: 0.5 # GG oxidizer/fuel mass ratio.
+      stiffness: 0.2 # (lower feed pressure - GG pressure) / GG pressure.
+  template: Configs/templates/gas_generator_regulator.yaml
+  thrust_target: 15677.600822128927
+property_models:
+  combustion:
+    source: table
+    table:
+      lookup_file: FluidTables/sizer_lookups.h5
+      nfz: 1
+  pure_fluid:
+    source: table
+    table:
+      fluids:
+        Nitrogen:
+          pt: nitrogen_pt
+          saturation: nitrogen_saturation
+        Oxygen: oxygen_pt
+        n-Dodecane: ndodecane_pt
+      lookup_file: FluidTables/sizer_lookups.h5
+simulation:
+  dt: 2.0
+  fluid_solve_post_shutdown: false
+  output: outputs/flight_pump_fed_regulator_gg.csv
+  plot: outputs/flight_pump_fed_regulator_gg.png
+  t_end: 600.0
+tanks:
+  fuel_tank:
+    min_temperature: 80.0
+    min_pressure: 68947.57293168
+    thermal:
+      model: None
+    ellipse_ratio: 1.75
+    material: aluminum_6061
+    passthrough_diameter: 0.1016
+    passthrough_wall_thickness: 0.00254
+    propellant_mass: 108
+    type: propellant
+    ullage_factor: 1.1
+  ox_tank:
+    min_temperature: 80.0
+    min_pressure: 68947.57293168
+    thermal:
+      model: None
+    ellipse_ratio: 1.75
+    material: aluminum_6061
+    passthrough_diameter: 0.0762
+    passthrough_wall_thickness: 0.00254
+    propellant_mass: 240
+    type: propellant
+    ullage_factor: 1.1
+  press_tank:
+    min_pressure: 4136854.3759008
+    thermal:
+      model: None
+    design_pressure: 2.9579e7
+    ellipse_ratio: 1.75
+    min_temperature: 160.0
+    outer_diameter: 0.2794
+    type: pressurant
+    construction: copv
+    volume: 0.07
+    thickness_slope: 0.03
+    thickness_intercept: 0.004
+    equivalent_density: 2238.6
+thermal:
+  initial_temperature: 288.15
+  material_overrides:
+    fiberglass:
+      specific_heat: 800.0
+  sink_temperature: 288.15
+vehicle:
+  OMLD: 0.3048
+  dx: 0.01
+  sections:
+  - type: nosecone
+    masses:
+      recovery: 15.0
+  - type: avi_bay
+    masses:
+      cube: 4.0
+      clamshell: 1.25
+      mounting: 2.0
+  - tank_id: press_tank
+    type: press_tank
+    masses:
+      press_tank_shell: 6.89 # kg, uniform addition over the sized COPV; no mass override.
+      mounting: 2.0
+      fitting: 1.0
+  - length: 0.3302 # 13 in
+    type: inter_tank
+    masses:
+      stringers: 0.88
+      clamshell: 1.63
+      components: 4.0
+      canards: 3.0
+    stringer_unit_mass: 0.0 # Stringer total is supplied above; do not add it twice.
+    stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
+  - tank_id: ox_tank
+    type: prop_tank
+    masses: {} # Optional prop_tank_shell [kg]: uniform addition over the sized tank.
+  - length: 0.2794 # 11 in
+    type: inter_tank
+    masses:
+      stringers: 0.74
+      clamshell: 1.38
+      components: 4.0
+    stringer_unit_mass: 0.0 # Stringer total is supplied above.
+    stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
+  - tank_id: fuel_tank
+    type: prop_tank
+    masses: {} # Optional prop_tank_shell [kg]: uniform addition over the sized tank.
+  - length: 0.508 # 20 in
+    type: inter_tank
+    masses:
+      stringers: 1.35
+      clamshell: 2.51
+      main_valves: 4.0
+      tubing_solenoids: 3.0
+      thrust_structure: 3.0
+      pumps: 12.0
+    stringer_unit_mass: 0.0 # Stringer total is supplied above; visible entries sum to 12.31 kg.
+    stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
+  - type: fin_can
+    masses:
+      hardware: 2.0
+constraints:
+  max_length_to_diameter: 35.0
+  min_stability_calibers: 2.0
+  max_aoa_deg: 15.0
+  goal_apogee: 150000.0
+  max_burn_duration: 75.0

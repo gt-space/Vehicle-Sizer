@@ -5,8 +5,8 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from constraints import OperatingInfeasible
-from errors import TrialDomainError
+from diagnostics.constraints import OperatingInfeasible
+from diagnostics.errors import TrialDomainError
 from Flight.Flight import FlightSim
 from simulation_types import KinematicsState, PlantOut, SimResult
 from test_flight import FakeAero, FakeEnvironment, FakePropSystem, FakeVehicle

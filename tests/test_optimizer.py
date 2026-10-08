@@ -6,9 +6,9 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-import optimizer as opt
+import optimizer.core as opt
 from Configs.loader import load_config
-from constraints import ConstraintRecord, EvaluationFailure, finalize
+from diagnostics.constraints import ConstraintRecord, EvaluationFailure, finalize
 from simulation_types import SimResult
 
 
@@ -167,7 +167,7 @@ def test_pressure_fed_policy_validates_owned_limits():
 
 @pytest.mark.parametrize('kind', ['table', 'solver', 'residual', 'unexpected', 'configuration', 'io'])
 def test_typed_failures_are_reported_or_stop(settings, tmp_path, kind):
-    from errors import LookupBoundsError, SolverConvergenceError, ResidualAcceptanceError
+    from diagnostics.errors import LookupBoundsError, SolverConvergenceError, ResidualAcceptanceError
     causes = dict(table=LookupBoundsError('outside'),
                   solver=SolverConvergenceError('integration', -4, 1.),
                   residual=ResidualAcceptanceError('closure'), unexpected=RuntimeError('unknown'),

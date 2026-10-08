@@ -18,9 +18,9 @@ from FluidTables.PropertyModels import (
 from Vehicle.Vehicle import Vehicle
 from Thermals import ThermalNetwork
 from simulation_types import SimResult
-from warning import collect_warnings
-from constraints import vehicle_limit_margins
-from constraints import (GeometryError, EvaluationFailure, OperatingInfeasible,
+from diagnostics.warnings import collect_warnings
+from diagnostics.constraints import vehicle_limit_margins
+from diagnostics.constraints import (GeometryError, EvaluationFailure, OperatingInfeasible,
                          configured_limits, finalize, merge_margins)
 
 ROOT = Path(__file__).resolve().parent
@@ -97,6 +97,7 @@ def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
             result = getattr(context["flight"], "result", None)
             if result is not None:
                 result.battery_sizing = context.get("battery_sizing", {})
+                result.gg_sizing = deepcopy(getattr(context["propulsion"], "gg_sizing", {}))
             raise EvaluationFailure(context["phase"], candidate, result) from error
         finally:
             try:
@@ -139,6 +140,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
                          geometry_constraints=dict(error.constraints) if geometry else {},
                          battery_sizing=deepcopy(getattr(vehicle, "battery_sizing", {})),
                          pump_sizing=getattr(propulsion, "pump_sizing", error.pump_sizing),
+                         gg_sizing=deepcopy(getattr(propulsion, "gg_sizing", {})),
                          max_altitude=float(cfg["launch"]["altitude"]),
                          final_altitude=float(cfg["launch"]["altitude"]),
                          final_velocity=float(cfg["launch"]["velocity"]),
@@ -152,7 +154,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
     context["phase"] = "flight initialization"
     design_summary = {}
     if record_history:
-        from run_report import collect_design_summary
+        from reporting.run_report import collect_design_summary
         design_summary = collect_design_summary(cfg, vehicle, propulsion)
     from Thermals.heat_sources import thermal_model
     if {'external_heating', 'nodes'} & cfg.get('thermal', {}).keys():
@@ -212,6 +214,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
         result = flight.result
     result.battery_sizing = deepcopy(vehicle.battery_sizing)
     result.pump_sizing = deepcopy(propulsion.pump_sizing)
+    result.gg_sizing = deepcopy(propulsion.gg_sizing)
     result.design_summary = design_summary
     result.constraints.update(static_margins)
     result.pressure_tracking = deepcopy(propulsion.network.pressure_tracking.records)

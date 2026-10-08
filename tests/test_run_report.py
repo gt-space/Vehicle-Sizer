@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from run_report import collect_design_summary, build_run_tables
+from reporting.run_report import collect_design_summary, build_run_tables
 from simulation_types import SimResult
 
 
@@ -100,7 +100,7 @@ def test_main_prints_tables(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(main, "write_history", lambda *args: None)
     monkeypatch.setattr(main, "write_events", lambda *args: None)
     monkeypatch.setattr(main, "write_structural_loads", lambda *args: None)
-    monkeypatch.setitem(sys.modules, "flight_plots", SimpleNamespace(plot_flight=lambda *args: {}))
+    monkeypatch.setitem(sys.modules, "reporting.flight_plots", SimpleNamespace(plot_flight=lambda *args: {}))
     main.main()
     output = capsys.readouterr().out
     for label in ("Vehicle sections", "Tanks", "Vehicle mass", "Pressure ladder",

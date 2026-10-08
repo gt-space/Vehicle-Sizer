@@ -3,7 +3,7 @@
 These are packaging checks, not pressure-vessel certification or routing CAD.
 """
 import math
-from constraints import GeometryError
+from diagnostics.constraints import GeometryError
 
 
 def check_press_tank_to_airframe(section, diameter, clearance=0.0):

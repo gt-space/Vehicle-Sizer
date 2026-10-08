@@ -12,7 +12,7 @@ import numpy as np
 
 from .FluidState import BranchState
 from .events import Event
-from errors import TrialDomainError
+from diagnostics.errors import TrialDomainError
 
 
 def _port_pressure(node, port):
@@ -160,6 +160,27 @@ class FluidBranch:
             raise ValueError(f"Unknown event: {self.id}.{name}")
         self.direction *= -1
         return {}
+
+
+class MassFlowComponent(FluidBranch):
+    """Ideal forward demand, optionally restricted to a donor phase."""
+
+    def __init__(self, branch_id, definition, *, phase="liquid"):
+        self.required_phase = definition.get("required_phase")
+        if self.required_phase not in (None, "liquid", "gas"):
+            raise ValueError("required_phase must be liquid or gas")
+        super().__init__(branch_id, definition, phase=phase)
+        self.target_mdot = float(definition["target_mdot"])
+        if not isfinite(self.target_mdot) or self.target_mdot < 0 or self.direction != 1:
+            raise ValueError("Mass flow requires finite nonnegative target_mdot and forward direction")
+        self.flow_scale = max(self.flow_scale, self.target_mdot)
+
+    @property
+    def active(self):
+        return self.enabled and (self.required_phase is None or self.phase == self.required_phase)
+
+    def _residual(self, branch_state, node_states_by_id):
+        return [(branch_state.mdot - self.target_mdot) / self.flow_scale]
 
 
 class LossComponent(FluidBranch):
@@ -480,5 +501,5 @@ class NozzleComponent(FluidBranch):
         return equations
 
 
-__all__ = ["FluidBranch", "LossComponent", "PumpComponent", "RegulatorComponent",
+__all__ = ["MassFlowComponent", "FluidBranch", "LossComponent", "PumpComponent", "RegulatorComponent",
            "BangBangValveComponent", "SwitchValveComponent", "ReliefValveComponent", "NozzleComponent"]

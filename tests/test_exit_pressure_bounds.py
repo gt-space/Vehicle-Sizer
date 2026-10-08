@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import pytest
 
-import optimizer as opt
+import optimizer.core as opt
 from Configs.loader import load_config
 from FluidTables.PropertyModels import TableCombustionPropertySource
 

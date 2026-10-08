@@ -302,7 +302,7 @@ def test_regulator_enters_regulation_from_either_side(pressure):
 
 
 def test_condensation_rejects_at_located_event_and_rolls_back_inventory():
-    from errors import UnsupportedPhaseChangeError
+    from diagnostics.errors import UnsupportedPhaseChangeError
     from FluidTables.PropertyModels import SaturationProperties
     class Saturating(Properties):
         def supports_saturation(self, fluid):
@@ -554,7 +554,7 @@ def test_boundary_changes_reuse_allocations_but_reinitialize_history(monkeypatch
 @pytest.mark.parametrize('persistent,error_type,attempts', [
     (False, 'residual', 2), (True, 'residual', 3), (True, 'other', 1)])
 def test_initialization_retries_only_residual_failure_and_restores_state(monkeypatch, persistent, error_type, attempts):
-    from errors import ResidualAcceptanceError
+    from diagnostics.errors import ResidualAcceptanceError
     original, calls = FluidNetwork._accept, []
     error = ResidualAcceptanceError if error_type == 'residual' else ValueError
     def accept(net):
@@ -580,7 +580,7 @@ def test_initialization_retries_only_residual_failure_and_restores_state(monkeyp
 
 
 def test_accepted_residual_retry_restores_events_and_retains_tighter_integration(monkeypatch):
-    from errors import ResidualAcceptanceError
+    from diagnostics.errors import ResidualAcceptanceError
     original = FluidNetwork._accept
     failures = []
     def accept(net):
@@ -606,7 +606,7 @@ def test_accepted_residual_retry_restores_events_and_retains_tighter_integration
 
 
 def test_accepted_residual_retry_is_bounded_and_rolls_back(monkeypatch):
-    from errors import ResidualAcceptanceError
+    from diagnostics.errors import ResidualAcceptanceError
     attempts = []
     original = FluidNetwork._accept
     def accept(net):
