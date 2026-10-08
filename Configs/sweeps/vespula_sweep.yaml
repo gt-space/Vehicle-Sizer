@@ -9,12 +9,12 @@ sweep:
   parameters:
     chamber_pressure:      # prop_system.Pc_target [Pa]
       enabled: true
-      start: 1800000
-      stop: 2200000
-      step: 100000
+      start: 1.379e+6
+      stop: 2.068e+6
+      step: 137895
 
     ox_injector_stiffness:  # prop_system.ox_inj_stiffness [-]
-      enabled: false
+      enabled: true
       values: [0.10, 0.15, 0.20, 0.25]
 
     fuel_injector_stiffness: # prop_system.fuel_inj_stiffness [-]
