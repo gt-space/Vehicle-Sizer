@@ -4,8 +4,10 @@ from __future__ import annotations
 import csv
 import json
 import math
+import multiprocessing
+import os
 import traceback
-from dataclasses import dataclass
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Callable
 
@@ -87,6 +89,163 @@ def _result_directory(spec: dict) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
+def _worker_count(spec: dict, case_count: int) -> int:
+    """Validate the number of processes (default 1 for backward compatibility).
+
+    'auto' uses at most four processes because each process holds independent,
+    potentially large fluid and aerodynamic lookup tables in memory.
+    """
+    requested = spec.get('sweep', {}).get('workers', 1)
+    if requested == 'auto':
+        requested = max(1, min(4, (os.cpu_count() or 2) - 1))
+    if isinstance(requested, bool) or not isinstance(requested, int) or requested < 1:
+        raise ValueError('sweep.workers must be a positive integer or auto')
+    return min(requested, case_count)
+
+
+def _model_resources(cfg: dict) -> dict:
+    """Load read-only lookup models locally, never transfer them between processes."""
+    from simulation import property_sources, project_path
+    from AeroTables import DragModel
+
+    pure, combustion = property_sources(cfg)
+    return {
+        'pure_properties': pure,
+        'combustion_properties': combustion,
+        'aero_model': DragModel(project_path(cfg['aero']['model'])),
+    }
+
+
+def _evaluate(candidate: dict, record_history: bool, compute_loads: bool,
+              simulate_fn: Callable | None, history_fn: Callable | None,
+              models: dict | None) -> dict:
+    """Run a case and return only serializable scalar/history data, not SimResult."""
+    result = None
+    failure = None
+    errors = []
+    try:
+        if simulate_fn is None:
+            from simulation import simulate as simulate_fn
+        result = simulate_fn(candidate, record_history=record_history,
+                             compute_loads=compute_loads, **(models or {}))
+    except Exception as exc:
+        result = getattr(exc, 'partial_result', None)
+        failure = f'{type(exc).__name__}: {exc}'
+        if exc.__cause__ is not None:
+            failure += f' (caused by {type(exc.__cause__).__name__}: {exc.__cause__})'
+        errors.append({'message': failure, 'traceback': traceback.format_exc()})
+
+    scalar = scalar_outputs(result) if result is not None else {}
+    term = scalar.get('termination', '')
+    status = ('error' if failure else
+              'infeasible' if str(term).startswith('infeasible') or scalar.get('feasible') is False
+              else 'completed')
+    names, matrix = [], None
+    if record_history and result is not None and getattr(result, 'history', None):
+        try:
+            if history_fn is None:
+                from main import history_rows as history_fn
+            names, matrix = _numeric_history(history_fn(result.history))
+        except Exception as exc:
+            issue = f'History export failed: {type(exc).__name__}: {exc}'
+            errors.append({'message': issue, 'traceback': traceback.format_exc()})
+            scalar['history_error'] = issue
+    return {'status': status, 'failure': failure, 'scalar': scalar,
+            'history_names': names, 'history_matrix': matrix, 'errors': errors}
+
+
+# ProcessPoolExecutor uses spawn (including on macOS). Each process initializes
+# its OWN lookup models once; no HDF5 handle or live solver crosses a process
+# boundary. The parent alone writes summary CSVs and histories.h5.
+_WORKER_STATE = None
+
+
+def _worker_initializer(base_cfg: dict, parameters: list, record_history: bool,
+                        compute_loads: bool, reuse_models: bool,
+                        simulate_fn: Callable | None, history_fn: Callable | None) -> None:
+    global _WORKER_STATE
+    _WORKER_STATE = dict(base_cfg=base_cfg, parameters=parameters,
+                         record_history=record_history, compute_loads=compute_loads,
+                         reuse_models=reuse_models, simulate_fn=simulate_fn,
+                         history_fn=history_fn, models=None)
+
+
+def _worker_evaluate(case: SweepCase) -> dict:
+    state = _WORKER_STATE
+    candidate = apply_case(state['base_cfg'], case, state['parameters'])
+    # Lazy initialization lets lookup errors be reported per case rather than
+    # breaking the entire process pool and losing the rest of the sweep.
+    try:
+        if state['reuse_models'] and state['simulate_fn'] is None and state['models'] is None:
+            state['models'] = _model_resources(state['base_cfg'])
+        return _evaluate(candidate, state['record_history'], state['compute_loads'],
+                         state['simulate_fn'], state['history_fn'], state['models'])
+    except Exception as exc:
+        message = f'{type(exc).__name__}: {exc}'
+        return {'status': 'error', 'failure': message, 'scalar': {},
+                'history_names': [], 'history_matrix': None,
+                'errors': [{'message': message, 'traceback': traceback.format_exc()}]}
+
+
+def _case_row(base_cfg: dict, case: SweepCase, parameters: list) -> dict:
+    candidate = apply_case(base_cfg, case, parameters)
+    row = {'case_id': case.case_id, 'is_baseline': case.is_baseline}
+    for p in parameters:
+        if p.name in case.overrides:
+            row[p.name] = case.overrides[p.name]
+        else:
+            try:
+                node = candidate
+                for part in p.path.split('.'):
+                    node = node[part]
+                row[p.name] = node
+            except KeyError:
+                row[p.name] = 0.0 if p.name == 'thrust_tilt' else ''
+    return row
+
+
+def _parallel_evaluations(cases: list[SweepCase], base_cfg: dict, parameters: list,
+                          record_history: bool, compute_loads: bool,
+                          reuse_models: bool, simulate_fn: Callable | None,
+                          history_fn: Callable | None, workers: int):
+    """Yield results as jobs finish, with bounded in-flight tasks/memory."""
+    ctx = multiprocessing.get_context('spawn')
+    with ProcessPoolExecutor(
+        max_workers=workers, mp_context=ctx,
+        initializer=_worker_initializer,
+        initargs=(base_cfg, parameters, record_history, compute_loads,
+                  reuse_models, simulate_fn, history_fn),
+    ) as pool:
+        todo = iter(enumerate(cases))
+        pending = {}
+
+        def submit_one():
+            try:
+                index, case = next(todo)
+            except StopIteration:
+                return False
+            pending[pool.submit(_worker_evaluate, case)] = (index, case)
+            return True
+
+        # Keep at most 2*workers payloads in flight, rather than shipping every
+        # candidate and potentially buffering gigabytes of flight histories.
+        for _ in range(min(len(cases), 2 * workers)):
+            submit_one()
+        while pending:
+            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                index, case = pending.pop(future)
+                try:
+                    data = future.result()
+                except Exception as exc:
+                    message = f'Worker failed: {type(exc).__name__}: {exc}'
+                    data = {'status': 'error', 'failure': message, 'scalar': {},
+                            'history_names': [], 'history_matrix': None,
+                            'errors': [{'message': message, 'traceback': traceback.format_exc()}]}
+                yield index, case, data
+                submit_one()
+
+
 def run_sweep(base_cfg: dict, spec: dict, *, simulate_fn: Callable | None = None,
               history_fn: Callable | None = None, reuse_models: bool = True) -> 'SweepResults':
     """Evaluate baseline + enabled sweep cases; save portable summary and HDF5 histories.
@@ -96,6 +255,7 @@ def run_sweep(base_cfg: dict, spec: dict, *, simulate_fn: Callable | None = None
     """
     from .results import SweepResults
     parameters, cases = make_cases(base_cfg, spec)
+    workers = _worker_count(spec, len(cases))
     output_cfg = spec.get('outputs', {})
     if not isinstance(output_cfg, dict):
         raise ValueError('outputs must be a mapping')
@@ -108,83 +268,52 @@ def run_sweep(base_cfg: dict, spec: dict, *, simulate_fn: Callable | None = None
     (out / 'sweep_config.yaml').write_text(yaml.safe_dump(spec, sort_keys=False))
     (out / 'baseline_config.yaml').write_text(yaml.safe_dump(base_cfg, sort_keys=False))
 
-    models: dict = {}
-    if simulate_fn is None:
-        from simulation import simulate, property_sources, project_path
-        from AeroTables import DragModel
-        simulate_fn = simulate
-        if reuse_models:
-            # Table sources/aero are read-only. Reuse only across fresh vehicle/flight state.
-            pure, combustion = property_sources(base_cfg)
-            models = dict(pure_properties=pure, combustion_properties=combustion,
-                          aero_model=DragModel(project_path(base_cfg['aero']['model'])))
-    summaries = []
-    cases_table = []
+    print(f'Sensitivity sweep: {len(cases)} cases using {workers} '
+          f'{"process" if workers == 1 else "processes"}', flush=True)
+    models = _model_resources(base_cfg) if workers == 1 and reuse_models and simulate_fn is None else None
+    summaries = [None] * len(cases)
+    cases_table = [None] * len(cases)
     errors = []
     input_columns = [p.name for p in parameters]
     with h5py.File(out / 'histories.h5', 'w') as store:
         store.attrs['format_version'] = 1
-        for index, case in enumerate(cases):
-            candidate = apply_case(base_cfg, case, parameters)
-            row = {'case_id': case.case_id, 'is_baseline': case.is_baseline}
-            # Record all actual independent inputs, not only overrides.
-            for p in parameters:
-                if p.name in case.overrides:
-                    row[p.name] = case.overrides[p.name]
-                else:
-                    try:
-                        node = candidate
-                        for part in p.path.split('.'):
-                            node = node[part]
-                        row[p.name] = node
-                    except KeyError:
-                        row[p.name] = (0.0 if p.name == 'thrust_tilt' else '')
-            cases_table.append(dict(row, **{'overrides': json.dumps(case.overrides)}))
-            result = None
-            failure = None
-            try:
-                result = simulate_fn(candidate, record_history=record_history,
-                                     compute_loads=compute_loads, **models)
-            except Exception as exc:
-                # EvaluationFailure can carry a useful partial SimResult.
-                result = getattr(exc, 'partial_result', None)
-                failure = f'{type(exc).__name__}: {exc}'
-                if exc.__cause__ is not None:
-                    failure += f' (caused by {type(exc.__cause__).__name__}: {exc.__cause__})'
-                errors.append({'case_id': case.case_id, 'message': failure,
-                               'traceback': traceback.format_exc()})
-            scalar = scalar_outputs(result) if result is not None else {}
+        if workers > 1:
+            evaluations = _parallel_evaluations(cases, base_cfg, parameters,
+                                                record_history, compute_loads,
+                                                reuse_models, simulate_fn,
+                                                history_fn, workers)
+        else:
+            def serial_evaluations():
+                for index, case in enumerate(cases):
+                    candidate = apply_case(base_cfg, case, parameters)
+                    yield index, case, _evaluate(candidate, record_history,
+                                                 compute_loads, simulate_fn,
+                                                 history_fn, models)
+            evaluations = serial_evaluations()
+
+        for finished, (index, case, data) in enumerate(evaluations, start=1):
+            row = _case_row(base_cfg, case, parameters)
+            scalar = data['scalar']
+            failure = data['failure']
+            status = data['status']
             # A baseline using explicit throat area lacks target_thrust in the
             # config, and vice versa. Give it the actual computed design value.
-            if case.is_baseline and result is not None:
+            if case.is_baseline and scalar:
                 if 'target_thrust' in input_columns and row.get('target_thrust') == '':
                     row['target_thrust'] = scalar.get('design_summary.design_thrust', '')
                 if 'throat_area' in input_columns and row.get('throat_area') == '':
                     row['throat_area'] = scalar.get('design_summary.throat_area', '')
-                cases_table[-1].update(row)
-            term = scalar.get('termination', '')
-            status = ('error' if failure else
-                      'infeasible' if str(term).startswith('infeasible') or scalar.get('feasible') is False
-                      else 'completed')
-            summaries.append(dict(row, status=status, error=failure or '', **scalar))
-            if record_history and result is not None and result.history:
-                try:
-                    if history_fn is None:
-                        from main import history_rows
-                        history_fn = history_rows
-                    history = history_fn(result.history)
-                    names, matrix = _numeric_history(history)
-                    group = store.create_group(case.case_id)
-                    group.attrs['columns'] = json.dumps(names)
-                    group.create_dataset('data', data=matrix,
-                                         compression='gzip' if matrix.shape[0] > 1 else None)
-                except Exception as exc:
-                    # The flight itself succeeded, but saved history is incomplete.
-                    issue = f'History export failed: {type(exc).__name__}: {exc}'
-                    errors.append({'case_id': case.case_id, 'message': issue,
-                                   'traceback': traceback.format_exc()})
-                    summaries[-1]['history_error'] = issue
-            print(f'[{index + 1}/{len(cases)}] {case.case_id}: {status} '
+            cases_table[index] = dict(row, overrides=json.dumps(case.overrides))
+            summaries[index] = dict(row, status=status, error=failure or '', **scalar)
+            for error in data['errors']:
+                errors.append(dict(case_id=case.case_id, **error))
+            matrix = data['history_matrix']
+            if record_history and matrix is not None:
+                group = store.create_group(case.case_id)
+                group.attrs['columns'] = json.dumps(data['history_names'])
+                group.create_dataset('data', data=matrix,
+                                     compression='gzip' if matrix.shape[0] > 1 else None)
+            print(f'[{finished}/{len(cases)}] {case.case_id}: {status} '
                   f'{case.overrides}', flush=True)
     _write_csv(out / 'cases.csv', cases_table, ('case_id', 'is_baseline', *input_columns, 'overrides'))
     _write_csv(out / 'summary.csv', summaries,

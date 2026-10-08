@@ -1,3 +1,4 @@
+# This file can be modified to plto whatever you want
 from pathlib import Path
 from sensitivity import SweepResults
 
@@ -21,6 +22,12 @@ results.plot(
     ylabel='Apogee (m)',
     kind='line',
     marker='o',
+    save=True,
+)
+
+results.plot(
+    x='ox_injector_stiffness',
+    y='apogee',
     save=True,
 )
 

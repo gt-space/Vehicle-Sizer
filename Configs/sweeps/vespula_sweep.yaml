@@ -1,17 +1,19 @@
-# ALL VALUES USE THE EXISTING SIZER UNITS (SI)
+# Optional sensitivity settings. Nothing in Configs/Vespula.yaml is edited.
+# ALL VALUES USE THE EXISTING SIZER UNITS (SI): Pa, m^3, m^2, N, degrees, etc.
 # Choose values: [v1, v2, ...] OR start/stop/step OR start/stop/num.
-# enabled: false -> no sweep for that variable
+# A parameter with enabled: false is kept at its original vehicle-config value.
 base_config: Configs/Vespula.yaml
 
 sweep:
   mode: one_at_a_time       # one_at_a_time | full_grid
   max_cases: 10000          # includes the standalone baseline case
+  workers: 4                # 1 = serial; 2/4/8 = parallel processes; 'auto' = up to 4
   parameters:
     chamber_pressure:      # prop_system.Pc_target [Pa]
       enabled: true
-      start: 1.379e+6
-      stop: 2.068e+6
-      step: 137895
+      start: 1800000
+      stop: 2200000
+      step: 100000
 
     ox_injector_stiffness:  # prop_system.ox_inj_stiffness [-]
       enabled: true

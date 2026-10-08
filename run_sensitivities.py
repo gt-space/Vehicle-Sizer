@@ -1,6 +1,11 @@
-"""
-Run the optional sensitivity sweep.
-Edit sweep config before running.
+"""Run the optional sensitivity sweep directly using VS Code's Run Python File button.
+
+1. Edit SWEEP_CONFIG to select a sensitivity YAML.
+2. Edit that YAML to enable parameters and choose one_at_a_time/full_grid.
+   Set sweep.workers: 4 to evaluate up to four flight cases in parallel.
+3. Open this file in VS Code and click the top-right Run Python File triangle.
+
+Regular Vehicle-Sizer simulations (main.py) are unaffected.
 """
 from pathlib import Path
 
