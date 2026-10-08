@@ -13,8 +13,8 @@ from sensitivity import run_file
 
 
 # ---- USER SETTINGS ---------------------------------------------------------
-SWEEP_CONFIG = "Configs/sweeps/vespula_sweep.yaml"
-DRY_RUN = False  # True: validate and list cases without running flights
+SWEEP_CONFIG = "Configs/sweeps/flight_pressure_fed_regulator_sweep.yaml"
+DRY_RUN = False # True: validate and list cases without running flights
 # ---------------------------------------------------------------------------
 
 

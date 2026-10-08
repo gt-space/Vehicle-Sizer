@@ -1,0 +1,88 @@
+# Optional sensitivity settings. The base vehicle config is not edited.
+# ALL VALUES USE THE EXISTING SIZER UNITS (SI)
+# Choose values: [v1, v2, ...] OR start/stop/step OR start/stop/num.
+# A parameter with enabled: false is kept at its original vehicle-config value.
+base_config: Configs/for_sweep_flight_pressure_fed_regulator.yaml
+
+sweep:
+  mode: one_at_a_time        # one_at_a_time | full_grid
+  max_cases: 10000           # includes the standalone baseline case
+  workers: 6                 # 1 = serial; 2/4/8 = parallel; 'auto' = up to 4
+  ignore_feasibility: true   # keep completed flights even if design constraints fail
+
+  parameters:
+    chamber_pressure:        # prop_system.Pc_target [Pa]
+      enabled: true
+      start: 1034000.0
+      stop: 2068000.0
+      step: 34473.8
+
+    ox_injector_stiffness:   # prop_system.ox_inj_stiffness [-]
+      enabled: false
+      values: [0.20, 0.24, 0.28]
+
+    fuel_injector_stiffness: # prop_system.fuel_inj_stiffness [-]
+      enabled: false
+      values: [0.20, 0.24, 0.28]
+
+    ox_system_dp:            # prop_system.ox_tank_inj_dp [Pa]
+      enabled: false
+      values: [175000, 206842.71879525, 240000]
+
+    fuel_system_dp:          # prop_system.fuel_tank_inj_dp [Pa]
+      enabled: false
+      values: [240000, 275790.291727, 310000]
+
+    copv_volume:             # tanks.press_tank.volume [m^3]
+      enabled: false
+      values: [0.065, 0.07980022278425686, 0.095]
+
+    copv_pressure:           # tanks.press_tank.design_pressure [Pa]
+      enabled: false
+      values: [24000000, 26678464.742342323, 29000000]
+
+    target_thrust:           # prop_system.thrust_target [N]; choose ONE thrust sizing mode
+      enabled: false
+      values: [18000, 20906.893907550508, 24000]
+
+    throat_area:             # engine.throat_area [m^2]; do not enable with target_thrust
+      enabled: false
+      values: [0.008, 0.010, 0.012]
+
+    cstar_efficiency:        # engine.cstar_efficiency [-]
+      enabled: false
+      values: [0.85, 0.90, 0.95]
+
+    cf_efficiency:           # engine.cf_efficiency [-]
+      enabled: false
+      values: [0.90, 0.95, 1.00]
+
+    thrust_tilt:             # engine.thrust_tilt_deg [degrees]; default 0
+      enabled: false
+      values: [-0.5, 0.0, 0.5]
+
+    weld_allowable:          # advanced.weld_allowable [Pa], not weld efficiency
+      enabled: false
+      values: [100000000, 138000000, 170000000]
+
+    # Pressure-fed regulator-specific parameters
+    prop_system.regulator.OX_REGULATOR.capacity_factor:      # baseline 5.0 [-]
+      enabled: false
+      values: [4.0, 5.0, 6.0]
+
+    prop_system.regulator.FUEL_REGULATOR.capacity_factor:    # baseline 5.0 [-]
+      enabled: false
+      values: [4.0, 5.0, 6.0]
+
+    prop_system.regulator.OX_REGULATOR.collapse_factor:      # baseline 1.2 [-]
+      enabled: false
+      values: [1.1, 1.2, 1.3]
+
+    prop_system.regulator.FUEL_REGULATOR.collapse_factor:    # baseline 1.2 [-]
+      enabled: false
+      values: [1.1, 1.2, 1.3]
+
+outputs:
+  record_history: true      # flight-history plots, derivatives, and design summary
+  compute_loads: false      # enable when structural load outputs are needed
+  directory: outputs/sensitivity/flight_pressure_fed_regulator

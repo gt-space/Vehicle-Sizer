@@ -59,4 +59,3 @@ results.plot_history_derivative(
     at=2000000,
     save=True,
 )
-

@@ -103,6 +103,32 @@ def _worker_count(spec: dict, case_count: int) -> int:
     return min(requested, case_count)
 
 
+def _ignore_feasibility(spec: dict) -> bool:
+    """Read the optional sweep-only feasibility setting (default: unchanged behavior)."""
+    value = spec.get('sweep', {}).get('ignore_feasibility', False)
+    if type(value) is not bool:
+        raise ValueError('sweep.ignore_feasibility must be true or false')
+    return value
+
+
+def _case_status(scalar: dict, failure: str | None, ignore_feasibility: bool) -> str:
+    """Classify flight execution separately from engineering feasibility.
+
+    Do not mask a solver error, rejected initial design, or premature operating
+    termination. Only a flight that reached apogee may bypass feasibility in a
+    sensitivity sweep. The actual SimResult.feasible and all constraint margins
+    are preserved unchanged in the saved scalar outputs.
+    """
+    if failure:
+        return 'error'
+    term = str(scalar.get('termination', ''))
+    if term.startswith('infeasible'):
+        return 'infeasible'
+    if ignore_feasibility:
+        return 'completed' if scalar.get('completed') is True else 'infeasible'
+    return 'infeasible' if scalar.get('feasible') is False else 'completed'
+
+
 def _model_resources(cfg: dict) -> dict:
     """Load read-only lookup models locally, never transfer them between processes."""
     from simulation import property_sources, project_path
@@ -118,7 +144,7 @@ def _model_resources(cfg: dict) -> dict:
 
 def _evaluate(candidate: dict, record_history: bool, compute_loads: bool,
               simulate_fn: Callable | None, history_fn: Callable | None,
-              models: dict | None) -> dict:
+              models: dict | None, ignore_feasibility: bool = False) -> dict:
     """Run a case and return only serializable scalar/history data, not SimResult."""
     result = None
     failure = None
@@ -136,10 +162,7 @@ def _evaluate(candidate: dict, record_history: bool, compute_loads: bool,
         errors.append({'message': failure, 'traceback': traceback.format_exc()})
 
     scalar = scalar_outputs(result) if result is not None else {}
-    term = scalar.get('termination', '')
-    status = ('error' if failure else
-              'infeasible' if str(term).startswith('infeasible') or scalar.get('feasible') is False
-              else 'completed')
+    status = _case_status(scalar, failure, ignore_feasibility)
     names, matrix = [], None
     if record_history and result is not None and getattr(result, 'history', None):
         try:
@@ -162,12 +185,14 @@ _WORKER_STATE = None
 
 def _worker_initializer(base_cfg: dict, parameters: list, record_history: bool,
                         compute_loads: bool, reuse_models: bool,
-                        simulate_fn: Callable | None, history_fn: Callable | None) -> None:
+                        simulate_fn: Callable | None, history_fn: Callable | None,
+                        ignore_feasibility: bool) -> None:
     global _WORKER_STATE
     _WORKER_STATE = dict(base_cfg=base_cfg, parameters=parameters,
                          record_history=record_history, compute_loads=compute_loads,
                          reuse_models=reuse_models, simulate_fn=simulate_fn,
-                         history_fn=history_fn, models=None)
+                         history_fn=history_fn, models=None,
+                         ignore_feasibility=ignore_feasibility)
 
 
 def _worker_evaluate(case: SweepCase) -> dict:
@@ -179,7 +204,8 @@ def _worker_evaluate(case: SweepCase) -> dict:
         if state['reuse_models'] and state['simulate_fn'] is None and state['models'] is None:
             state['models'] = _model_resources(state['base_cfg'])
         return _evaluate(candidate, state['record_history'], state['compute_loads'],
-                         state['simulate_fn'], state['history_fn'], state['models'])
+                         state['simulate_fn'], state['history_fn'], state['models'],
+                         state['ignore_feasibility'])
     except Exception as exc:
         message = f'{type(exc).__name__}: {exc}'
         return {'status': 'error', 'failure': message, 'scalar': {},
@@ -207,14 +233,15 @@ def _case_row(base_cfg: dict, case: SweepCase, parameters: list) -> dict:
 def _parallel_evaluations(cases: list[SweepCase], base_cfg: dict, parameters: list,
                           record_history: bool, compute_loads: bool,
                           reuse_models: bool, simulate_fn: Callable | None,
-                          history_fn: Callable | None, workers: int):
+                          history_fn: Callable | None, workers: int,
+                          ignore_feasibility: bool):
     """Yield results as jobs finish, with bounded in-flight tasks/memory."""
     ctx = multiprocessing.get_context('spawn')
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=ctx,
         initializer=_worker_initializer,
         initargs=(base_cfg, parameters, record_history, compute_loads,
-                  reuse_models, simulate_fn, history_fn),
+                  reuse_models, simulate_fn, history_fn, ignore_feasibility),
     ) as pool:
         todo = iter(enumerate(cases))
         pending = {}
@@ -255,6 +282,7 @@ def run_sweep(base_cfg: dict, spec: dict, *, simulate_fn: Callable | None = None
     """
     from .results import SweepResults
     parameters, cases = make_cases(base_cfg, spec)
+    ignore_feasibility = _ignore_feasibility(spec)
     workers = _worker_count(spec, len(cases))
     output_cfg = spec.get('outputs', {})
     if not isinstance(output_cfg, dict):
@@ -281,14 +309,16 @@ def run_sweep(base_cfg: dict, spec: dict, *, simulate_fn: Callable | None = None
             evaluations = _parallel_evaluations(cases, base_cfg, parameters,
                                                 record_history, compute_loads,
                                                 reuse_models, simulate_fn,
-                                                history_fn, workers)
+                                                history_fn, workers,
+                                                ignore_feasibility)
         else:
             def serial_evaluations():
                 for index, case in enumerate(cases):
                     candidate = apply_case(base_cfg, case, parameters)
                     yield index, case, _evaluate(candidate, record_history,
                                                  compute_loads, simulate_fn,
-                                                 history_fn, models)
+                                                 history_fn, models,
+                                                 ignore_feasibility)
             evaluations = serial_evaluations()
 
         for finished, (index, case, data) in enumerate(evaluations, start=1):
@@ -326,6 +356,7 @@ def run_file(path: str | Path, *, dry_run: bool = False) -> 'SweepResults | list
     base_cfg, spec, _ = load_sweep(path)
     if dry_run:
         parameters, cases = make_cases(base_cfg, spec)
+        _ignore_feasibility(spec)  # Validate the option on dry runs, too.
         for case in cases:
             apply_case(base_cfg, case, parameters)
             print(f'{case.case_id}: {case.overrides}')
