@@ -9,7 +9,6 @@ from AeroTables import DragModel
 from Configs.loader import load_config
 from FluidTables.PropertyModels import CEAPropertySource
 from Fluids.PropSystem import PropSystem
-from Vehicle.Engine import Engine
 from Vehicle.Vehicle import Vehicle
 from simulation import property_sources
 from test_prop_system import config, build
@@ -21,7 +20,7 @@ def vespula():
     pure, combustion = property_sources(cfg)
     vehicle = Vehicle(cfg, pure)
     with PropSystem(cfg, vehicle.tanks, pure, combustion) as prop:
-        vehicle.build(Engine(cfg['engine']['mass'], cfg['engine']['length'], prop.exit_area))
+        vehicle.build(prop)
         yield cfg, vehicle, prop
 
 
@@ -157,7 +156,7 @@ def test_vespula_initializes_with_switch_only_feeds_and_documents_reference_mism
     assert prop.initial_states['press_tank']['m'] == pytest.approx(11.563, rel=1e-3)
     assert abs(prop.initial_states['press_tank']['m']/17.4 - 1) > .1
     for key in ('OX_SWITCH', 'FUEL_SWITCH'):
-        assert prop.network.branches[key].sense_node == 'press_tank'
+        assert prop.network.branches[key].from_node == 'press_tank'
         assert not result['branch'][key]['is_switched']
     first = prop.update(.6, SimpleNamespace(p=94000.), {})
     events = [e for e in first.events if e['component'] == 'OX_RELIEF']

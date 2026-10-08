@@ -91,34 +91,10 @@ class PropTank(Section):
         self.mass = self.dry_mass
 
     def _get_dry_mass(self) -> float:
-        D = self.OMLD
-        D_pass = self.passthrough_diameter
-        t = self.wall_thickness
-        t_pass = self.passthrough_wall_thickness
-        e = self.ellipse_ratio
-        rho = self.material.density
-
-        a = D * 0.5
-        c = a / e
-        area = 4 * np.pi * ((a**3.2 + 2 * (a*c)**1.6) / 3)**(1/1.6)
-        multiplier = float(self.cfg["advanced"]["endcap_mass_multiplier"])
-        if not np.isfinite(multiplier) or multiplier <= 0:
-            raise ValueError("endcap_mass_multiplier must be finite and positive")
-        V_end = area * t * multiplier
-        V_cyl = geo.annulus_volume(D * 0.5, D * 0.5 - t, self.cyl_length)
-        if D_pass > 0.0 and t_pass >= 0.5 * D_pass:
-            raise ValueError("Passthrough wall consumes its internal diameter")
-        V_pass = (
-            geo.annulus_volume(
-                D_pass * 0.5,
-                D_pass * 0.5 - t_pass,
-                self.cyl_length,
-            )
-            if D_pass > 0.0
-            else 0.0
-        )
-
-        return rho * (V_end + V_cyl + V_pass)
+        return self.material.density * geo.tank_shell_volume(
+            self.OMLD, self.wall_thickness, self.cyl_length, self.ellipse_ratio,
+            float(self.cfg["advanced"]["endcap_mass_multiplier"]),
+            self.passthrough_diameter, self.passthrough_wall_thickness)
 
     def get_thickness(self, supplied: Optional[float] = None) -> float:
         """Return supplied gauge or pressure-size it from the fixed OML diameter."""
@@ -127,7 +103,7 @@ class PropTank(Section):
         fos = float(self.cfg["advanced"]["tank_pressure_fos"])
         if not np.isfinite(allowable) or allowable <= 0 or not np.isfinite(fos) or fos < 1:
             raise ValueError("weld_allowable must be positive and tank_pressure_fos >= 1")
-        required = fos * self.max_pressure * (0.5 * self.OMLD) / allowable
+        required = geo.pressure_wall_thickness(self.max_pressure, self.OMLD, fos, allowable)
         self.required_wall_thickness = required
         if supplied is None:
             return required

@@ -11,7 +11,7 @@ import numpy as np
 
 from .FluidState import BranchState, FluidState, NodeState
 from .events import Event
-from errors import TrialDomainError
+from errors import TrialDomainError, UnsupportedPhaseChangeError
 
 
 Adjacent = list[tuple[float, BranchState]]
@@ -131,6 +131,9 @@ class FluidNode:
 
     def apply_event(self, name, values, time):
         raise RuntimeError(f"Property/model domain limit at t={time:g}: {self.id}.{name}")
+
+    def validate_event(self, name, time):
+        """Reject unsupported physical transitions before reporting a root state."""
 
     def _property_limits(self, fluid, pressure, temperature, prefix=""):
         """Positive margins inside the provider's PT domain; no property calls."""
@@ -361,19 +364,18 @@ class VolumeComponent(FluidNode):
                 events[f"triple_point:{fluid}"] = Event(margin, terminal="triple_point")
         return events
 
+    def validate_event(self, name, time):
+        transitions = {"condense": "saturated", "evaporate": "gas", "liquid_limit": "liquid"}
+        if name in transitions:
+            # Reject at the located event, before changing equations or conserved
+            # inventories. Propellant tanks inherit this policy after dryout;
+            # dryout itself is inventory depletion, not a thermodynamic transition.
+            raise UnsupportedPhaseChangeError(self.id, self.fluid_name, self.mode,
+                                        transitions[name], name, time)
+
     def apply_event(self, name, values, time):
-        if name == "condense":
-            values.pop("T")
-            values["quality"] = 1.
-            self.set_mode("saturated")
-        elif name in ("evaporate", "liquid_limit"):
-            sat = self.fluid_properties.saturation_at_p(self.fluid_name, values["P"])
-            values.pop("quality")
-            values["T"] = sat.T
-            self.set_mode("gas" if name == "evaporate" else "liquid")
-        else:
-            return super().apply_event(name, values, time)
-        return {}
+        self.validate_event(name, time)
+        return super().apply_event(name, values, time)
 
     def output_state(self, node_state):
         output = super().output_state(node_state)

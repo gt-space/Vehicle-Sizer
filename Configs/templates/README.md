@@ -10,7 +10,7 @@ Inputs:
 
 `{config: path.to.value}` reads a flight-config value. A branch's `parameters` can reference a config block. `P0` sets design pressure directly or through another node's pressure plus a rise/drop. Tank ports distinguish liquid and ullage flow.
 
-A supplied `CdA` fixes a restriction area; eligible omitted areas are sized from design flow and pressure drop. Switch and relief areas are explicit inputs.
+A supplied `CdA` fixes a restriction area; eligible omitted areas are sized from design flow and pressure drop. Switch and relief areas are explicit inputs. A switch starts at `CdA_initial` and permanently changes to `CdA_switch` when its upstream (`from`) node absolute pressure reaches `switch_pressure` in `switch_direction` (`rising` or `falling`). If the condition is already met at initialization, it switches immediately.
 
 Select a template in the flight config:
 

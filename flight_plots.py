@@ -226,13 +226,13 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
         if "P" in node and node_id != press_node:
             axis.plot(time, [state["plant"].fluids.node[node_id]["P"] / 1e6 for state in history],
                       label=node_id.replace("_", " "))
-    axis.set(xlabel="Time [s]", ylabel="Pressure [MPa]", title="System pressure ladder (COPV excluded)")
+    axis.set(xlabel="Time [s]", ylabel="Pressure [MPa]", title="System pressure ladder (pressurant excluded)")
     _finish(figure, axis, paths["pressure_ladder"], burnout)
 
     figure, axis = plt.subplots(figsize=(11, 6))
     axis.plot(time, [state["plant"].fluids.node[press_node]["P"] / 1e6 for state in history],
-              label="COPV pressure")
-    axis.set(xlabel="Time [s]", ylabel="Pressure [MPa]", title="COPV blowdown")
+              label="Pressurant pressure")
+    axis.set(xlabel="Time [s]", ylabel="Pressure [MPa]", title="Pressurant blowdown")
     _finish(figure, axis, paths["copv_blowdown"], burnout)
 
     figure, axis = plt.subplots(figsize=(11, 6))

@@ -29,6 +29,16 @@ class ModelDomainExceeded(RuntimeError):
         super().__init__(message)
 
 
+class UnsupportedPhaseChangeError(ModelDomainExceeded):
+    """A located volume transition requires physics outside model coverage."""
+    def __init__(self, node_id, fluid, from_phase, to_phase, event, time):
+        super().__init__(f"Volume {node_id!r} ({fluid}) requires unsupported phase change "
+                         f"from {from_phase} to {to_phase} at t={time:g} s ({event})",
+                         time=float(time))
+        self.details.update(node_id=node_id, fluid=fluid, from_phase=from_phase,
+                            to_phase=to_phase, event=event, time_s=float(time))
+
+
 class SolverConvergenceError(RuntimeError):
     """IDA could not finish a solve; not an independently rejected solution."""
     def __init__(self, operation, status, time, *, retryable=True):
@@ -63,6 +73,7 @@ def failure_details(error, *, phase=None):
         ((InfrastructureError, OSError), 'infrastructure_error', True),
         ((SolverSetupError, KeyError, TypeError, AttributeError, AssertionError,
           ImportError, MemoryError), 'configuration_error', True),
+        ((UnsupportedPhaseChangeError,), 'unsupported_phase_change', False),
         ((LookupBoundsError, ModelDomainExceeded), 'table_domain_exceeded', False),
         ((ResidualAcceptanceError,), 'residual_acceptance_failure', False),
         ((SolverConvergenceError,), 'solver_nonconvergence', False),

@@ -12,7 +12,7 @@ from simulation_types import KinematicsState, PlantOut, SimResult
 from Vehicle.Engine import Engine
 from Vehicle.Material import MaterialProperties
 from Vehicle.Vehicle import Vehicle
-from Vehicle.geometry_constraints import (check_copv_to_airframe, check_feedline,
+from Vehicle.geometry_constraints import (check_press_tank_to_airframe, check_feedline,
                                  check_nozzle, check_engine_length)
 from Vehicle.sections.PropTank import PropTank
 from test_flight import FakeAero, FakeEnvironment, FakePropSystem, FakeVehicle
@@ -172,9 +172,10 @@ def test_engine_overlay_is_conservative_and_survives_mass_assembly():
 
 
 def test_geometry_constraints_have_consistent_sign():
-    copv = SimpleNamespace(wall_thickness=.01, copv=SimpleNamespace(diameter=.2))
-    assert check_copv_to_airframe(copv, .3) > 0
-    assert check_copv_to_airframe(copv, .2) < 0
+    tank_section = SimpleNamespace(diameter=.2)
+    assert check_press_tank_to_airframe(tank_section, .3) > 0
+    assert check_press_tank_to_airframe(tank_section, .2) == 0
+    assert check_press_tank_to_airframe(tank_section, .19) < 0
     tank = SimpleNamespace(passthrough_diameter=.1, passthrough_wall_thickness=.01)
     assert check_feedline(tank, .07) > 0
     assert check_feedline(tank, .09) < 0

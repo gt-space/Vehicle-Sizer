@@ -26,6 +26,13 @@ Run an optimization with a new output directory:
 ```
 
 The search writes configs, evaluation records, failure details, and a summary. Accepted designs produce `best.yaml`; successful verification produces `verified.yaml`. Use `--max-evaluations` to limit the search.
+Run independent candidates in separate processes with `--workers`:
+
+```bash
+.venv/bin/python optimizer.py Configs/optimizer_epump.yaml --output outputs/epump_search_01 --workers 4 --max-evaluations 100
+```
+
+Workers reuse property tables and recycle after `--candidates-per-worker` candidates (default 3). `--timeout` limits each candidate's wall time (default 300 seconds). Parallel searches use deferred population updates and can follow a different trajectory from serial searches with the same seed. Resume a worker search by repeating its command with `--resume`; keep the original config, evaluation budget, and source files unchanged. The saved results are replayed before unfinished work continues. The default is one serial worker; `workers`, `worker_timeout`, and `candidates_per_worker` can also be set in the optimizer config.
 You need to make an optmiziation configuration specific to your flight config, examples are in Configs folder.
 
 Run tests:

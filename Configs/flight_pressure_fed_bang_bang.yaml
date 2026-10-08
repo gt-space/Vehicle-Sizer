@@ -28,7 +28,7 @@ aero:
   model: AeroTables/dragmodel.h5
   nose: vonkarman
 avi_bay:
-  length: 0.3
+  length: 0.25
 constraints:
   min_stability_calibers: 2.0
   max_aoa_deg: 15.0
@@ -36,7 +36,7 @@ constraints:
   max_burn_duration: 75.0
 engine:
   cf_efficiency: 0.95
-  cstar_efficiency: 0.85
+  cstar_efficiency: 0.90
   exit_pressure: 75842.3
   fuel: RP-1
   length: 0.5715
@@ -72,7 +72,7 @@ nosecone:
 prop_system:
   MR_target: 2.0
   Pc_target: 1723689.323292
-  fuel_inj_stiffness: 0.2
+  fuel_inj_stiffness: 0.24
   fuel_tank_inj_dp: 275790.291727
   initial_conditions:
     fuel_tank:
@@ -89,7 +89,7 @@ prop_system:
       T: 300.0
       fluid: Nitrogen
   nozzle_cd: 1.0
-  ox_inj_stiffness: 0.2
+  ox_inj_stiffness: 0.24
   ox_tank_inj_dp: 275790.291727
   template: Configs/templates/pressure_fed_bang_bang.yaml
   thrust_target: 18550

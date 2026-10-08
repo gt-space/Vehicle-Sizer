@@ -62,7 +62,7 @@ def test_geometry_build_rejection_and_runtime_failure_are_distinct():
     propulsion = SimpleNamespace(exit_area=1, pump_sizing={}, sizing_constraints={},
                                  node_definitions={}, close=lambda: None,
                                  network=SimpleNamespace(pressure_tracking=SimpleNamespace(records={})))
-    vehicle.build = lambda engine: None
+    vehicle.build = lambda propulsion: None
     partial = SimResult(final_time=1)
     flight = SimpleNamespace(result=partial)
     with patch.object(simulation, "Vehicle", return_value=vehicle), \

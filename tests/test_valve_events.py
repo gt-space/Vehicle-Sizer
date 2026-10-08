@@ -13,31 +13,35 @@ from Fluids.helpers.templates import load_template
 
 
 def switch(**overrides):
-    return dict(component='switch_valve', **{'from': 'tank', 'to': 'ambient'},
-                CdA_before=1e-6, CdA_after=2e-6, sense_node='sensor',
+    return dict(component='switch_valve', **{'from': 'sensor', 'to': 'tank'},
+                CdA_initial=1e-6, CdA_switch=2e-6, phase='gas',
                 switch_pressure=2.5e5, **overrides)
 
 
 def network(branch, **options):
-    return FluidNetwork({'tank': gas_tank(), 'ambient': dict(component='boundary', P=1e5),
-                         'sensor': dict(component='boundary', P=2e5)},
+    fluid = Properties().state_pt("gas", 2e5, 300.).as_dict()
+    fluid["phase"] = "gas"
+    return FluidNetwork({'tank': gas_tank(5e4, 10.) if branch["component"] == "switch_valve" else gas_tank(), 'ambient': dict(component='boundary', P=1e5),
+                         'sensor': dict(component='boundary', P=2e5, fluids={'gas': fluid})},
                         {'valve': branch}, fluid_properties=Properties(), **options)
 
 
-@pytest.mark.parametrize('latched', [True, False])
-def test_switch_localization_latching_hysteresis_and_preview(latched):
-    definition = switch(latched=latched, reset_pressure=1.5e5)
+@pytest.mark.parametrize('direction', ['rising', 'falling'])
+def test_switch_localization_permanent_transition_and_preview(direction):
+    definition = switch(switch_direction=direction)
     with network(definition, tolerances={'max_step': .2}) as net:
-        net.initialize(bcs={'sensor': lambda t: {'P': 2e5 + 1e5 * sin(t)}})
+        sign = 1 if direction == 'rising' else -1
+        base = 2e5 if direction == 'rising' else 3e5
+        net.initialize(bcs={'sensor': lambda t: {'P': base + sign * 1e5 * sin(t)}})
         saved = net._checkpoint()
         preview = net.update(13., commit=False)
         assert net.time == 0 and not net.branches['valve'].is_switched and not net.events
         result = net.update(13.)
         events = [e for e in result['events'] if e['name'] == 'switch']
-        expected = [pi / 6] if latched else [pi / 6, 7*pi / 6, 13*pi / 6, 19*pi / 6]
+        expected = [pi / 6]
         assert [e['time_s'] for e in events] == pytest.approx(expected, abs=1e-6)
         assert result['node']['tank']['m'] == pytest.approx(preview['node']['tank']['m'])
-        assert result['branch']['valve']['effective_CdA'] == (2e-6 if latched else 1e-6)
+        assert result['branch']['valve']['effective_CdA'] == 2e-6
         net.restore(saved)
         assert not net.branches['valve'].is_switched
         assert net.update(13.)['node']['tank']['m'] == pytest.approx(result['node']['tank']['m'])
@@ -46,7 +50,7 @@ def test_switch_localization_latching_hysteresis_and_preview(latched):
 @pytest.mark.parametrize('direction,pressure', [('rising', 3e5), ('falling', 2e5)])
 def test_switch_initial_guard_disabled_and_zero_area(direction, pressure):
     definition = switch(switch_direction=direction)
-    definition['CdA_before'] = 0.
+    definition['CdA_initial'] = 0.
     with network(definition) as net:
         state = net.initialize(bcs={'sensor': {'P': pressure}})
         assert state['branch']['valve']['is_switched']
@@ -158,8 +162,8 @@ def test_coincident_valves_and_failed_transition_rollback(monkeypatch):
     definition = switch()
     with network(definition) as net:
         net.branches['second'] = type(net.branches['valve'])('second', definition)
-        net.connections['tank'].append((-1, 'second'))
-        net.connections['ambient'].append((1, 'second'))
+        net.connections['sensor'].append((-1, 'second'))
+        net.connections['tank'].append((1, 'second'))
         net.initialize(bcs={'sensor': lambda t: {'P': 2e5 + t*1e5}})
         initial_mass = net.state.nodes['tank']['m']
         original = type(net.branches['valve']).apply_event
@@ -186,7 +190,7 @@ def test_propsystem_uses_config_areas_without_sizing(kind):
     template = load_template(cfg)
     if kind == 'switch_valve':
         branch = template['branches']['OX_TANK_INJ']
-        branch.update(component=kind, CdA_before=1.23e-5, CdA_after=4.56e-5,
+        branch.update(component=kind, CdA_initial=1.23e-5, CdA_switch=4.56e-5,
                       switch_pressure=2e6)
         branch_id = 'OX_TANK_INJ'
     else:
@@ -204,9 +208,8 @@ def test_propsystem_uses_config_areas_without_sizing(kind):
             assert valve.cda == 4.56e-5
 
 
-@pytest.mark.parametrize('field,value', [('CdA_before', None), ('CdA_after', -1),
-                                        ('switch_direction', 'invalid'), ('initially_switched', 1),
-                                        ('latched', 1), ('switch_pressure', 0), ('sense_node', 'missing')])
+@pytest.mark.parametrize('field,value', [('CdA_initial', None), ('CdA_switch', -1),
+                                        ('switch_direction', 'invalid'), ('switch_pressure', 0)])
 def test_invalid_switch_inputs_fail_before_integration(field, value):
     definition = switch()
     definition[field] = value

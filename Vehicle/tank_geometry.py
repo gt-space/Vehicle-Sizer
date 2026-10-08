@@ -142,7 +142,7 @@ class PropTankGeometry:
 
 @dataclass(frozen=True)
 class PressTankGeometry:
-    """Immutable COPV geometry used by the gas-volume node."""
+    """Immutable pressurant tank geometry used by the fluid network."""
 
     volume: float
     length: float

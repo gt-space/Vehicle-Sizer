@@ -27,15 +27,15 @@ def test_optimizer_pressurant_geometry_matches_built_vessel(setup, construction,
     if construction == 'metal':
         tank.update(material='aluminum_6061', pressure_fos=1.7, weld_allowable=160e6)
     assert 'wall_thickness' not in tank
-    vessel = Vehicle(cfg, pure).tanks['press_tank'].vessel
+    vessel = Vehicle(cfg, pure).tanks['press_tank']
     assert opt.pressurant_inner_radius(cfg, tank) == pytest.approx(vessel.inner_diameter / 2)
     records = opt.primitive_records(cfg, settings['tank_ids'])
-    assert records['geometry.copv_cylinder'].margin == pytest.approx(vessel.cylinder_length - 1e-9)
+    assert records['geometry.pressurant_cylinder'].margin == pytest.approx(vessel.cylinder_length - 1e-9)
     if construction == 'copv':
         tank['length'] = vessel.length + .2
-        vessel = Vehicle(cfg, pure).tanks['press_tank'].vessel
+        vessel = Vehicle(cfg, pure).tanks['press_tank']
         records = opt.primitive_records(cfg, settings['tank_ids'])
-        assert records['geometry.copv_cylinder'].margin == pytest.approx(vessel.cylinder_length - 1e-9)
+        assert records['geometry.pressurant_cylinder'].margin == pytest.approx(vessel.cylinder_length - 1e-9)
 
 
 def test_undersized_copv_is_a_geometry_rejection(setup):
@@ -43,7 +43,7 @@ def test_undersized_copv_is_a_geometry_rejection(setup):
     cfg = deepcopy(base)
     cfg['tanks']['press_tank']['volume'] = 1e-6
     records = opt.primitive_records(cfg, settings['tank_ids'])
-    assert records['geometry.copv_cylinder'].margin < 0
+    assert records['geometry.pressurant_cylinder'].margin < 0
 
 
 def test_conditioned_candidate_can_be_saved_as_yaml(setup, tmp_path):

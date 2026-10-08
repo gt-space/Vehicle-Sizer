@@ -6,8 +6,8 @@ import math
 from constraints import GeometryError
 
 
-def check_copv_to_airframe(section, diameter, clearance=0.0):
-    return (diameter - section.copv.diameter) / 2 - clearance
+def check_press_tank_to_airframe(section, diameter, clearance=0.0):
+    return (diameter - section.diameter) / 2 - clearance
 
 
 def check_passthrough(tank):
@@ -51,7 +51,9 @@ def geometry_constraints(vehicle):
     margins = {}
     for section in vehicle.sections:
         if isinstance(section, PressTank):
-            margins[f"{section.tank_id}.copv_airframe"] = check_copv_to_airframe(section, diameter, clearance)
+            margins[f"{section.tank_id}.airframe"] = check_press_tank_to_airframe(section, diameter, clearance)
+            if section.required_wall_thickness is not None:
+                margins[f"{section.tank_id}.wall_gauge"] = section.wall_thickness - section.required_wall_thickness
         elif isinstance(section, PropTank):
             margins[f"{section.tank_id}.passthrough"] = check_passthrough(section) - clearance
             margins[f"{section.tank_id}.passthrough_bore"] = check_passthrough_bore(section)

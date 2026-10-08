@@ -69,14 +69,11 @@ branches:
   #   from: ox_ullage
   #   to: ox_inj_in
   #   from_port: liquid
-  #   CdA_before: 1.0e-5
-  #   CdA_after: 2.0e-5
-  #   sense_node: ox_ullage       # defaults to the from node; absolute pressure
+  #   CdA_initial: 1.0e-5
+  #   CdA_switch: 2.0e-5
+  #   # Switches once, monitoring the from node's absolute pressure.
   #   switch_pressure: 2.0e6
   #   switch_direction: falling  # rising or falling
-  #   initially_switched: false
-  #   latched: true              # false requires reset_pressure for hysteresis
-  #   # reset_pressure: 2.2e6    # above switch_pressure for a falling switch
   # To add a vent from the ullage to the existing ambient boundary:
   # OX_RELIEF:
   #   component: relief_valve

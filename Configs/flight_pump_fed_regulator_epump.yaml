@@ -69,10 +69,18 @@ nosecone:
   profile: von_karman
   tip_radius: 0.01
 prop_system:
+  battery:
+    pack_voltage: 250.0 # Prescribed operating voltage [V].
+    cell:
+      nominal_voltage: 3.6 # V
+      max_cont_discharge_current: 35.0 # A
+      mass: 0.0458 # kg
+    current_fos: 1.7
+    mass_margin: 1.3
+    additional_mass: 0.0 # kg, added after margin
   MR_target: 2.2
   Pc_target: 1463927.9694781723
   fuel_inj_stiffness: 0.24
-  fuel_tank_inj_dp: 275790.291727
   initial_conditions:
     fuel_tank:
       T: 298.15
@@ -89,17 +97,51 @@ prop_system:
       fluid: Nitrogen
   nozzle_cd: 1.0
   ox_inj_stiffness: 0.24
-  ox_tank_inj_dp: 206842.71879525 # 30 psi
   regulator:
     FUEL_REGULATOR:
-      capacity_factor: 5.0
+      capacity_factor: 8.0
       collapse_factor: 1.2
       tank_id: fuel_tank
     OX_REGULATOR:
-      capacity_factor: 5.0
+      capacity_factor: 8.0
       collapse_factor: 1.2
       tank_id: ox_tank
-  template: Configs/templates/pressure_fed_regulator.yaml
+  fuel_inj_pumpout_dp: 206842.71879525 # 30 psi differential
+  fuel_pumpin_tank_dp: 68947.57293175 # 10 psi differential
+  ox_inj_pumpout_dp: 137895.1458635 # 20 psi differential
+  ox_pumpin_tank_dp: 68947.57293175 # 10 psi differential
+  pumps:
+    fuel_pump:
+      curve: &id001
+        points:
+        - - 0.0
+          - 3600000
+        - - 1.09
+          - 3450000
+        - - 1.6
+          - 3160000
+        - - 2.172
+          - 2548600
+        - - 2.8
+          - 1830000
+        - - 3.25
+          - 1250000
+        - - 4.2
+          - 0.0
+        reference_mdot: 2.172
+      drive: electric
+      efficiency: 0.46
+      gas_CdA: 0.00015
+      max_power_kw: 15.0
+      pressure_rise_pa: 1792636.896224
+    oxidizer_pump:
+      curve: *id001
+      drive: electric
+      efficiency: 0.46
+      gas_CdA: 0.00024
+      max_power_kw: 15.0
+      pressure_rise_pa: 1792636.896224
+  template: Configs/templates/pump_fed_regulator.yaml
   thrust_target: 15677.600822128927
 property_models:
   combustion:
@@ -120,8 +162,8 @@ property_models:
 simulation:
   dt: 2.0
   fluid_solve_post_shutdown: false
-  output: outputs/flight_pressure_fed_regulator.csv
-  plot: outputs/flight_pressure_fed_regulator.png
+  output: outputs/flight_pump_fed_regulator_epump.csv
+  plot: outputs/flight_pump_fed_regulator_epump.png
   t_end: 600.0
 tanks:
   fuel_tank:
@@ -193,6 +235,7 @@ vehicle:
       clamshell: 1.63
       components: 4.0
       canards: 3.0
+      battery: auto
     stringer_unit_mass: 0.0 # Stringer total is supplied above; do not add it twice.
     stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
   - tank_id: ox_tank
@@ -204,7 +247,6 @@ vehicle:
       stringers: 0.74
       clamshell: 1.38
       components: 4.0
-      battery: 0.0
     stringer_unit_mass: 0.0 # Stringer total is supplied above.
     stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
   - tank_id: fuel_tank
@@ -213,11 +255,13 @@ vehicle:
   - length: 0.3048 # 12 in
     type: inter_tank
     masses:
-      stringers: 0.81
-      clamshell: 1.50
+      stringers: 1.35
+      clamshell: 2.51
       main_valves: 4.0
       tubing_solenoids: 3.0
       thrust_structure: 3.0
+      pumps: 6.0
+      inverters: 4.0
     stringer_unit_mass: 0.0 # Stringer total is supplied above; visible entries sum to 12.31 kg.
     stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
   - type: fin_can

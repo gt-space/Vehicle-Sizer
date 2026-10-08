@@ -10,7 +10,7 @@ from errors import (LookupBoundsError, ModelDomainExceeded, SolverConvergenceErr
                     SearchFailureLimit, failure_details)
 from Fluids.Sundials.ida_session import IdaSession
 from optimizer import FailureMonitor
-from examples import run_optimizer_search as search
+import optimizer_workers as search
 
 
 def session():

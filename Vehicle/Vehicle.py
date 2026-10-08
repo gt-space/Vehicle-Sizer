@@ -1,9 +1,9 @@
+from copy import deepcopy
+from math import isfinite
 import numpy as np
 from Fluids.design import initial_conditions, tank_design_pressure
 from Fluids.helpers.templates import load_template
 
-from .COPV import COPV
-from .MetalPressureVessel import MetalPressureVessel
 from .Engine import Engine
 from .Material import MaterialProperties
 from .sections.AviBay import AviBay
@@ -21,6 +21,7 @@ class Vehicle:
         self.cfg: dict = cfg
         self.fluid_properties = fluid_properties
         self.engine = None
+        self.propulsion = None
         self.dx: float = float(cfg["vehicle"]["dx"])
         self.initial_conditions = initial_conditions(cfg)
         self.tanks = self._build_tanks()
@@ -41,10 +42,13 @@ class Vehicle:
         self.Ixx: float = None
         self.Iyy: float = None
 
-    def build(self, engine: Engine):
-        """Build the configured nose-to-aft section stack."""
+    def build(self, propulsion):
+        """Assemble the configured vehicle using the sized propulsion system."""
 
-        self.engine = engine
+        self.propulsion = propulsion
+        engine_cfg = self.cfg["engine"]
+        self.engine = Engine(float(engine_cfg["mass"]), float(engine_cfg["length"]),
+                             self.propulsion.exit_area)
         self.sections = self._build_sections()
         self.geometry_constraints = geometry_constraints(self)
         # A longer engine would extend outside the modeled OML and aero deck.
@@ -56,10 +60,10 @@ class Vehicle:
         if len(fins) != 1:
             raise ValueError("Vehicle requires exactly one fin can to locate the engine")
         self.engine_start_station = fins[0].start_station
-        self.engine_end_station = self.engine_start_station + engine.length
+        self.engine_end_station = self.engine_start_station + self.engine.length
         self.cell_edges = np.concatenate([s.cell_edges[:-1] for s in self.sections] + [np.array([self.length])])
         self.cell_widths = np.diff(self.cell_edges)
-        self.engine_mass = engine.mass_on_grid(self.cell_edges, self.engine_start_station)
+        self.engine_mass = self.engine.mass_on_grid(self.cell_edges, self.engine_start_station)
         self.dry_mass = np.concatenate([s.mass for s in self.sections]) + self.engine_mass
         self._assemble_vectors()
         self.get_mass_properties()
@@ -103,32 +107,7 @@ class Vehicle:
                     weld_efficiency=definition.get("weld_efficiency", self.cfg["advanced"].get("weld_efficiency", 1.0)),
                 )
             elif tank_type == "pressurant":
-                if "volume" in definition and "volume_liters" in definition:
-                    raise ValueError(f"Tank {tank_id!r}: specify volume (m^3) or volume_liters, not both")
-                common = dict(
-                    volume=(float(definition["volume"]) if "volume" in definition
-                            else float(definition["volume_liters"]) * 1.0e-3),
-                    diameter=float(definition["outer_diameter"]),
-                    ellipse_ratio=float(definition["ellipse_ratio"]),
-                    mass=float(definition["mass"]) if "mass" in definition else None,
-                )
-                construction = definition["construction"]
-                if construction == "copv":
-                    copv = COPV(**common,
-                        length_override=definition.get("length"),
-                        thickness_slope=float(definition["thickness_slope"]),
-                        thickness_intercept=float(definition["thickness_intercept"]),
-                        material_density=float(definition["equivalent_density"]))
-                elif construction == "metal":
-                    material = MaterialProperties.from_name(definition["material"])
-                    copv = MetalPressureVessel(**common,
-                        material_density=material.density,
-                        design_pressure=float(definition["design_pressure"]),
-                        pressure_fos=float(definition.get("pressure_fos", self.cfg["advanced"]["tank_pressure_fos"])),
-                        allowable_stress=float(definition.get("weld_allowable", self.cfg["advanced"]["weld_allowable"])))
-                else:
-                    raise ValueError(f"Unknown pressurant construction {construction!r}; use copv or metal")
-                tanks[tank_id] = PressTank(self.cfg, copv, tank_id=tank_id)
+                tanks[tank_id] = PressTank(self.cfg, tank_id=tank_id)
             else:
                 raise ValueError(
                     f"Unknown tank type {tank_type!r} for tank {tank_id!r}"
@@ -153,10 +132,47 @@ class Vehicle:
                         if branch.get("component") == "bang_bang_valve" and branch["to"] in target_nodes]
         return nominal + max(float(control["pressure_band"]) for control in controls) if controls else 1.1 * nominal
 
+    def _resolve_section_masses(self):
+        """Resolve calculated component masses without mutating the config."""
+        definitions = deepcopy(self.cfg["vehicle"]["sections"])
+        placements = [(i, d) for i, d in enumerate(definitions)
+                      if "battery" in d.get("masses", {})]
+        self.battery_sizing = {}
+        if "battery" not in self.cfg["prop_system"]:
+            if any(d["masses"]["battery"] == "auto" for _, d in placements):
+                raise ValueError("battery: auto requires prop_system.battery sizing")
+            return definitions
+        if len(placements) != 1:
+            raise ValueError("Battery sizing requires exactly one section with masses.battery")
+        if self.propulsion is None:
+            raise ValueError("Build vehicle with a sized PropSystem before resolving battery mass")
+        battery_sizing = self.propulsion.battery_sizing
+        if not battery_sizing:
+            raise ValueError("PropSystem has no battery sizing for the configured battery")
+        index, definition = placements[0]
+        configured = definition["masses"]["battery"]
+        automatic = configured == "auto"
+        selected = battery_sizing["calculated_mass_kg"] if automatic else configured
+        if isinstance(selected, bool):
+            raise ValueError("Battery mass must be numeric or auto")
+        selected = float(selected)
+        if not isfinite(selected) or selected < 0:
+            raise ValueError("Battery mass must be finite and non-negative")
+        definition["masses"]["battery"] = selected
+        override = definition.get("mass_override", definition.get("mass"))
+        self.battery_sizing = dict(deepcopy(battery_sizing), section_index=index,
+            section_type=definition["type"],
+            mass_source="section_override" if override is not None else
+                        ("calculated" if automatic else "battery_override"),
+            selected_mass_kg=selected,
+            used_mass_kg=selected if override is None else None,
+            section_mass_override_kg=override)
+        return definitions
+
     def _build_sections(self) -> list:
         sections = []
         used_tanks = set()
-        for definition in self.cfg["vehicle"]["sections"]:
+        for definition in self._resolve_section_masses():
             section_type = definition["type"]
             if section_type == "nosecone":
                 section = Nosecone(self.cfg)

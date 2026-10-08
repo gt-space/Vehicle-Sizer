@@ -4,7 +4,13 @@ Builds ordered vehicle sections and calculates geometry, mass distribution, COM,
 
 Inputs: `vehicle.sections`, tank and material definitions, fluid properties, and engine dimensions. Outputs: section objects, axial arrays, fluid-tank geometry, and aero-table inputs.
 
-COPVs use the configured empirical wall rule and equivalent density. Metal tanks use pressure sizing. Optional tank dimensions and section masses replace or supplement calculated values.
+`PressTank` directly sizes pressurant tanks from their definitions, without a
+separate vessel object. `construction: copv` retains the empirical wall rule and
+equivalent-density mass model. `construction: metal` (the default) shares pressure
+sizing and cylinder/endcap shell-volume calculations with `PropTank`. Optional
+wall gauge, length and tank mass override calculated values; named section masses
+and section mass overrides apply during assembly. `PressTankGeometry` exports
+immutable geometry to the fluid network.
 
 `vehicle.Iyy` supplies whole dry-vehicle pitch inertia; fluid contributions and COM remain calculated. `engine.exit_diameter` can set the aero exit input independently of physical nozzle area.
 

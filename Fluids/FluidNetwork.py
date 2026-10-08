@@ -148,8 +148,6 @@ class FluidNetwork:
             raise ValueError(f"Unsupported branch kind '{kind}' for '{key}'")
         kwargs = {'phase': definition.get('phase', 'gas' if kind in ('compressible_loss', 'relief_valve') else 'liquid')} if kind in ('loss', 'incompressible_loss', 'compressible_loss', 'pump', 'switch_valve', 'relief_valve') else {}
         branch = classes[kind](key, definition, **kwargs)
-        if getattr(branch, 'sense_node', branch.from_node) not in self.nodes:
-            raise ValueError(f"Branch {key!r} references an unknown sense_node")
         branch.set_enabled(definition.get('enabled', True))
         return branch
 
@@ -607,6 +605,9 @@ class FluidNetwork:
         """Atomically map modes/inventories, initialize and validate a restart."""
         checkpoint = self._checkpoint()
         try:
+            for kind, key, name in events:
+                if kind == 'node':
+                    self.nodes[key].validate_event(name, t)
             self._apply_events(t, y, ydot, events)
             self._accept()
         except Exception:
@@ -810,10 +811,13 @@ class FluidNetwork:
             step = self.session.advance(endpoint)
             self.time, self.y, self.ydot = step.time, step.y, step.ydot
             if step.roots.any():
-                self._accept()  # Record the limiting pre-event state as well.
                 events = [self.root_names[i] for i in np.flatnonzero(step.roots)]
                 events.extend(key for key, event in self._event_specs(self.time, self.y, self.ydot).items()
                               if event.coincident)
+                for kind, key, name in events:
+                    if kind == 'node':
+                        self.nodes[key].validate_event(name, self.time)
+                self._accept()  # Record the limiting pre-event state as well.
                 # SUNDIALS reports coincident roots; mode preparation handles
                 # downstream phase/chamber changes caused by those events.
                 self.apply_events(self.time, self.y, self.ydot, events)

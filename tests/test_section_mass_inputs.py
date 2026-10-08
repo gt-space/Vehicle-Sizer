@@ -51,13 +51,10 @@ class SectionMassTests(unittest.TestCase):
                                area * tank.wall_thickness * tank.material.density)
 
     def test_copv_correlation_and_override(self):
-        from Vehicle.COPV import COPV
-        copv = COPV(.07, .2794, 1.75, 2238.6,
-                    thickness_slope=.03, thickness_intercept=.004)
+        from Vehicle.sections.PressTank import PressTank
+        cfg = load_config('Configs/flight_pressure_fed_regulator.yaml')
+        copv = PressTank(cfg, 'press_tank')
         self.assertAlmostEqual(copv.wall_thickness, .03 * .2794 + .004)
-        self.assertAlmostEqual(copv.mass, copv.shell_volume * 2238.6)
-        overridden = COPV(.07, .2794, 1.75, 2238.6, mass=18)
-        self.assertEqual(overridden.mass, 18)
-
-if __name__ == '__main__':
-    unittest.main()
+        self.assertAlmostEqual(copv._get_dry_mass(), copv.shell_volume * 2238.6)
+        cfg['tanks']['press_tank']['mass'] = 18
+        self.assertEqual(PressTank(cfg, 'press_tank')._get_dry_mass(), 18)

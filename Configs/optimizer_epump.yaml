@@ -1,13 +1,12 @@
-# 17 variables, 68 DE population members; evaluation budget below.
-base_config: Configs/flight_pressure_fed_regulator.yaml
+base_config: Configs/flight_pump_fed_regulator_epump.yaml
 tank_ids:
   oxidizer: ox_tank
   fuel: fuel_tank
   pressurant: press_tank
 seed: 42
 max_evaluations: 10000       # Total candidate evaluations, including initial population
-maxiter: 147                 # Enough generations for 10000 evaluations at 68 members
-popsize: 4
+maxiter: 117                 #
+popsize: 5
 reference_mass: 250.0
 hard_constraints:
   - max_length_to_diameter
@@ -57,7 +56,6 @@ evaluation_overrides:
   simulation.t_end: 600.0
   environment.max_altitude: 300000.0
 bounds:
-  # Common combustion-table sizing interval, rounded inward (Pa absolute).
   exit_pressure: [40726.0, 103421.0]
   omld:
   - 0.22636
@@ -90,25 +88,27 @@ bounds:
   - 1400000.0
   - 3500000.0
   mixture_ratio:
-  - 1.5
-  - 3.0
+  - 1.9
+  - 2.5
   thrust:
   - 10000.0
   - 25000.0
   copv_pressure:
   - 21000000.0
-  - 30000000.0
+  - 35000000.0
   copv_volume:
+  - 0.015
   - 0.05
-  - 0.1
   oxidizer_mass:
   - 100.0
   - 300.0
   fuel_mass:
   - 80.0
   - 150.0
+  oxidizer_pump_head: [500000.0, 4000000.0]
+  fuel_pump_head: [500000.0, 4000000.0]
 constraint_scales:
-  max_length_to_diameter: 5.0 # Five L/D units = one normalized violation
+  max_length_to_diameter: 5.0
   max_aoa_deg: 1.0
   goal_apogee: 10000.0
   max_burn_duration: 5.0

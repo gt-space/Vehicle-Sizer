@@ -4,6 +4,7 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 from math import isfinite
 from copy import deepcopy
 from constraints import DesignInfeasible
+from Fluids.helpers.battery import size_battery
 from Fluids.helpers.pump_curve import scaled_pump_curve
 from Fluids.design import initial_conditions, pump_definition, size_electric_pump
 from Fluids.helpers.templates import load_template
@@ -76,6 +77,13 @@ class PropSystem:
             raise ValueError("Every configured pump must be referenced by exactly one template branch")
         if any(value < 0 for value in self.sizing_constraints.values()):
             raise DesignInfeasible(self.sizing_constraints, self.pump_sizing)
+        self.battery_sizing = {}
+        if "battery" in self.cfg:
+            if not self.pump_sizing:
+                raise ValueError("Battery sizing requires electric pumps")
+            self.battery_sizing = size_battery(
+                self.cfg["battery"],
+                1000 * sum(pump["required_power_kw"] for pump in self.pump_sizing.values()))
         self.circuits, self.node_definitions, self.branch_definitions = circuits, nodes, branches
         self._bind_outputs()
         self._configure_constraints()

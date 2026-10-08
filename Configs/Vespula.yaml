@@ -1,8 +1,7 @@
-
 advanced:
-  tank_pressure_fos: 1.5
-  weld_allowable: 138000000.0
-  endcap_mass_multiplier: 1.5
+  tank_pressure_fos: 1.5 #overridden
+  weld_allowable: 138000000.0 #overridden
+  endcap_mass_multiplier: 1.5 #overridden
   t_wall_min: 0.001
   fluid_network:
     jacobian: colored
@@ -30,17 +29,17 @@ aero:
   q_cutoff_Pa: 150
   model: AeroTables/dragmodel.h5
   nose: vonkarman
-  finish: 20um                 # PLACEHOLDER surface finish
+  finish: 20um                 #guesstimate;
   fins_on_boattail: true
 
 nosecone:
   profile: von_karman
   fineness_ratio: 4.0          # Manually at aero lower bound; source is 3.95578947.
-  wall_thickness: 0.007      # PLACEHOLDER
-  material: carbon_fiber     # PLACEHOLDER
-  tip_radius: 0.01           # PLACEHOLDER
+  wall_thickness: 0.007      # overridden
+  material: carbon_fiber     # overridden w/ mass
+  tip_radius: 0.0127           #
 avi_bay:
-  length: 0.15               # PLACEHOLDER split within the nose profile
+  length: 0.2032               # 8 in; from CAD
 
 fin_can:
   fin_count: 4
@@ -50,10 +49,10 @@ fin_can:
   # Preserve supplied 0.1401318 m sweep with the configured tip chord.
   sweep_fraction: 0.5501595532508974
   fin_thickness: 0.00635     #0.25 in
-  boattail_length: 0.508     #20 in
-  boattail_aft_diameter: 0.24130048260096523 # PLACEHOLDER: straight aft body
-  boattail_wall_thickness: 0.00318          # PLACEHOLDER
-  material: carbon_fiber                   # PLACEHOLDER
+  boattail_length: 0.5314     #23 in; from CAD
+  boattail_aft_diameter: 0.196 # 7.72 in; from CAD
+  boattail_wall_thickness: 0.00318          # guess
+  material: carbon_fiber                   # overriden w/ mass input
 
 
 inter_tank:
@@ -61,8 +60,8 @@ inter_tank:
   stringer_material: aluminum_7075
 
 engine:
-  thrust_tilt_deg: 0.6       # Positive = counterclockwise from body axis, in pitch plane.
-  mass: 25.04084
+  thrust_tilt_deg: 0.0       # Positive = counterclockwise from body axis, in pitch plane.
+  mass: 25.40115
   length: 0.495
   throat_area: 0.003903218
   expansion_ratio: 4.066
@@ -70,8 +69,8 @@ engine:
   exit_diameter: 0.14986    # (5.9 in), should be 5.4 but aero tables dont go that low
   oxidizer: LOX
   fuel: RP-1
-  cstar_efficiency: 0.9     # performance efficiencies
-  cf_efficiency: 0.9
+  cstar_efficiency: 0.90     # performance efficiencies
+  cf_efficiency: 0.90
 
 prop_system:
   template: Configs/templates/Vespula.yaml
@@ -104,19 +103,15 @@ prop_system:
       T: 298.15
   switches:
     OX_SWITCH:
-      CdA_before: 3.52280714792e-6
-      CdA_after: 4.20364836688e-6
+      CdA_initial: 3.52280714792e-6  # Low-flow area.
+      CdA_switch: 7.7264555148e-6    # Low + high-flow areas.
       switch_pressure: 17237000.0
       switch_direction: falling
-      initially_switched: false
-      latched: true
     FUEL_SWITCH:
-      CdA_before: 1.61776257092e-6
-      CdA_after: 2.01606435496e-6
+      CdA_initial: 1.61776257092e-6  # Low-flow area.
+      CdA_switch: 3.63382692588e-6   # Low + high-flow areas.
       switch_pressure: 17237000.0
       switch_direction: falling
-      initially_switched: false
-      latched: true
   reliefs:
     OX_RELIEF:
       CdA: 5.76902072e-5
@@ -135,9 +130,9 @@ tanks:
 
   ox_tank:
     type: propellant
-    propellant_mass: 88.0
+    propellant_mass: 88
     volume: 0.08582
-    length: 2.1913619
+    length: 2.02184
     material: aluminum_6061                 # PLACEHOLDER
     wall_thickness: 0.006350241300482618     # Approx. ID 2*source radius (0.1143 m).
     ellipse_ratio: 1.75                     # PLACEHOLDER head shape
@@ -148,7 +143,7 @@ tanks:
     type: propellant
     propellant_mass: 41.8
     volume: 0.05976
-    length: 1.428973
+    length: 1.29032
     material: aluminum_6061                 # PLACEHOLDER
     wall_thickness: 0.006350241300482618
     ellipse_ratio: 1.75                     # PLACEHOLDER head shape
@@ -183,36 +178,31 @@ property_models:
         n-Dodecane: ndodecane_pt
 
 vehicle:
-  OMLD: 0.24130048260096523
+  OMLD: 0.2413
   dx: 0.01
   Iyy: 2293.484691049
   sections:
     - {type: nosecone, mass_override: 23.0}
     - {type: avi_bay, mass_override: 10.0}
+    - {type: press_tank, tank_id: press_tank, mass_override: 18.5}
     - type: inter_tank
-      length: 0.17891501959613908
-      mass_override: 10.0
+      length: 0.50165
+      mass_override: 12.0
       stringer_unit_mass: 0.0
       stiffness_EI: 2590060.99915326
-    - {type: press_tank, tank_id: press_tank, mass_override: 15.0}
+    - {type: prop_tank, tank_id: fuel_tank, mass_override: 10.0}
     - type: inter_tank
-      length: 0.49083045
-      mass_override: 10.0
-      stringer_unit_mass: 0.0
-      stiffness_EI: 2590060.99915326
-    - {type: prop_tank, tank_id: fuel_tank, mass_override: 9.37}
-    - type: inter_tank
-      length: 0.34633255
-      mass_override: 10.0
+      length: 0.50165
+      mass_override: 12.0
       stringer_unit_mass: 0.0
       stiffness_EI: 2590060.99915326
     - {type: prop_tank, tank_id: ox_tank, mass_override: 13.0}
     - type: inter_tank
-      length: 0.35185905
+      length: 0.358775
       mass_override: 20.35916
       stringer_unit_mass: 0.0
       stiffness_EI: 2590060.99915326
-    - {type: fin_can, mass_override: 7.0}
+    - {type: fin_can, mass_override: 9.0}
 
 simulation:
   dt: 0.1

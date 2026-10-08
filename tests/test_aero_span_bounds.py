@@ -112,7 +112,7 @@ def test_current_configs_size_and_export_valid_new_deck_geometry(model, architec
     pure, combustion = opt.property_sources(cfg)
     vehicle = Vehicle(cfg, pure)
     with opt.PropSystem(cfg, vehicle.tanks, pure, combustion) as prop:
-        vehicle.build(Engine(cfg['engine']['mass'], cfg['engine']['length'], prop.exit_area))
+        vehicle.build(prop)
         candidate = vehicle.aero_candidate()
         model.check(candidate)
         assert all(record.margin >= 0 for record in opt.domain_records(candidate, model).values())

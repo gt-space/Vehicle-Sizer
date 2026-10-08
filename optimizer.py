@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import time
 import traceback
 from collections import Counter, deque
-from errors import failure_details, SearchFailureLimit, LookupBoundsError
+from errors import failure_details, SearchFailureLimit, LookupBoundsError, UnsupportedPhaseChangeError
 
 from scipy.optimize._differentialevolution import DifferentialEvolutionSolver
 import yaml
@@ -23,7 +23,7 @@ from constraints import ConstraintRecord, DesignInfeasible, EvaluationFailure, G
 from Fluids.PropSystem import PropSystem
 from Fluids.helpers.templates import load_template
 from Fluids.design import initial_conditions
-from Vehicle.Engine import Engine
+from Vehicle.sections.PressTank import PressTank
 from Vehicle.Vehicle import Vehicle
 from simulation import project_path, property_sources, simulate
 from simulation_types import SimResult
@@ -117,14 +117,7 @@ def domain_records(candidate, model):
 def pressurant_inner_radius(cfg, tank):
     """Match the selected vessel's wall model before checking its capacity."""
     diameter = float(tank["outer_diameter"])
-    if tank["construction"] == "copv":
-        wall = tank["thickness_slope"] * diameter + tank["thickness_intercept"]
-    elif tank["construction"] == "metal":
-        fos = tank.get("pressure_fos", cfg["advanced"]["tank_pressure_fos"])
-        allowable = tank.get("weld_allowable", cfg["advanced"]["weld_allowable"])
-        wall = fos * tank["design_pressure"] * diameter / (2 * allowable)
-    else:
-        raise ValueError(f"Unknown pressurant construction {tank['construction']!r}")
+    wall, _ = PressTank.wall_sizing(cfg, tank)
     radius = diameter / 2 - wall
     if not isfinite(radius) or radius <= 0 or tank["ellipse_ratio"] <= 1:
         raise ValueError("Invalid pressurant diameter, sized wall or ellipse ratio")
@@ -146,7 +139,7 @@ def primitive_records(cfg, tank_ids):
     head_volume = 4 * pi * radius**3 / (3 * tank["ellipse_ratio"])
     cylinder = ((tank["volume"] - head_volume) / (pi * radius**2)
                 if tank.get("length") is None else tank["length"] - 2 * radius / tank["ellipse_ratio"])
-    margins["geometry.copv_cylinder"] = (cylinder - 1e-9, "m")
+    margins["geometry.pressurant_cylinder"] = (cylinder - 1e-9, "m")
     template = load_template(cfg, validate_pressures=False)
     for branch in template['branches'].values():
         if branch.get('component', branch.get('model')) == 'pump':
@@ -399,22 +392,26 @@ class Evaluator:
         if any(r.margin < 0 for r in records.values()):
             return rejection(records), set()
         propulsion = None
+        vehicle = None
         try:
             # ponytail: size twice for passing candidates; share a prepared-build API
             # only if profiling shows construction materially affects search time.
             vehicle = Vehicle(cfg, self.pure)
             propulsion = PropSystem(cfg, vehicle.tanks, fluid_properties=self.pure,
                                     combustion_properties=self.combustion)
-            vehicle.build(Engine(cfg["engine"]["mass"], cfg["engine"]["length"], propulsion.exit_area))
+            vehicle.build(propulsion)
             vehicle_limit_margins(cfg, vehicle)
         except DesignInfeasible as error:
-            result = SimResult(termination="infeasible_initial_design", constraints=dict(error.constraints))
+            result = SimResult(termination="infeasible_initial_design", constraints=dict(error.constraints),
+                               battery_sizing=deepcopy(getattr(vehicle, "battery_sizing", {})))
             if isinstance(error, GeometryError):
                 result.geometry_constraints, result.constraints = result.constraints, {}
             return finalize(result, configured_limits(cfg)), self.redundant(propulsion, cfg)
         records = domain_records(vehicle.aero_candidate(), self.model)
         if any(r.margin < 0 for r in records.values()):
-            return rejection(records), self.redundant(propulsion)
+            result = rejection(records)
+            result.battery_sizing = deepcopy(vehicle.battery_sizing)
+            return result, self.redundant(propulsion)
         result = simulate(cfg, pure_properties=self.pure, combustion_properties=self.combustion,
                           aero_model=self.model)
         if result.max_altitude > cfg["environment"]["max_altitude"]:
@@ -437,11 +434,11 @@ class Evaluator:
         except GeometryError as error:
             result = rejection({k: ConstraintRecord(v, "optimizer", "sizing", "m") for k, v in error.constraints.items()})
             redundant = ()
-        except (EvaluationFailure, LookupBoundsError) as error:
+        except (EvaluationFailure, LookupBoundsError, UnsupportedPhaseChangeError) as error:
             phase = getattr(error, 'phase', 'sizing')
             details = failure_details(error, phase=phase)
             if details['fatal'] or (phase not in ("runtime", "flight initialization")
-                                    and details['kind'] != 'table_domain_exceeded'):
+                                    and details['kind'] not in {'table_domain_exceeded', 'unsupported_phase_change'}):
                 raise
             failure = traceback.format_exc()
             result = getattr(error, 'partial_result', None) or SimResult()
@@ -462,6 +459,7 @@ class Evaluator:
         entry = dict(evaluation=self.count, variables=variables,
                      search_coordinates=list(map(float, values)), score_class=candidate_class(result), failure=failure,
                      failure_details=details,
+                     battery_sizing=result.battery_sizing,
                      pressure_tracking=result.pressure_tracking,
                      min_stability_length_fraction=result.min_stability_length_fraction,
                      max_stability_length_fraction=result.max_stability_length_fraction,
@@ -621,7 +619,22 @@ def verify_best(evaluator):
     return result.accepted
 
 
-def optimize(settings, output):
+def optimize(settings, output, *, workers=None, timeout=None, candidates_per_worker=None,
+             resume=False, profile=False):
+    workers = settings.get('workers', 1) if workers is None else workers
+    timeout = settings.get('worker_timeout', 300.) if timeout is None else timeout
+    candidates_per_worker = (settings.get('candidates_per_worker', 3)
+                             if candidates_per_worker is None else candidates_per_worker)
+    for name, value in (('workers', workers), ('candidates_per_worker', candidates_per_worker)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f'{name} must be a positive integer')
+    if not isfinite(timeout) or timeout <= 0:
+        raise ValueError('worker timeout must be finite and positive')
+    if workers > 1 or resume or profile:
+        from optimizer_workers import optimize_parallel
+        return optimize_parallel(settings, output, workers=workers, timeout=timeout,
+                                 candidates_per_worker=candidates_per_worker,
+                                 resume=resume, profile=profile)
     base = load_config(project_path(settings["base_config"]))
     model = DragModel(project_path(base["aero"]["model"]))
     cfg, settings = prepare(settings, model)
@@ -655,18 +668,29 @@ def optimize(settings, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("config", nargs="?", default="Configs/optimizer.yaml")
+    parser.add_argument("config", nargs="?", default="Configs/optimizer_pressure_fed.yaml")
     parser.add_argument("--output", required=True, help="New directory for this search")
     parser.add_argument("--max-evaluations", type=int)
+    parser.add_argument('--workers', type=int, help='Concurrent candidate processes (default: config workers or 1)')
+    parser.add_argument('--timeout', type=float, help='Wall-time limit in seconds per worker candidate (default: 300)')
+    parser.add_argument('--candidates-per-worker', type=int, help='Recycle after this many candidates (default: 3)')
+    parser.add_argument('--resume', action='store_true', help='Replay saved results and continue a process-worker search')
+    parser.add_argument('--profile', action='store_true', help='Collect per-candidate timings in worker processes')
     args = parser.parse_args()
     settings = load_config(args.config)
     if args.max_evaluations is not None:
         settings["max_evaluations"] = args.max_evaluations
-    summary = optimize(settings, args.output)
+    summary = optimize(settings, args.output, workers=args.workers, timeout=args.timeout,
+                       candidates_per_worker=args.candidates_per_worker,
+                       resume=args.resume, profile=args.profile)
     print(json.dumps(summary, indent=2))
     if not summary["accepted"]:
         print("No accepted design survived verification." if summary["search_accepted"] else "No accepted design found.")
 
 
 if __name__ == "__main__":
+    # Worker helpers import optimizer; reuse this module rather than loading a
+    # second copy with different exception classes when invoked as a script.
+    import sys
+    sys.modules['optimizer'] = sys.modules[__name__]
     main()

@@ -1,4 +1,5 @@
 """Generic CLI tables from the built design and synchronized flight states."""
+from copy import deepcopy
 from collections import Counter
 import math
 
@@ -28,14 +29,13 @@ def collect_design_summary(cfg, vehicle, propulsion):
         if "tank_id" in definition:
             tank_id = definition["tank_id"]
             tank_cfg = cfg["tanks"][tank_id]
-            vessel = getattr(section, "copv", section)
             tanks.append(dict(
                 id=tank_id, type=tank_cfg["type"],
-                volume=float(vessel.volume), length=float(vessel.length),
-                diameter=float(vessel.diameter if hasattr(section, "copv") else section.OMLD),
-                thickness=float(vessel.wall_thickness),
+                volume=float(section.volume), length=float(section.length),
+                diameter=float(section.diameter if tank_cfg["type"] == "pressurant" else section.OMLD),
+                thickness=float(section.wall_thickness),
                 material=(f"Equivalent density {tank_cfg['equivalent_density']:g} kg/m³"
-                          if hasattr(section, "copv") and tank_cfg.get("construction", "copv") == "copv" and "equivalent_density" in tank_cfg
+                          if tank_cfg["type"] == "pressurant" and tank_cfg.get("construction", "metal") == "copv" and "equivalent_density" in tank_cfg
                           else tank_cfg.get("material", "N/A")),
                 initial=propulsion.initial_states[tank_id],
             ))
@@ -46,6 +46,7 @@ def collect_design_summary(cfg, vehicle, propulsion):
     )
     physical_exit_diameter = 2 * np.sqrt(propulsion.throat_area * propulsion.expansion_ratio / np.pi)
     return dict(
+        battery_sizing=deepcopy(getattr(vehicle, "battery_sizing", {})),
         sections=sections, tanks=tanks, length=float(vehicle.length),
         diameter=float(cfg["vehicle"]["OMLD"]),
         dry_inertia={"Ixx": float(vehicle.Ixx), "Iyy": float(vehicle.Iyy)},
@@ -85,6 +86,18 @@ def build_run_tables(cfg, result):
     nodes = initial["plant"].fluids.node
     tank_nodes = {node["tank_id"]: node for node in nodes.values() if node.get("tank_id")}
     tables = []
+    battery = result.battery_sizing
+    if battery:
+        tables.append(_table("Electric pump battery (power-limited)", ["Parameter", "Value"], [
+            ["Pump electrical power [W]", _number(battery["power_draw_w"])],
+            ["Cells (series x parallel)", f'{battery["cells_in_series"]} x {battery["cells_in_parallel"]}'],
+            ["Calculated mass [kg]", _number(battery["calculated_mass_kg"], 3)],
+            ["Selected mass [kg]", _number(battery["selected_mass_kg"], 3)],
+            ["Separate battery mass used [kg]", _number(battery["used_mass_kg"], 3)],
+            ["Section (nose to aft)", battery["section_index"] + 1],
+            ["Mass source", battery["mass_source"]],
+            ["Total section override [kg]", _number(battery["section_mass_override_kg"], 3)],
+        ]))
     tables.append(_table("Vehicle sections (nose to aft; engine overlaps its housing)",
                          ["Section", "Station [m]", "Length [m]", "Dry mass [kg]"],
                          [[name, _number(x, 3), _number(length, 4), _number(mass)]

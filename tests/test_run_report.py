@@ -112,10 +112,10 @@ def test_main_prints_tables(monkeypatch, capsys, tmp_path):
 def test_copv_report_uses_equivalent_density_without_material():
     cfg, _ = fixture()
     cfg['vehicle']['sections'] = [{'type': 'press_tank', 'tank_id': 'nitrogen'}]
-    cfg['tanks'] = {'nitrogen': {'type': 'pressurant', 'equivalent_density': 2238.6}}
+    cfg['tanks'] = {'nitrogen': {'type': 'pressurant', 'construction': 'copv', 'equivalent_density': 2238.6}}
     vessel = SimpleNamespace(volume=.07, length=1.5, diameter=.2794, wall_thickness=.012382)
-    vehicle = SimpleNamespace(sections=[SimpleNamespace(copv=vessel, start_station=0.,
-        length=1.5, mass=np.array([20.]))], length=1.5, Ixx=1., Iyy=2.)
+    vehicle = SimpleNamespace(sections=[SimpleNamespace(volume=vessel.volume, diameter=vessel.diameter,
+        wall_thickness=vessel.wall_thickness, start_station=0., length=1.5, mass=np.array([20.]))], length=1.5, Ixx=1., Iyy=2.)
     propulsion = SimpleNamespace(initial_states={'nitrogen': {'T': 300.}},
         Pc_target=2e6, MR_target=2.1, expansion_ratio=5., cstar_efficiency=.85,
         cf_efficiency=.95, throat_area=.01, mdot_total=8., design_thrust=16000.,

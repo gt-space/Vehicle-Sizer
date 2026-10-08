@@ -265,8 +265,8 @@ def test_continuous_flow_reversal_changes_donor(kind):
              'boundary': dict(component='boundary', P=1e5, fluids={'gas': fluid})}
     branch = loss('tank', 'boundary')
     if kind == 'switch_valve':
-        branch.update(component=kind, CdA_before=1e-5, CdA_after=2e-5,
-                      switch_pressure=6e5, sense_node='boundary')
+        branch.update(component=kind, CdA_initial=1e-5, CdA_switch=2e-5,
+                      switch_pressure=6e5)
     with FluidNetwork(nodes, {'line': branch}, fluid_properties=Properties()) as net:
         net.initialize(bcs={'boundary': lambda t: {'P': 1e5 + t * 2e5}})
         result = net.update(3.)
@@ -301,7 +301,8 @@ def test_regulator_enters_regulation_from_either_side(pressure):
         assert any(e['name'] == 'regulate' for e in result['events'])
 
 
-def test_condensation_and_evaporation_preserve_inventory_and_energy():
+def test_condensation_rejects_at_located_event_and_rolls_back_inventory():
+    from errors import UnsupportedPhaseChangeError
     from FluidTables.PropertyModels import SaturationProperties
     class Saturating(Properties):
         def supports_saturation(self, fluid):
@@ -318,14 +319,19 @@ def test_condensation_and_evaporation_preserve_inventory_and_energy():
     tank['state0']['U'] *= 310 / 300
     with FluidNetwork({'tank': tank}, {}, fluid_properties=Saturating()) as net:
         initial = net.initialize(heat_rate={'tank': {'gas': -100.}})
-        cooled = net.update(3.)
-        assert net.nodes['tank'].mode == 'saturated'
-        assert cooled['node']['tank']['U'] == pytest.approx(initial['node']['tank']['U'] - 300., abs=.001)
-        heated = net.update(5., heat_rate={'tank': {'gas': 100.}})
+        with pytest.raises(UnsupportedPhaseChangeError) as failure:
+            net.update(3.)
+        assert failure.value.details['node_id'] == 'tank'
+        assert failure.value.details['event'] == 'condense'
+        assert failure.value.details['from_phase'] == 'gas'
+        assert failure.value.details['to_phase'] == 'saturated'
+        assert failure.value.details["time_s"] == pytest.approx(2.5, abs=1e-5)
         assert net.nodes['tank'].mode == 'gas'
-        assert heated['node']['tank']['m'] == initial['node']['tank']['m']
-        assert heated['node']['tank']['U'] == pytest.approx(initial['node']['tank']['U'] + 200., abs=.001)
-        assert [e['name'] for e in net.events] == ['condense', 'evaporate']
+        assert net.time == 0.
+        assert net.state.nodes['tank']['m'] == initial['node']['tank']['m']
+        assert net.state.nodes['tank']['U'] == initial['node']['tank']['U']
+        assert not net.events
+
 
 
 @pytest.mark.parametrize('tables', [False, True])

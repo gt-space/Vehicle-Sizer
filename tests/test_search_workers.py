@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from examples import run_optimizer_search as search
+import optimizer_workers as search
 
 
 @pytest.mark.parametrize('budget,expected,generations', [(100, 32, 3), (11, 11, 0)])

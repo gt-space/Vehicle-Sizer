@@ -286,10 +286,10 @@ def test_conditional_geometry_matches_actual_sizing_and_user_bounds(settings, tm
         candidate['prop_system']['pumps']['fuel_pump']['pressure_rise_pa'] = 5e5
         vehicle = opt.Vehicle(candidate, pure)
         prop = opt.PropSystem(candidate, vehicle.tanks, pure, combustion)
-        vehicle.build(opt.Engine(candidate['engine']['mass'], candidate['engine']['length'], prop.exit_area))
+        vehicle.build(prop)
         assert vehicle.geometry_constraints['engine.nozzle'] >= 0
         assert vehicle.geometry_constraints['engine.length'] >= 0
-        assert vehicle.geometry_constraints['press_tank.copv_airframe'] >= 0
+        assert vehicle.geometry_constraints['press_tank.airframe'] >= 0
 
 
 def test_conditional_geometry_rejects_empty_user_interval(settings, tmp_path):

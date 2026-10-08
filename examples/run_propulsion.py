@@ -19,7 +19,7 @@ from Thermals.heat_sources import thermal_model
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('config', nargs='?', type=Path,
-                        default=ROOT / 'Configs/flight_pump_fed_regulator.yaml')
+                        default=ROOT / 'Configs/flight_pump_fed_regulator_epump.yaml')
     parser.add_argument('--duration', type=float, default=1.)
     parser.add_argument('--dt', type=float, default=.1)
     parser.add_argument('--ambient-pressure', type=float, default=101325.)

@@ -1,13 +1,25 @@
 import unittest
-from dataclasses import replace
+from copy import deepcopy
 
 import numpy as np
 from CoolProp.CoolProp import PropsSI
 
 from Vehicle.sections.PressTank import PressTankGeometry
 from Vehicle.sections.PropTank import PropTank, PropTankGeometry
-from Vehicle.COPV import COPV
+from Vehicle.sections.PressTank import PressTank
 from Vehicle.Material import MaterialProperties
+
+
+def make_press_tank(volume, diameter, ellipse_ratio, material_density, mass=None):
+    cfg = {"vehicle": {"dx": .01, "OMLD": diameter},
+           "nosecone": {"material": "carbon_fiber"},
+           "tanks": {"test": {"construction": "copv", "volume": volume,
+               "outer_diameter": diameter, "ellipse_ratio": ellipse_ratio,
+               "equivalent_density": material_density,
+               "thickness_slope": .03, "thickness_intercept": .004}}}
+    if mass is not None:
+        cfg["tanks"]["test"]["mass"] = mass
+    return PressTank(cfg, "test")
 
 
 class TankGeometryTests(unittest.TestCase):
@@ -33,7 +45,7 @@ class TankGeometryTests(unittest.TestCase):
         self.assertAlmostEqual(tank.wall_thickness, expected)
 
     def test_copv_calculates_length_and_internal_area(self):
-        copv = COPV(
+        copv = make_press_tank(
             volume=0.02,
             diameter=0.22,
             ellipse_ratio=1.75,
@@ -47,11 +59,11 @@ class TankGeometryTests(unittest.TestCase):
         )
         self.assertAlmostEqual(recovered_volume, copv.volume)
         self.assertGreater(copv.internal_area, 0.0)
-        self.assertEqual(copv.mass, 18.2)
+        self.assertEqual(copv._get_dry_mass(), 18.2)
 
     def test_copv_mass_uses_wall_and_endcap_volume_when_not_overridden(self):
         density = 7870.0
-        copv = COPV(
+        copv = make_press_tank(
             volume=0.02,
             diameter=0.22,
             ellipse_ratio=1.75,
@@ -66,14 +78,16 @@ class TankGeometryTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(copv.shell_volume, expected_wall_volume)
-        self.assertAlmostEqual(copv.mass, density * expected_wall_volume)
+        self.assertAlmostEqual(copv._get_dry_mass(), density * expected_wall_volume)
 
-        larger = replace(copv, volume=0.04, mass=None)
+        cfg = deepcopy(copv.cfg)
+        cfg["tanks"]["test"]["volume"] = .04
+        larger = PressTank(cfg, "test")
         added_length = (larger.volume - copv.volume) / (np.pi * inner_radius**2)
         self.assertEqual(larger.inner_diameter, copv.inner_diameter)
         self.assertAlmostEqual(larger.length - copv.length, added_length)
         self.assertAlmostEqual(
-            larger.mass - copv.mass,
+            larger._get_dry_mass() - copv._get_dry_mass(),
             density * np.pi * (outer_radius**2 - inner_radius**2) * added_length,
         )
 

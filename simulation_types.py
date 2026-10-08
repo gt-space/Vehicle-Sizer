@@ -134,6 +134,7 @@ class SimResult:
     history: Optional[list] = None
     initial_state: Optional[dict] = None
     design_summary: Dict[str, Any] = field(default_factory=dict)
+    battery_sizing: Dict[str, Any] = field(default_factory=dict)
     pump_sizing: Dict[str, Dict[str, float]] = field(default_factory=dict)
     constraint_records: Dict[str, ConstraintRecord] = field(default_factory=dict)
     constraint_times: Dict[str, float] = field(default_factory=dict)

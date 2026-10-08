@@ -15,7 +15,6 @@ from FluidTables.PropertyModels import (
     TableCombustionPropertySource,
     TablePureFluidPropertySource,
 )
-from Vehicle.Engine import Engine
 from Vehicle.Vehicle import Vehicle
 from Thermals import ThermalNetwork
 from simulation_types import SimResult
@@ -96,6 +95,8 @@ def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
             return result
         except Exception as error:
             result = getattr(context["flight"], "result", None)
+            if result is not None:
+                result.battery_sizing = context.get("battery_sizing", {})
             raise EvaluationFailure(context["phase"], candidate, result) from error
         finally:
             try:
@@ -122,18 +123,21 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
         pure_properties, combustion_properties = property_sources(cfg)
     context["phase"] = "sizing"
     propulsion = None
+    vehicle = None
     try:
         vehicle = Vehicle(cfg, pure_properties)
         propulsion = PropSystem(cfg, vehicle.tanks, fluid_properties=pure_properties,
                                 combustion_properties=combustion_properties)
         context["propulsion"] = propulsion
-        vehicle.build(Engine(float(cfg["engine"]["mass"]), float(cfg["engine"]["length"]), propulsion.exit_area))
+        vehicle.build(propulsion)
+        context["battery_sizing"] = deepcopy(vehicle.battery_sizing)
         static_margins = vehicle_limit_margins(cfg, vehicle)
     except DesignInfeasible as error:
         geometry = isinstance(error, GeometryError)
         result = SimResult(termination="infeasible_initial_design",
                          constraints=dict(getattr(propulsion, "sizing_constraints", {})) if geometry else dict(error.constraints),
                          geometry_constraints=dict(error.constraints) if geometry else {},
+                         battery_sizing=deepcopy(getattr(vehicle, "battery_sizing", {})),
                          pump_sizing=getattr(propulsion, "pump_sizing", error.pump_sizing),
                          max_altitude=float(cfg["launch"]["altitude"]),
                          final_altitude=float(cfg["launch"]["altitude"]),
@@ -206,6 +210,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
             result.max_aoa_deg = max(result.max_aoa_deg, limit - error.constraints["max_aoa_deg"])
     else:
         result = flight.result
+    result.battery_sizing = deepcopy(vehicle.battery_sizing)
     result.pump_sizing = deepcopy(propulsion.pump_sizing)
     result.design_summary = design_summary
     result.constraints.update(static_margins)

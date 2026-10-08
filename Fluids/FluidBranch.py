@@ -315,31 +315,24 @@ class BangBangValveComponent(LossComponent):
 
 
 class SwitchValveComponent(LossComponent):
-    """Two configured restrictions selected by a sensed absolute pressure."""
+    """One permanent area change triggered by upstream absolute pressure."""
 
     def __init__(self, branch_id, definition, *, phase="liquid"):
         FluidBranch.__init__(self, branch_id, definition, phase=phase)
-        for name in ("CdA_before", "CdA_after"):
+        for name in ("CdA_initial", "CdA_switch"):
             value = definition.get(name)
             if value is None or not isfinite(float(value)) or float(value) < 0:
                 raise ValueError(f"{branch_id}.{name} must be finite and nonnegative")
-        self.sense_node = definition.get("sense_node", self.from_node)
         self.threshold = self._positive("switch_pressure")
         direction = definition.get("switch_direction", "rising")
         if direction not in ("rising", "falling"):
             raise ValueError("switch_direction must be rising or falling")
         self.sign = 1 if direction == "rising" else -1
-        self.latched = definition.get("latched", True)
-        self.is_switched = definition.get("initially_switched", False)
-        if not isinstance(self.latched, bool) or not isinstance(self.is_switched, bool):
-            raise ValueError("latched and initially_switched must be boolean")
-        self.reset = self._positive("reset_pressure") if not self.latched else None
-        if self.reset is not None and self.sign * (self.threshold - self.reset) <= 0:
-            raise ValueError("reset_pressure must provide hysteresis in switch_direction")
+        self.is_switched = False
 
     @property
     def cda(self):
-        return float(self.parameters["CdA_after" if self.is_switched else "CdA_before"])
+        return float(self.parameters["CdA_switch" if self.is_switched else "CdA_initial"])
 
     @property
     def active(self):
@@ -352,9 +345,9 @@ class SwitchValveComponent(LossComponent):
 
     def events(self, context):
         events = super().events(context)
-        if self.enabled and not (self.latched and self.is_switched):
-            pressure = context.nodes[self.sense_node]["P"]
-            margin = self.sign * (pressure - self.reset) if self.is_switched else self.sign * (self.threshold - pressure)
+        if self.enabled and not self.is_switched:
+            pressure = context.nodes[self.from_node]["P"]
+            margin = self.sign * (self.threshold - pressure)
             events["switch"] = Event(margin, at_zero=True)
         return events
 
@@ -362,7 +355,7 @@ class SwitchValveComponent(LossComponent):
         if name != "switch":
             return super().apply_event(name, values, time)
         was_switched = self.is_switched
-        self.is_switched = not was_switched
+        self.is_switched = True
         return dict(was_switched=was_switched, is_switched=self.is_switched, effective_CdA=self.cda)
 
 

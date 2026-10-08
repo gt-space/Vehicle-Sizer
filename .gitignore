@@ -5,6 +5,8 @@ __pycache__/
 outputs/
 FluidTables/*.h5
 AeroTables/*.h5
-tests/
+tests/*
+!tests/test_phase_change_rejection.py
+!tests/test_battery_sizing.py
 
 .venv/
