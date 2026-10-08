@@ -89,7 +89,7 @@ prop_system:
       fluid: Nitrogen
   nozzle_cd: 1.0
   ox_inj_stiffness: 0.2
-  ox_tank_inj_dp: 275790.291727
+  ox_tank_inj_dp: 206842.71879525 # 30 psi
   regulator:
     FUEL_REGULATOR:
       capacity_factor: 4.0
@@ -186,7 +186,7 @@ vehicle:
       press_tank_shell: 6.89 # kg, uniform addition over the sized COPV; no mass override.
       mounting: 2.0
       fitting: 1.0
-  - length: 0.12
+  - length: 0.3302 # 13 in
     type: inter_tank
     masses:
       stringers: 0.88
@@ -198,7 +198,7 @@ vehicle:
   - tank_id: ox_tank
     type: prop_tank
     masses: {} # Optional prop_tank_shell [kg]: uniform addition over the sized tank.
-  - length: 0.15
+  - length: 0.2794 # 11 in
     type: inter_tank
     masses:
       stringers: 0.74
@@ -210,7 +210,7 @@ vehicle:
   - tank_id: fuel_tank
     type: prop_tank
     masses: {} # Optional prop_tank_shell [kg]: uniform addition over the sized tank.
-  - length: 0.3
+  - length: 0.3048 # 12 in
     type: inter_tank
     masses:
       stringers: 0.81
