@@ -155,17 +155,120 @@ class SweepResults:
         return history_gradient(samples, y)
 
     def plot(self, x: str, y: str, **kwargs):
+        """Plot two scalar fields; ``x``/``y`` are names in ``fields()``.
+
+        Keyword options (all optional):
+            kind: 'auto' (line for swept x, scatter otherwise), 'line', 'scatter'.
+            title, xlabel, ylabel: Custom plot title and axis labels.
+            figsize: Figure size (width, height) in inches; default (8, 5).
+            grid: Show grid; default True.
+            legend, legend_title: Legend visibility/heading.
+            xlim, ylim: Optional (min, max) axis bounds.
+            xscale, yscale: Axis scale ('linear', 'log', etc.).
+            filters: Dict fixing other enabled sweep parameters in full_grid.
+            include_infeasible: Include infeasible rows with numeric outputs.
+            save: False/None to skip saving; True saves under <results_dir>/plots/;
+                  str/Path saves to that exact path (relative to working directory).
+            filename: Custom filename saved in <results_dir>/plots/ (or absolute
+                      path). Providing filename implies saving unless save=False.
+            file_format: File type such as 'png', 'jpeg', 'jpg', 'svg', or 'pdf'.
+                         Overrides any filename suffix, if given.
+            Single-curve lines/scatters default to black; color= overrides it.
+            show: Show Matplotlib window; None shows unsaved new figures.
+            dpi: Image DPI (default 160); ax: existing matplotlib Axes.
+            **style: Matplotlib styling, e.g. color, marker, linewidth,
+                     linestyle, alpha, label (as supported by plot/scatter).
+
+        Returns:
+            matplotlib.figure.Figure: Figure for further customization.
+        """
         from .plotting import plot_scalar
         return plot_scalar(self, x, y, **kwargs)
 
     def plot_history(self, y: str, group_by: str, **kwargs):
+        """Plot flight-history ``y`` against time, grouped by sweep parameter.
+
+        ``y`` must name a numeric column in ``history_fields()``. ``group_by``
+        must be an enabled sweep parameter. Additional keyword options:
+            title, xlabel, ylabel: Custom title and axis labels.
+            figsize: Figure size (width, height), default (8, 5).
+            grid, legend, legend_title: Grid/legend formatting.
+            xlim, ylim: Axis bounds; xscale, yscale: Axis scales.
+            filters: Dict holding other full_grid sweep inputs fixed.
+            include_infeasible: Include infeasible cases with histories.
+            case_labels: Dict mapping case IDs or sweep values to labels.
+            colorbar: None (automatic for >8 curves), True, or False.
+                      Large sweeps use a numeric colormap instead of a huge legend;
+                      the dashed black line identifies the baseline.
+            cmap: Matplotlib colormap name; default 'viridis'.
+            color_scale: Divide sweep values for colorbar display, e.g. 1e6
+                         to display chamber pressure in MPa rather than Pa.
+            colorbar_label: Custom colorbar title matching color_scale.
+            active_only: Automatically zoom the time axis around nonzero data;
+                         helpful for thrust histories with a long zero tail.
+            max_traces: Optional upper bound on number of drawn cases; an even
+                        subset of numeric sweep values is chosen.
+            save: None/False (do not save), True (auto PNG), or filename/path.
+            filename, file_format: Custom name and saved image format; see plot().
+            show: True/False for interactive display; None is automatic.
+            dpi: Saved-image DPI (default 160); ax: existing matplotlib Axes.
+            **style: Matplotlib line styling such as color, linewidth, alpha.
+
+        Returns:
+            matplotlib.figure.Figure: Figure for further customization.
+        """
         from .plotting import plot_history
         return plot_history(self, y, group_by, **kwargs)
 
     def plot_derivative(self, x: str, y: str, wrt: str, **kwargs):
+        """Plot numerical d(``y``)/d(``wrt``) against numeric scalar ``x``.
+
+        ``wrt`` must be an enabled continuous sweep input. Inputs/output field
+        names are discoverable with ``fields()``. Additional keyword options:
+            kind: 'line' (default) or 'scatter'.
+            title, xlabel, ylabel: Custom title and axis labels.
+            figsize: Figure size in inches, default (8, 5).
+            grid, legend, legend_title: Grid/legend formatting.
+            xlim, ylim: Axis bounds; xscale, yscale: Axis scales.
+            filters: Hold other full_grid sweep parameters fixed.
+            include_infeasible: Include infeasible cases with valid data.
+            save: None/False (no file), True (auto PNG), or filename/path.
+            filename, file_format: Custom name and saved image format; see plot().
+            The single derivative curve defaults to black (color overrides).
+            show: True/False for interactive display; None is automatic.
+            dpi: Image DPI, default 160; ax: existing matplotlib Axes.
+            **style: Matplotlib styling such as color, marker, linewidth.
+
+        Returns:
+            matplotlib.figure.Figure: Figure for further customization.
+        """
         from .plotting import plot_derivative
         return plot_derivative(self, x, y, wrt, **kwargs)
 
     def plot_history_derivative(self, y: str, wrt: str, **kwargs):
+        """Plot d(``y``(t))/d(``wrt``) versus flight time.
+
+        ``y`` is a numeric field from ``history_fields()``; ``wrt`` must be an
+        enabled continuous sweep parameter. Additional keyword options:
+            at: Sweep-coordinate value; plot nearest available derivative
+                curve only. None (default) plots all available curves.
+            title, xlabel, ylabel: Custom title and axis labels.
+            figsize: Figure size in inches, default (8, 5).
+            grid, legend, legend_title: Grid/legend formatting.
+            xlim, ylim: Axis bounds; xscale, yscale: Axis scales.
+            filters: Hold other full_grid sweep parameters fixed.
+            include_infeasible: Include infeasible cases with histories.
+            save: None/False (no file), True (auto PNG), or filename/path.
+            filename, file_format: Custom output name and format; see plot().
+            colorbar: None auto-enables for >8 curves; True/False override.
+            cmap, colorbar_label, color_scale: Numeric colormap options.
+            One derivative curve defaults to black.
+            show: True/False for interactive display; None is automatic.
+            dpi: Image DPI, default 160; ax: existing matplotlib Axes.
+            **style: Matplotlib line styling such as color, linewidth, alpha.
+
+        Returns:
+            matplotlib.figure.Figure: Figure for further customization.
+        """
         from .plotting import plot_history_derivative
         return plot_history_derivative(self, y, wrt, **kwargs)

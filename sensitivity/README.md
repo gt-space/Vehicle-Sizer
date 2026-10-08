@@ -47,8 +47,24 @@ python -m sensitivity Configs/sweeps/vespula_sweep.yaml
 
 - `one_at_a_time`: baseline plus one changed input at a time.
 - `full_grid`: baseline plus Cartesian product of all enabled input value lists. `max_cases` guards against accidentally huge runs.
-- Each run starts from a fresh deep-copy and uses the existing solver. A rejected design is recorded as `infeasible`, other exceptions as `error` with tracebacks. Successful flight results have status `completed`, which does **not** imply that apogee or all mission constraints were achieved.
-- Reusable property and aerodynamic models are created once for a normal serial sweep; fresh mutable propulsion/flight state is created for each case.
+- `sweep.workers`: positive integer specifying parallel flight-simulation processes. **Default is 1** (serial, same behavior as before). Use `workers: 2` or `workers: 4` to parallelize, or `workers: auto` to use up to four processes, leaving one logical CPU available when possible. Large fluid/engine/drag lookup tables are loaded independently once per worker, so RAM consumption increases with worker count. The same setting works when starting `run_sensitivities.py` with VS Code's Run Python File button, as well as from the command line. `--dry-run` only enumerates cases and does not launch worker processes.
+- `sweep.ignore_feasibility`: `false` by default. When `true`, bypass *engineering feasibility rejections* in the sizing/flight pipeline: vehicle maximum length/diameter ratio, pump electric power sizing margin, initial pressurant/propellant tank pressure and temperature minima, and the configured max-AoA flight rejection. The simulation still **calculates and reports** these signed margins. A completed flight is labeled `completed` despite negative margins, but `feasible` and `accepted` retain their actual engineering meanings. Other postflight limits (apogee, burn duration, dynamic pressure, rail T/W, stability) are recorded without stopping a valid flight. **Hard physical/model guards remain**: negative geometric packaging clearances (e.g., an engine/nozzle that will not fit), invalid inputs, out-of-range aerodynamic lookup data, pump-curve flow bounds, thermodynamic property domains, numerical integration failures, and no-apogee outcomes can still stop or fail a candidate. Different pressure-fed/pump-fed/regulator/bang-bang/gas-generator templates use the same controls, but this does **not** guarantee every case in every template can physically finish.
+- `sweep.ignore_wind`: `false` by default. When `true`, overrides `environment.wind.enabled: false` on each **temporary simulation candidate**, even if the base vehicle YAML enables wind. The wind file is not loaded for those flights. The original vehicle YAML, saved baseline definition, and ordinary standalone runs are unchanged.
+
+  ```yaml
+  sweep:
+    mode: one_at_a_time
+    workers: 6
+    ignore_feasibility: true
+    ignore_wind: true
+    parameters:
+      # Existing parameters, unchanged
+  ```
+
+  When `ignore_feasibility` is off, existing feasibility and early-stop behavior is unchanged. In either mode, numerical exceptions remain `error`; incomplete runs are `infeasible`. Existing result files are not retroactively reclassified. These options apply in both serial and parallel workers.
+- Each run starts from a fresh deep-copy and uses the existing solver. With the default option, a rejected design or flight with violated constraints is recorded as `infeasible`; exceptions are recorded as `error` with tracebacks.
+- With one worker, reusable property and aerodynamic models are created once per sweep. With multiple workers, the **spawn** multiprocessing mode (safe for macOS) constructs lookup models separately within each worker, then reuses those read-only models across its assigned cases. The parent process is the only writer of `histories.h5`/CSV files, preventing concurrent HDF5 writes. Results remain indexed by deterministic case IDs, even if individual cases finish out of order. Each process uses a fresh vehicle, propulsion, and flight state. Numerical results should agree with serial sweeps to normal solver tolerances.
+- Start with `workers: 2` and increase to `4` if memory allows. Using all CPU cores can slow the machine when each worker loads large tables or numerical libraries spawn additional native threads. The operating system handles worker scheduling; speed-up depends on per-case runtime, available RAM, and solver/thread overhead. Only one Python process should run a given output directory at a time.
 
 Generated directory:
 
@@ -116,6 +132,44 @@ results.plot(
 )
 ```
 
+### Cleaner figures and custom image files
+
+The scalar `plot()` and `plot_derivative()` methods now draw individual curves in
+**black** by default. A single history (or a single `plot_history_derivative(at=...)`
+curve) is black as well. Pass `color='blue'` to override. Multiple histories use a
+continuous color gradient when there are more than eight cases, replacing a long
+legend with a parameter colorbar and a distinct dashed black baseline.
+
+```python
+results.plot(
+    x='chamber_pressure', y='apogee',
+    xlabel='Chamber pressure (Pa)', ylabel='Apogee (m)',
+    save=True, filename='apogee_vs_pc', file_format='png',
+)
+
+results.plot_history(
+    y='thrust_N', group_by='chamber_pressure',
+    title='Thrust over burn', xlabel='Time (s)', ylabel='Thrust (N)',
+    active_only=True,     # zoom to the active thrust portion, not the coast
+    colorbar=True,        # show continuous Pc scale instead of 31-entry legend
+    color_scale=1e6,      # label the colorbar in MPa (source Pc stored in Pa)
+    colorbar_label='Chamber pressure (MPa)',
+    cmap='viridis', figsize=(10, 5.5), linewidth=1.6,
+    save=True, filename='thrust_sweep', file_format='jpeg',
+)
+```
+
+For fewer traces, legends remain automatic. Use `colorbar=False, legend=False`
+if you want a completely legend-free multi-curve plot. Set `max_traces=10` to
+plot an evenly spaced subset plus the baseline (within the ten-curve budget).
+`active_only=True` changes only the viewed x-axis limits; it does not truncate
+any saved simulation data. Explicit `xlim=(0, 50)` overrides auto zoom.
+
+`filename='my_plot'` implies saving to `<results_dir>/plots/my_plot.png` by
+itself, or to `.jpeg`/`.svg`/`.pdf` if `file_format` requests that type.
+`save='some/exact/path.jpg'` continues to save at the exact path relative to
+the working directory, as before; `file_format` can override the extension.
+
 ### Common plotting options
 
 All four methods accept:
@@ -126,6 +180,8 @@ All four methods accept:
 | `xlabel`, `ylabel` | Human-readable axis labels (defaults are raw result field names) |
 | `save=False` (or omitted) | No file written; plot is shown when created on fresh axes |
 | `save=True` | Automatically save a PNG in `<results folder>/plots/` |
+| `filename='my_plot'` | Save with custom name in `<results folder>/plots/` (or use an absolute path); implies saving |
+| `file_format='jpeg'` | Choose output format (`png`, `jpeg`, `jpg`, `svg`, `pdf`, etc.); overrides suffix |
 | `save='path/to/name.png'` | Save to a specific path (relative paths use the process working directory) |
 | `show=True/False` | Explicitly open/hide Matplotlib's interactive window (default: show only unsaved plots created by the call) |
 | `figsize=(8, 5)`, `dpi=160` | Figure size in inches and saved image resolution |
@@ -135,6 +191,8 @@ All four methods accept:
 | `ax=existing_ax` | Draw onto an existing Matplotlib axis for custom/combined figures |
 | `filters={'cf_efficiency': 0.90}` | Fix other swept parameters for one-dimensional full-grid comparisons |
 | `include_infeasible=True` | Also plot results from infeasible candidates, if they have valid data |
+| `colorbar`, `cmap`, `colorbar_label`, `color_scale` | History plot numeric colormap; default colorbar for >8 cases |
+| `active_only=True`, `max_traces=10` | History plot active-time zoom and optional even trace subsampling |
 
 `results.plot(...)` and `results.plot_derivative(...)` additionally accept `kind='line'` or
 `kind='scatter'`; the scalar plot defaults to a line for independent sweep inputs and
@@ -179,4 +237,4 @@ by default.
 - **Weld allowable** is `advanced.weld_allowable` [Pa], not efficiency.
 - **Thrust-target redesign** is limited by fixed existing hardware assumptions. Report both design and achieved thrust. The module does not rewrite the physical propulsion or aerodynamic equations.
 - No special treatment is applied to categorical fields or arbitrary arbitrary-component geometry. Dotted config paths must refer to existing numeric values.
-- This serial first implementation does not currently support parallel workers, automatic resume, or cached derivative HDF5 output; derivatives are recalculated cheaply from persisted sweep data.
+- Automatic resume and cached derivative HDF5 output are not implemented; derivatives are recalculated cheaply from persisted sweep data.
