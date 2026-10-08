@@ -6,6 +6,7 @@ import json
 import os
 import time
 import warnings
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -17,7 +18,7 @@ from fullplot import Axis, generate_map
 # User options
 # ---------------------------------------------------------------------------
 
-filename = "sizer_lookups"
+filename = str(Path(__file__).resolve().with_name("sizer_lookups.h5"))
 group = "engine_lookup"
 
 psia_to_pa = 6894.75728

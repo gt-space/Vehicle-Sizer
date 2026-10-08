@@ -45,7 +45,7 @@ fin_can:
   fin_count: 4
   root_chord: 0.4579112
   tip_chord: 0.2032          # Manually at aero upper bound (8 in); source 0.240538 m.
-  span: 0.144653
+  span: 0.1524
   # Preserve supplied 0.1401318 m sweep with the configured tip chord.
   sweep_fraction: 0.5501595532508974
   fin_thickness: 0.00635     #0.25 in

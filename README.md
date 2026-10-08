@@ -19,6 +19,18 @@ To simulate a flight:
 
 Outputs are a terminal summary, flight/event/load CSVs, and PNG plots at the config's `simulation.output` and `simulation.plot` paths. Use `--dt` or `--t-end` to change the run; `--enforce-constraints` applies the saved flight limits.
 
+
+Run optional vehicle sensitivity sweeps (enumerated `values`, `start/stop/step`, or
+`start/stop/num`; one-at-a-time or full-grid) without modifying the normal run:
+
+```bash
+python -m sensitivity Configs/sweeps/vespula_sweep.yaml --dry-run
+python -m sensitivity Configs/sweeps/vespula_sweep.yaml
+```
+
+See [sensitivity/README.md](sensitivity/README.md) for the enabled/disabled sweep
+configuration, saved outputs, numerical partial derivatives, and plotting API.
+
 Run an optimization with a new output directory:
 
 ```bash
@@ -44,6 +56,7 @@ Run tests:
 | Folder | Purpose |
 | --- | --- |
 | [optimizer](optimizer/README.md) | Design searches, process workers, profiling |
+| [sensitivity](sensitivity/README.md) | Optional parameter sweeps, saved histories, plots, partial derivatives |
 | [diagnostics](diagnostics/README.md) | Errors, feasibility constraints, warnings |
 | [reporting](reporting/README.md) | Flight plots and run summaries |
 | [Configs](Configs/README.md) | Flight inputs, search settings, network wiring |
