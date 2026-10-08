@@ -164,7 +164,8 @@ class SweepResults:
             grid: Show grid; default True.
             legend, legend_title: Legend visibility/heading.
             xlim, ylim: Optional (min, max) axis bounds.
-            xscale, yscale: Axis scale ('linear', 'log', etc.).
+            xscale, yscale: Positive numeric display divisors (e.g. 1e6, 1e3),
+                            or Matplotlib scale names ('linear', 'log', etc.).
             filters: Dict fixing other enabled sweep parameters in full_grid.
             include_infeasible: Include infeasible rows with numeric outputs.
             save: False/None to skip saving; True saves under <results_dir>/plots/;
@@ -193,7 +194,8 @@ class SweepResults:
             title, xlabel, ylabel: Custom title and axis labels.
             figsize: Figure size (width, height), default (8, 5).
             grid, legend, legend_title: Grid/legend formatting.
-            xlim, ylim: Axis bounds; xscale, yscale: Axis scales.
+            xlim, ylim: Bounds in displayed units. xscale, yscale: Positive
+                        divisors for plotted values or 'linear'/'log'/etc.
             filters: Dict holding other full_grid sweep inputs fixed.
             include_infeasible: Include infeasible cases with histories.
             case_labels: Dict mapping case IDs or sweep values to labels.
@@ -229,11 +231,14 @@ class SweepResults:
             title, xlabel, ylabel: Custom title and axis labels.
             figsize: Figure size in inches, default (8, 5).
             grid, legend, legend_title: Grid/legend formatting.
-            xlim, ylim: Axis bounds; xscale, yscale: Axis scales.
+            xlim, ylim: Bounds in displayed units. xscale, yscale: Positive
+                        divisors for plotted values or 'linear'/'log'/etc.
             filters: Hold other full_grid sweep parameters fixed.
             include_infeasible: Include infeasible cases with valid data.
             save: None/False (no file), True (auto PNG), or filename/path.
             filename, file_format: Custom name and saved image format; see plot().
+            Numeric xscale and yscale transform displayed values, but do not
+            change the derivative's underlying units (e.g. d(m)/d(Pa)).
             The single derivative curve defaults to black (color overrides).
             show: True/False for interactive display; None is automatic.
             dpi: Image DPI, default 160; ax: existing matplotlib Axes.
@@ -255,13 +260,16 @@ class SweepResults:
             title, xlabel, ylabel: Custom title and axis labels.
             figsize: Figure size in inches, default (8, 5).
             grid, legend, legend_title: Grid/legend formatting.
-            xlim, ylim: Axis bounds; xscale, yscale: Axis scales.
+            xlim, ylim: Bounds in displayed units. xscale, yscale: Positive
+                        divisors for plotted values or 'linear'/'log'/etc.
             filters: Hold other full_grid sweep parameters fixed.
             include_infeasible: Include infeasible cases with histories.
             save: None/False (no file), True (auto PNG), or filename/path.
             filename, file_format: Custom output name and format; see plot().
             colorbar: None auto-enables for >8 curves; True/False override.
             cmap, colorbar_label, color_scale: Numeric colormap options.
+            Numeric xscale/yscale divide plotted time/derivative values without
+            changing the derivative calculation or colorbar's color_scale.
             One derivative curve defaults to black.
             show: True/False for interactive display; None is automatic.
             dpi: Image DPI, default 160; ax: existing matplotlib Axes.

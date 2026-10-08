@@ -13,7 +13,7 @@ sweep:
 
   parameters:
     chamber_pressure:        # prop_system.Pc_target [Pa]
-      enabled: true
+      enabled: false
       start: 1034000.0
       stop: 2068000.0
       step: 34473.8
@@ -63,8 +63,10 @@ sweep:
       values: [-0.5, 0.0, 0.5]
 
     weld_allowable:          # advanced.weld_allowable [Pa], not weld efficiency
-      enabled: false
-      values: [100000000, 138000000, 170000000]
+      enabled: true
+      start: 100000000
+      stop: 180000000
+      step: 5000000
 
     # Pressure-fed regulator-specific parameters
     prop_system.regulator.OX_REGULATOR.capacity_factor:      # baseline 5.0 [-]

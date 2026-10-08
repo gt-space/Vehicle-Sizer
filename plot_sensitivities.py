@@ -15,17 +15,20 @@ results = SweepResults.load(RESULTS_DIR)
 #print('Flight-history fields:', results.history_fields())
 
 results.plot(
-    x='chamber_pressure',
+    x='weld_allowable',
     y='apogee',
-    title='Apogee versus chamber pressure',
-    xlabel='Design chamber pressure (Pa)',
-    ylabel='Apogee (m)',
+    title='Apogee versus Weld Allowable',
+    xlabel='Weld Allowable (MPa)',
+    ylabel='Apogee (km)',
+    xscale=1e6,          # Pa → MPa
+    yscale=1e3,          # m → km
     kind='line',
     marker='o',
     save=True,
-    filename='apogee_vs_chamber_pressure',
+    filename='apogee_vs_weld_allowable',
     file_format='png',
 )
+
 '''
 results.plot_history(
     y='thrust_N',

@@ -22,6 +22,22 @@ def _axes(ax, figsize):
     return ax.figure, ax, False
 
 
+def _axis_setting(setting, axis_name):
+    """Accept a numeric display divisor OR a Matplotlib axis-scale name.
+
+    Numeric settings divide plotted coordinates without changing saved sweep
+    data. String settings preserve the older linear/log/symlog behavior.
+    """
+    if isinstance(setting, str):
+        return setting, 1.0
+    if isinstance(setting, (bool, np.bool_)) or not isinstance(setting, (int, float, np.number)):
+        raise TypeError(f'{axis_name} must be a positive numeric divisor or a Matplotlib scale name')
+    divisor = float(setting)
+    if not np.isfinite(divisor) or divisor <= 0:
+        raise ValueError(f'{axis_name} numeric divisor must be positive and finite')
+    return 'linear', divisor
+
+
 def _destination(results, fig, save, filename, file_format, default_name):
     """Resolve image destination without changing the legacy save=path behavior."""
     if save is False:
@@ -68,6 +84,7 @@ def _finish(results, fig, ax, *, default_xlabel, default_ylabel, default_name,
     filename='name.jpg' saves under that folder; absolute filenames are allowed.
     save=path preserves the original explicit-path behavior (relative to CWD).
     file_format='jpeg' overrides the output extension where provided.
+    xlim/ylim are interpreted in the plotted (possibly divided) display units.
     """
     ax.set(xlabel=default_xlabel if xlabel is None else xlabel,
            ylabel=default_ylabel if ylabel is None else ylabel,
@@ -151,15 +168,22 @@ def plot_scalar(results, x: str, y: str, *, filters=None, include_infeasible=Fal
                 xlim=None, ylim=None, xscale='linear', yscale='linear',
                 save=None, filename=None, file_format=None, show=None,
                 dpi=160, ax=None, **style):
-    """Plot numeric scalar values. Individual curves default to black."""
+    """Plot scalar values; positive numeric xscale/yscale divide display coordinates.
+
+    Axis-scale strings (e.g. 'log') retain ordinary Matplotlib behavior.
+    """
     points = results.scalar_points(x, y, filters=filters,
                                    include_infeasible=include_infeasible)
     if not points:
         raise ValueError(f'No valid scalar data for x={x!r}, y={y!r}; '
                          f'available: {results.fields()}')
+    x_mode, x_divisor = _axis_setting(xscale, 'xscale')
+    y_mode, y_divisor = _axis_setting(yscale, 'yscale')
     fig, axes, owns_axes = _axes(ax, figsize)
     try:
-        _plot_line_or_scatter(axes, [p[0] for p in points], [p[1] for p in points],
+        _plot_line_or_scatter(axes,
+                              np.asarray([p[0] for p in points], dtype=float) / x_divisor,
+                              np.asarray([p[1] for p in points], dtype=float) / y_divisor,
                               kind=kind,
                               default_kind='line' if x in results.parameters else 'scatter',
                               style=style)
@@ -171,7 +195,7 @@ def plot_scalar(results, x: str, y: str, *, filters=None, include_infeasible=Fal
                    default_name=_filename('scalar', y, 'vs', x),
                    title=title, xlabel=xlabel, ylabel=ylabel,
                    grid=grid, legend=legend, legend_title=legend_title,
-                   xlim=xlim, ylim=ylim, xscale=xscale, yscale=yscale,
+                   xlim=xlim, ylim=ylim, xscale=x_mode, yscale=y_mode,
                    save=save, filename=filename, file_format=file_format,
                    show=show, dpi=dpi, owns_axes=owns_axes)
 
@@ -191,7 +215,9 @@ def plot_history(results, y: str, group_by: str, *, filters=None,
     color_scale=1e6 allows pressure values in Pa to display as MPa.
     active_only=True zooms to the final nonzero sample of y across curves.
     max_traces limits clutter by sampling the numeric sweep evenly, including
-    the baseline if present. The original histories are never modified.
+    the baseline if present. Numeric xscale/yscale divide plotted values;
+    color_scale independently controls the sweep-colorbar labels. Neither
+    saved histories nor derivative calculations are modified.
     """
     if group_by not in results.parameters:
         raise ValueError(f'{group_by!r} must be an enabled sweep parameter')
@@ -234,6 +260,8 @@ def plot_history(results, y: str, group_by: str, *, filters=None,
     else:
         colorbar = False
 
+    x_mode, x_divisor = _axis_setting(xscale, 'xscale')
+    y_mode, y_divisor = _axis_setting(yscale, 'yscale')
     fig, axes, owns_axes = _axes(ax, figsize)
     last_active = None
     first_time = None
@@ -255,11 +283,12 @@ def plot_history(results, y: str, group_by: str, *, filters=None,
         else:
             if len(curves) == 1:
                 line_style.setdefault('color', 'black')
-        axes.plot(data['time_s'], data[y], **line_style)
+        times = np.asarray(data['time_s'], dtype=float) / x_divisor
+        values = np.asarray(data[y], dtype=float) / y_divisor
+        axes.plot(times, values, **line_style)
 
         if active_only:
-            time = np.asarray(data['time_s'], dtype=float)
-            values = np.asarray(data[y], dtype=float)
+            time = times
             finite = np.isfinite(time) & np.isfinite(values)
             if np.any(finite):
                 time, values = time[finite], values[finite]
@@ -275,7 +304,7 @@ def plot_history(results, y: str, group_by: str, *, filters=None,
 
     if active_only and xlim is None and last_active is not None:
         start = min(0.0, first_time) if first_time is not None else 0.0
-        padding = max(0.5, 0.08 * (last_active - start))
+        padding = max(0.5 / x_divisor, 0.08 * (last_active - start))
         xlim = (start, last_active + padding)
 
     if colorbar:
@@ -288,7 +317,7 @@ def plot_history(results, y: str, group_by: str, *, filters=None,
                    default_name=_filename('history', y, 'by', group_by),
                    title=title, xlabel=xlabel, ylabel=ylabel,
                    grid=grid, legend=legend, legend_title=legend_title,
-                   xlim=xlim, ylim=ylim, xscale=xscale, yscale=yscale,
+                   xlim=xlim, ylim=ylim, xscale=x_mode, yscale=y_mode,
                    save=save, filename=filename, file_format=file_format,
                    show=show, dpi=dpi, owns_axes=owns_axes)
 
@@ -299,7 +328,7 @@ def plot_derivative(results, x: str, y: str, wrt: str, *, filters=None,
                     legend=None, legend_title=None, xlim=None, ylim=None,
                     xscale='linear', yscale='linear', save=None, filename=None,
                     file_format=None, show=None, dpi=160, ax=None, **style):
-    """Plot scalar partial derivative dy/d(wrt) against x, in black by default."""
+    """Plot dy/d(wrt) versus x. Axis display scaling does not rederive dy/d(wrt)."""
     values, dydx = results.scalar_derivative(y, wrt, filters=filters,
                                               include_infeasible=include_infeasible)
     if x == wrt:
@@ -312,9 +341,14 @@ def plot_derivative(results, x: str, y: str, wrt: str, *, filters=None,
         if any(not isinstance(coordinates.get(v), (float, int)) for v in values):
             raise ValueError(f'Cannot use {x!r} as derivative plot x-axis')
         abscissa = [coordinates[v] for v in values]
+    x_mode, x_divisor = _axis_setting(xscale, 'xscale')
+    y_mode, y_divisor = _axis_setting(yscale, 'yscale')
     fig, axes, owns_axes = _axes(ax, figsize)
     try:
-        _plot_line_or_scatter(axes, abscissa, dydx, kind=kind, style=style)
+        _plot_line_or_scatter(axes,
+                              np.asarray(abscissa, dtype=float) / x_divisor,
+                              np.asarray(dydx, dtype=float) / y_divisor,
+                              kind=kind, style=style)
     except Exception:
         if owns_axes:
             plt.close(fig)
@@ -324,7 +358,7 @@ def plot_derivative(results, x: str, y: str, wrt: str, *, filters=None,
                    default_name=_filename('derivative', y, 'wrt', wrt, 'vs', x),
                    title=title, xlabel=xlabel, ylabel=ylabel,
                    grid=grid, legend=legend, legend_title=legend_title,
-                   xlim=xlim, ylim=ylim, xscale=xscale, yscale=yscale,
+                   xlim=xlim, ylim=ylim, xscale=x_mode, yscale=y_mode,
                    save=save, filename=filename, file_format=file_format,
                    show=show, dpi=dpi, owns_axes=owns_axes)
 
@@ -339,9 +373,11 @@ def plot_history_derivative(results, y: str, wrt: str, *, filters=None,
                             show=None, dpi=160, ax=None, colorbar=None,
                             colorbar_label=None, cmap='viridis', color_scale=1.0,
                             **style):
-    """Plot d(history y)/d(wrt) against flight time at one or many sweep points."""
+    """Plot d(history y)/d(wrt) against time; numeric scales affect display only."""
     xs, times, derivative = results.history_derivative(
         y, wrt, filters=filters, include_infeasible=include_infeasible)
+    x_mode, x_divisor = _axis_setting(xscale, 'xscale')
+    y_mode, y_divisor = _axis_setting(yscale, 'yscale')
     fig, axes, owns_axes = _axes(ax, figsize)
     if at is None:
         indices = range(len(xs))
@@ -360,7 +396,9 @@ def plot_history_derivative(results, y: str, wrt: str, *, filters=None,
             line_style.setdefault('color', colormap(norm(xs[index] / color_scale)))
         elif len(indices) == 1:
             line_style.setdefault('color', 'black')
-        axes.plot(times, derivative[index], **line_style)
+        axes.plot(np.asarray(times, dtype=float) / x_divisor,
+                  np.asarray(derivative[index], dtype=float) / y_divisor,
+                  **line_style)
     if colorbar:
         _add_colorbar(fig, axes, colormap, norm,
                       colorbar_label if colorbar_label is not None else wrt)
@@ -371,6 +409,6 @@ def plot_history_derivative(results, y: str, wrt: str, *, filters=None,
                    default_name=_filename('history_derivative', y, 'wrt', wrt),
                    title=title, xlabel=xlabel, ylabel=ylabel,
                    grid=grid, legend=legend, legend_title=legend_title,
-                   xlim=xlim, ylim=ylim, xscale=xscale, yscale=yscale,
+                   xlim=xlim, ylim=ylim, xscale=x_mode, yscale=y_mode,
                    save=save, filename=filename, file_format=file_format,
                    show=show, dpi=dpi, owns_axes=owns_axes)
