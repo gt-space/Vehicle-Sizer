@@ -62,6 +62,39 @@ class SweepResults:
                             for key in json.loads(group.attrs['columns'])})
         return names if contains is None else [name for name in names if contains.lower() in name.lower()]
 
+    def field_catalog(self, category: str | None = None, contains: str | None = None) -> list[dict]:
+        """List available exported results and per-case numeric availability.
+
+        The catalog is written by new sweeps. Old saved sweeps remain readable.
+        """
+        path = self.folder / 'field_catalog.csv'
+        if path.exists():
+            with path.open(newline='') as stream:
+                entries = [dict(record, cases_with_numeric_data=int(record['cases_with_numeric_data']),
+                                total_cases=int(record['total_cases']))
+                           for record in csv.DictReader(stream)]
+        else:
+            from .output_capture import field_category
+            entries = [{'field': name, 'category': field_category(name),
+                        'cases_with_numeric_data': sum(isinstance(row.get(name), (int, float)) for row in self.summary),
+                        'total_cases': len(self.summary)} for name in self.fields()]
+        if category is not None:
+            entries = [row for row in entries if category.lower() in row['category'].lower()]
+        if contains is not None:
+            entries = [row for row in entries if contains.lower() in row['field'].lower()]
+        return entries
+
+    def structural_profiles(self, case_id: str) -> dict[str, np.ndarray]:
+        """Station-resolved loads: one row per saved timestep, one column per station.
+
+        Requires outputs.compute_loads and outputs.record_structural_profiles.
+        """
+        with h5py.File(self.folder / 'histories.h5') as store:
+            if case_id not in store or 'profiles' not in store[case_id]:
+                raise KeyError(f'No saved structural profiles for {case_id}')
+            group = store[case_id]['profiles']
+            return {key: group[key][:] for key in group}
+
     def history(self, case_id: str) -> dict[str, np.ndarray]:
         with h5py.File(self.folder / 'histories.h5') as store:
             if case_id not in store:

@@ -246,3 +246,157 @@ magically acquire missing fluid temperature histories.
 - Large full-grid sweeps with `history_detail: full` can use substantial RAM
   and disk; use `workers: 2` or `4` if memory pressure becomes a problem.
 - Normal single-run and optimizer behavior is unchanged.
+
+## Comprehensive numerical output export (new)
+
+The sensitivity exporter captures **every finite numerical value made available** by
+`SimResult`, its nested sizing dictionaries, and the accepted flight state snapshots.
+It is template-agnostic: new numerical fields under tanks, fluid nodes/branches,
+pumps, regulators, thermal nodes, gas-generator sizing and ordinary flight states
+become available without editing a hardcoded output whitelist.
+
+This is deliberately **not a claim that every imaginable rocket parameter is
+calculated**. For example, if the solver never computes a motor efficiency or a
+landing range, the exporter cannot create one. A field unavailable in a specific
+template or simulation case is omitted (and marked with zero availability in the
+field catalog where present in other cases), not filled with fabricated numbers.
+The exported outputs are finite sampled values; peak values between numerical
+samples are not guaranteed unless the underlying solver already calculates them.
+
+Use the following settings for detailed studies:
+
+```yaml
+outputs:
+  record_history: true        # preserve time-dependent results in histories.h5
+  history_detail: full        # include all exposed numeric accepted-state fields
+  compute_loads: true         # required to calculate structural load distributions
+  record_structural_profiles: true  # optional full time-by-station arrays (HDF5)
+  directory: outputs/sensitivity/flight_pressure_fed_regulator
+```
+
+`compute_loads` and `record_structural_profiles` are optional and **can add
+substantial compute time, memory and disk use**. If you're sweeping COPV volume
+versus apogee/static margin, leave both disabled. `record_history: true` is
+necessary to collect initial/burnout and sampled extrema from the flight states.
+
+### Field discovery
+
+After rerunning a sweep, inspect `field_catalog.csv` or use:
+
+```python
+from sensitivity import SweepResults
+results = SweepResults.load('outputs/sensitivity/flight_pressure_fed_regulator')
+print(results.fields('static_margin'))
+print(results.fields('cg_m'))
+print(results.fields('press_tank'))
+print(results.field_catalog(category='Stability'))
+print(results.field_catalog(category='COPV', contains='temperature'))
+print(results.history_fields('state.plant.fluids'))
+```
+
+`field_catalog.csv` lists scalar field names, broad categories and how many
+cases contained a finite numerical value. Categories include flight performance,
+vehicle sizing, stability, mass properties, COPV, propellant tanks, propulsion,
+aerodynamics, structural, thermal, controls, electrical/pumps, gas generator,
+constraints, and other. It is a **catalog of actually exported fields**, not a
+static list of results that every template is required to produce.
+
+### Generic naming
+
+For each available numerical history field `state.<path>`, summary statistics
+are exported as:
+
+```text
+history.state.<path>.initial             # exact recorded launch state (if available)
+history.state.<path>.first_recorded       # first saved point, when no launch state
+history.state.<path>.burnout             # first powered -> unpowered transition
+history.state.<path>.minimum
+history.state.<path>.minimum_time_s
+history.state.<path>.maximum
+history.state.<path>.maximum_time_s
+history.state.<path>.maximum_absolute
+history.state.<path>.final               # final saved flight state (normally apogee)
+```
+
+Available fields are *discovered*, not predefined. `initial` and `burnout` are
+omitted when the corresponding state is unavailable. Burnout is not inferred
+from the final simulation time. Spatial load arrays report each timepoint's
+`minimum`, `maximum`, and `maximum_absolute` and their aggregate extrema.
+
+Common plot-friendly shortcuts (all produced from recorded states):
+
+```text
+stability.static_margin_calibers.initial
+stability.static_margin_calibers.burnout
+stability.static_margin_calibers.minimum
+stability.static_margin_calibers.maximum
+vehicle.cg_m.initial
+vehicle.cg_m.burnout
+vehicle.cg_shift_burnout_m
+vehicle.pitch_inertia_kg_m2.burnout
+flight.burnout_altitude_m
+flight.burnout_speed_m_s
+flight.apogee_downrange_m
+propulsion.total_impulse_sampled_Ns
+propulsion.thrust_N.maximum
+propulsion.chamber_pressure_Pa.maximum
+aero.mach.maximum
+aero.dynamic_pressure_Pa.maximum
+aero.drag_N.maximum
+history.state.plant.thermal.node.<node>.<numeric_field>.maximum
+history.state.loads.bending.maximum_absolute.maximum
+```
+
+The total impulse shortcut is an **approximation integrated from sampled thrust
+values** (with a left-hold approximation for the final cutoff interval). For a
+precision impulse calculation, use a solver-integrated impulse output when
+available. `flight.apogee_downrange_m` is NOT landing range; the flight solver
+normally terminates at apogee.
+
+The previous flat outputs (`apogee`, `dry_mass`, `min_stability_calibers`,
+`design_summary.tank.*`, `fluid.press_tank.eol_temperature`, `load_peaks.*`,
+`pump_sizing.*`, and `gg_sizing.*`) remain supported.
+
+### COPV volume versus static margin (or apogee)
+
+```python
+results.plot(
+    x='tanks.press_tank.volume',
+    y='stability.static_margin_calibers.minimum',
+    y2='apogee',
+    xscale=0.001,          # m³ -> L
+    y2scale=1000,         # m -> km
+    xlabel='COPV Volume (L)',
+    ylabel='Minimum Static Margin (calibers)',
+    y2label='Apogee (km)',
+    marker=None,
+    show=True,
+    save=True,
+    filename='copv_volume_vs_static_margin_and_apogee',
+    file_format='png',
+)
+```
+
+Alternatively, use `y='stability.static_margin_calibers.initial'` or
+`y='stability.static_margin_calibers.burnout'` to compare different phases.
+`min_stability_calibers` remains the simulator's own minimum stability metric.
+
+### Station-resolved structural outputs
+
+With both load options enabled, the full time-by-station arrays are saved as
+`histories.h5/<case_id>/profiles/<load_field>` for each numeric 1D load field
+whose spatial shape remains constant. Access them using:
+
+```python
+profiles = results.structural_profiles('baseline')
+print(profiles.keys())   # e.g. station, axial, shear, bending, normal
+# profiles['bending'] is [time_index, station_index] in native SI units
+```
+
+`load_peaks.*` remains available directly in the scalar summary even without
+full profile persistence when `compute_loads: true`. The exporter does not
+interpolate structural profiles onto inconsistent meshes.
+
+**Important:** Already-saved `summary.csv` files cannot acquire new outputs
+retroactively. You must run the sensitivity study again after installing this
+update, with histories enabled, to capture the added fields.

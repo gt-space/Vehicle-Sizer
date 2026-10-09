@@ -94,16 +94,23 @@ results.plot_history_derivative(
 
 
 
-print('Available COPV outputs:', results.fields('press_tank'))
-
 results.plot(
-    x='tanks.press_tank.volume', y='apogee',
-    title='Apogee vs COPV Volume',
-    xscale=0.001, yscale=1000,
-    xlabel='COPV Volume (L)', ylabel='Apogee (km)',
-    marker=None, save=True, filename='copv_volume_vs_apogee',
-    file_format='png', show=False,
+    x='tanks.press_tank.volume',
+    y='apogee',
+    y2='fluid.press_tank.eol_temperature',
+    title='Apogee and COPV EOL Temperature vs COPV Volume',
+    xscale=0.001,
+    yscale=1000,
+    xlabel='COPV Volume (L)',
+    ylabel='Apogee (km)',
+    y2label='COPV EOL Temperature (K)',
+    marker=None,
+    save=True,
+    filename='copv_volume_vs_apogee_and_eol_temperature',
+    file_format='png',
+    show=False,
 )
+
 '''
 eol_field = 'fluid.press_tank.eol_temperature'
 if eol_field in results.fields():

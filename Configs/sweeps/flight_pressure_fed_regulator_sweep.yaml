@@ -32,6 +32,7 @@ sweep:
 
 outputs:
   record_history: true      # needed for time histories AND true EOL gas states
-  history_detail: standard  # standard: P/T/inventories; full: all numeric node data
-  compute_loads: false
+  history_detail: full      # exports all exposed scalar flight/fluid/control/thermal fields
+  compute_loads: false      # true to calculate structural-load extrema
+  record_structural_profiles: false  # true WITH compute_loads to save station x time arrays
   directory: outputs/sensitivity/flight_pressure_fed_regulator
