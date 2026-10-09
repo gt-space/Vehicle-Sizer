@@ -58,8 +58,8 @@ evaluation_overrides:
 bounds:
   exit_pressure: [40726.0, 103421.0]
   omld:
-  - 0.22636
-  - 0.4064
+  - 0.31115
+  - 0.31115
   fineness:
   - 4.0
   - 6.0

@@ -24,7 +24,7 @@ advanced:
   endcap_mass_multiplier: 1.5
 aero:
   q_cutoff_Pa: 0.01
-  finish: 20um
+  finish: 30um
   fins_on_boattail: true
   model: AeroTables/dragmodel.h5
   nose: vonkarman
@@ -35,8 +35,8 @@ engine:
   cstar_efficiency: 0.9
   exit_pressure: 66794.41202594012
   fuel: RP-1
-  length: 0.5715
-  mass: 24.0 # 6 kg injector + 18 kg chamber/nozzle; boattail remains calculated.
+  length: 0.45
+  mass: 18.0 # confirmed ts with heyward;
   oxidizer: LOX
 environment:
   wind:
@@ -59,7 +59,7 @@ inter_tank:
   stringer_count: 4
   stringer_material: aluminum_7075
 launch:
-  altitude: 0.0
+  altitude: 1191.0 #m
   rail_height: 15.0
   velocity: 0.0
 nosecone:
@@ -104,12 +104,12 @@ prop_system:
       tank_id: fuel_tank
     OX_REGULATOR:
       capacity_factor: 8.0
-      collapse_factor: 1.2
+      collapse_factor: 1.4
       tank_id: ox_tank
-  fuel_inj_pumpout_dp: 206842.71879525 # 30 psi differential
-  fuel_pumpin_tank_dp: 68947.57293175 # 10 psi differential
-  ox_inj_pumpout_dp: 137895.1458635 # 20 psi differential
-  ox_pumpin_tank_dp: 68947.57293175 # 10 psi differential
+  fuel_inj_pumpout_dp: 206842.71879525 # 30 psid
+  fuel_pumpin_tank_dp: 68947.57293175 # 10 psid
+  ox_inj_pumpout_dp: 310264 # 45 psid
+  ox_pumpin_tank_dp: 103421 # 15 psid
   pumps:
     fuel_pump:
       curve: &id001
@@ -148,7 +148,7 @@ property_models:
     source: table
     table:
       lookup_file: FluidTables/sizer_lookups.h5
-      nfz: 1
+      nfz: 2
   pure_fluid:
     source: table
     table:
@@ -173,8 +173,8 @@ tanks:
       model: None
     ellipse_ratio: 1.75
     material: aluminum_6061
-    passthrough_diameter: 0.1016
-    passthrough_wall_thickness: 0.00254
+    passthrough_diameter: 0.0635 # 2.5 in, vibes
+    passthrough_wall_thickness: 0.002286 # 90 thou, vibes
     propellant_mass: 108
     type: propellant
     ullage_factor: 1.1
@@ -185,8 +185,8 @@ tanks:
       model: None
     ellipse_ratio: 1.75
     material: aluminum_6061
-    passthrough_diameter: 0.0
-    passthrough_wall_thickness: 0
+    passthrough_diameter: 0.0381 # 1.5 in, cad study
+    passthrough_wall_thickness: 0.002286 # 90 thou, vibes
     propellant_mass: 240
     type: propellant
     ullage_factor: 1.1
@@ -196,7 +196,7 @@ tanks:
       model: None
     design_pressure: 2.9579e7
     ellipse_ratio: 1.75
-    min_temperature: 160.0
+    min_temperature: 180.0
     outer_diameter: 0.2794
     type: pressurant
     construction: copv
@@ -228,13 +228,14 @@ vehicle:
       press_tank_shell: 6.89 # kg, uniform addition over the sized COPV; no mass override.
       mounting: 2.0
       fitting: 1.0
-  - length: 0.3302 # 13 in
+  - length: 0.4064 # 16 in
     type: inter_tank
     masses:
       stringers: 0.88
       clamshell: 1.63
       components: 4.0
       canards: 3.0
+      high voltage: 2.0
       battery: auto
     stringer_unit_mass: 0.0 # Stringer total is supplied above; do not add it twice.
     stiffness_EI: 3270000.0 # N m^2; screenshot: 3.27e9 kN mm^2.
@@ -252,7 +253,7 @@ vehicle:
   - tank_id: fuel_tank
     type: prop_tank
     masses: {} # Optional prop_tank_shell [kg]: uniform addition over the sized tank.
-  - length: 0.3048 # 12 in
+  - length: 0.508 # 20 in
     type: inter_tank
     masses:
       stringers: 1.35
