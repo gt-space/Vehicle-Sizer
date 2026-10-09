@@ -23,6 +23,7 @@ advanced:
   weld_allowable: 138000000.0
   endcap_mass_multiplier: 1.5
 aero:
+  drag_multiplier: 1.0
   q_cutoff_Pa: 0.01
   finish: 30um
   fins_on_boattail: true

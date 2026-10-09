@@ -17,9 +17,11 @@ def model():
 
 
 @pytest.mark.parametrize("length,exit", [(309.26, 6.79), (433.20, 7.75)])
-def test_unclipped_geometry_and_force_closure_on_actual_deck(model, length, exit):
+@pytest.mark.parametrize("drag_multiplier", [1.0, 1.3, 0.0])
+def test_unclipped_geometry_and_force_closure_on_actual_deck(model, length, exit, drag_multiplier):
     candidate = {**CANDIDATE, "length": length, "exit": exit}
-    aero = Aero(dict(aoa_schedule=[[0, 0], [10, 15]], fins_on_boattail=True), candidate, model)
+    aero = Aero(dict(aoa_schedule=[[0, 0], [10, 15]], fins_on_boattail=True,
+                     drag_multiplier=drag_multiplier), candidate, model)
     assert aero.candidate == candidate
     for cells in (17, 137):
         # Nonuniform grid deliberately not aligned with the 800-point aero grid.

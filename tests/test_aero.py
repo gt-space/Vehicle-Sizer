@@ -131,6 +131,22 @@ class AeroTests(unittest.TestCase):
     def test_interpolates_aoa_schedule_in_radians(self):
         self.assertAlmostEqual(self.aero.aoa(5.0), np.deg2rad(5.0))
 
+    def test_drag_multiplier_preserves_normal_force_and_changes_axial_force(self):
+        for multiplier in (0.0, 1.0, 1.3):
+            aero = Aero({'drag_multiplier': multiplier}, CANDIDATE, FakeDragModel())
+            for on in (False, True):
+                for alpha in (0.0, np.deg2rad(5.0), np.deg2rad(-5.0)):
+                    cd, ca, cn, cp = aero.coefficients(0.55, alpha, on)
+                    baseline = self.aero.coefficients(0.55, alpha, on)
+                    self.assertAlmostEqual(cd, multiplier * baseline[0])
+                    self.assertEqual((cn, cp), baseline[2:])
+                    self.assertAlmostEqual(ca * np.cos(alpha) + cn * np.sin(alpha), cd)
+
+    def test_rejects_invalid_drag_multiplier(self):
+        for value in (-1, float('nan'), float('inf')):
+            with self.assertRaisesRegex(ValueError, 'drag_multiplier'):
+                Aero({'drag_multiplier': value}, CANDIDATE, FakeDragModel())
+
     def test_evaluate_returns_wind_and_body_axis_forces(self):
         kin = KinematicsState(t=5.0, dt=0.1, x=0., h=0.0, vx=0., vz=100.0, theta=np.pi/2, q=0.0, alpha=np.deg2rad(5.0), m=100.0, Iyy=1.0)
         atmosphere = AtmosState(288.0, 101325.0, 1.2, 1.8e-5, 340.0, 100.0, 0.55)

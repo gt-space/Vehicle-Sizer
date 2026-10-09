@@ -21,6 +21,9 @@ class Aero:
         candidate: Dict[str, float],
         model: DragModel,
     ) -> None:
+        self.drag_multiplier = float(cfg.get("drag_multiplier", 1.0))
+        if not np.isfinite(self.drag_multiplier) or self.drag_multiplier < 0.0:
+            raise ValueError("aero.drag_multiplier must be finite and nonnegative")
         schedule = cfg.get("aoa_schedule")
         if schedule is None:
             self.schedule_time = None
@@ -100,7 +103,7 @@ class Aero:
         """Return wind-axis CD, body-axis CA, signed CN, and CP in metres."""
 
         mach, alpha_deg, alpha_sign = self._coordinates(mach, alpha)
-        cd = self._at(self._cd[engine_on], mach, alpha_deg)
+        cd = self.drag_multiplier * self._at(self._cd[engine_on], mach, alpha_deg)
         cn_magnitude = self._at(self._cn, mach, alpha_deg)
         cn = alpha_sign * cn_magnitude
         alpha_rad = np.deg2rad(alpha_deg)
@@ -142,6 +145,29 @@ class Aero:
             self.candidate, mach, alpha_deg, nose=self.nose, finish=self.finish,
             fins_on_boattail=self.fins_on_boattail, power_on=engine_on,
         )
+        if self.drag_multiplier != 1.0:
+            # Preserve the deck's axial load shape while matching the modified CD.
+            ca = self.coefficients(mach, np.deg2rad(alpha_deg), engine_on)[1]
+            if output["ca"] != 0.0:
+                factor = ca / output["ca"]
+                output = {
+                    **output,
+                    "ca": ca,
+                    "dca_dx": np.asarray(output["dca_dx"]) * factor,
+                    "running_ca": np.asarray(output["running_ca"]) * factor,
+                    "parts": {key: np.asarray(value) * factor
+                              for key, value in output["parts"].items()},
+                    "point_loads": {key: (station, coefficient * factor)
+                                    for key, (station, coefficient) in output["point_loads"].items()},
+                }
+            else:
+                # A zero net axial coefficient has no normalizable load shape.
+                x = np.asarray(output["x"])
+                correction = np.full_like(x, ca / (x[-1] - x[0]), dtype=float)
+                output = {**output, "ca": ca,
+                          "dca_dx": output["dca_dx"] + correction,
+                          "running_ca": output["running_ca"] + ca * (x - x[0]) / (x[-1] - x[0]),
+                          "parts": {**output["parts"], "drag_adjustment": correction}}
         return {
             **output,
             "x": np.asarray(output["x"], dtype=float) * INCH,

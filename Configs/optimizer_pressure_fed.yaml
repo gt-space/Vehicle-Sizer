@@ -6,8 +6,8 @@ tank_ids:
   pressurant: press_tank
 seed: 42
 max_evaluations: 10000       # Total candidate evaluations, including initial population
-maxiter: 147                 # Enough generations for 10000 evaluations at 68 members
-popsize: 4
+maxiter: 117                 # Enough generations for 10000 evaluations at 68 members
+popsize: 5
 reference_mass: 250.0
 hard_constraints:
   - max_length_to_diameter
@@ -58,7 +58,8 @@ evaluation_overrides:
   environment.max_altitude: 300000.0
 bounds:
 
-  exit_pressure: [40726.0, 103421.0]
+  # Rounded inward from the nfz=2 common table sizing interval (Pa).
+  exit_pressure: [41100.0, 103421.0]
   omld:
   - 0.31115
   - 0.31115
