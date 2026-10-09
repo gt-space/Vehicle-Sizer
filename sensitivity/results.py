@@ -32,7 +32,7 @@ class SweepResults:
         self.spec = spec
         self.mode = spec['sweep']['mode']
         self.parameters = [name for name, settings in spec['sweep']['parameters'].items()
-                           if settings.get('enabled', False)]
+                           if settings.get('enabled', True)]
         self.by_id = {row['case_id']: row for row in summary}
         # Track actual independent OAT changes, not incidental changes in
         # derived design values reported for virtual sizing inputs.

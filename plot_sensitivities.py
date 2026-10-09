@@ -14,6 +14,7 @@ results = SweepResults.load(RESULTS_DIR)
 #print('Scalar fields:', results.fields())
 #print('Flight-history fields:', results.history_fields())
 
+'''
 results.plot(
     x='weld_allowable',
     y='apogee',
@@ -34,6 +35,7 @@ results.plot(
     filename='apogee_and_tank_mass',
     file_format='png',
 )
+'''
 
 '''
 results.plot_history(
@@ -88,3 +90,41 @@ results.plot_history_derivative(
 #     filters={'cf_efficiency': 0.90},
 #     title='Apogee at 90% Cf efficiency', save=True,
 # )
+
+
+
+
+print('Available COPV outputs:', results.fields('press_tank'))
+
+results.plot(
+    x='tanks.press_tank.volume', y='apogee',
+    title='Apogee vs COPV Volume',
+    xscale=0.001, yscale=1000,
+    xlabel='COPV Volume (L)', ylabel='Apogee (km)',
+    marker=None, save=True, filename='copv_volume_vs_apogee',
+    file_format='png', show=False,
+)
+'''
+eol_field = 'fluid.press_tank.eol_temperature'
+if eol_field in results.fields():
+    results.plot(
+        x='tanks.press_tank.volume', y='apogee', y2=eol_field,
+        title='Apogee and COPV EOL Temperature vs Volume',
+        xscale=0.001, yscale=1000,
+        xlabel='COPV Volume (L)', ylabel='Apogee (km)',
+        y2label='EOL GN2 Temperature (K)', marker=None,
+        save=True, filename='copv_volume_apogee_eol_temperature',
+        file_format='png', show=False,
+    )
+else:
+    print('EOL gas temperature unavailable. Record histories and confirm engine shutdown.')
+
+results.plot(
+    x='tanks.press_tank.volume',
+    y={'dry_mass': 'Vehicle Dry Mass',
+        'design_summary.tank.press_tank.shell_mass': 'COPV Shell Mass'},
+    title='Mass vs COPV Volume',
+    xscale=0.001, xlabel='COPV Volume (L)', ylabel='Mass (kg)',
+    marker=None, save=True, filename='copv_volume_mass',
+    file_format='png', show=False,
+)'''

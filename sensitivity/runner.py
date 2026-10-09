@@ -15,7 +15,7 @@ import h5py
 import numpy as np
 import yaml
 
-from .parameters import ROOT, SweepCase, apply_case, load_sweep, make_cases
+from .parameters import ROOT, SweepCase, _get_candidate, apply_case, load_sweep, make_cases
 
 
 def _flatten_numeric(value: Any, prefix: str, result: dict, depth: int = 0) -> None:
@@ -25,10 +25,15 @@ def _flatten_numeric(value: Any, prefix: str, result: dict, depth: int = 0) -> N
             result[prefix] = float(value)
         except (TypeError, ValueError):
             pass
-    elif isinstance(value, dict) and depth < 6:
+    elif isinstance(value, dict) and depth < 9:
         for key, item in value.items():
             _flatten_numeric(item, f'{prefix}.{key}', result, depth + 1)
-    # Lists of tank section structures in design_summary aren't flat scalar outputs.
+    elif isinstance(value, (list, tuple)) and depth < 9:
+        for index, item in enumerate(value):
+            _flatten_numeric(item, f'{prefix}[{index}]', result, depth + 1)
+    elif isinstance(value, np.ndarray) and value.ndim == 0:
+        _flatten_numeric(value.item(), prefix, result, depth)
+
 
 
 def scalar_outputs(result: Any) -> dict:
@@ -55,6 +60,110 @@ def scalar_outputs(result: Any) -> dict:
             pass
     return outputs
 
+
+
+def _flat_state_numbers(value: Any, prefix: str, out: dict, *, depth: int = 0) -> None:
+    """Export numerical state without serializing solver objects or large arrays."""
+    if isinstance(value, (bool, int, float, np.number)):
+        if math.isfinite(float(value)):
+            out[prefix] = float(value)
+    elif isinstance(value, dict) and depth < 6:
+        for key, item in value.items():
+            _flat_state_numbers(item, f'{prefix}.{key}', out, depth=depth + 1)
+
+
+def _fluid_nodes(state: dict) -> dict:
+    try:
+        return state['plant'].fluids.node
+    except (KeyError, TypeError, AttributeError):
+        return {}
+
+
+def _fluid_history_rows(history: list, detail: str = 'standard') -> list[dict]:
+    """Expose every node's thermodynamic unknowns plus optional full reporting data.
+
+    Fields are based on actual returned solver states, so different propulsion
+    templates naturally export different nodes without special-case dispatch.
+    """
+    rows = []
+    for state in history:
+        row = {}
+        try:
+            fluids = state['plant'].fluids
+        except (KeyError, AttributeError, TypeError):
+            rows.append(row)
+            continue
+        for node_id, node in fluids.node.items():
+            for field, value in node.items():
+                if detail == 'full':
+                    _flat_state_numbers(value, f'fluid.node.{node_id}.{field}', row)
+                elif field in ('P', 'T', 'T_liq', 'T_ull', 'm', 'm_liq', 'm_ull',
+                               'U', 'U_liq', 'U_ull', 'quality'):
+                    _flat_state_numbers(value, f'fluid.node.{node_id}.{field}', row)
+        for branch_id, mdot in fluids.mdot.items():
+            _flat_state_numbers(mdot, f'fluid.branch.{branch_id}.mdot', row)
+        if detail == 'full':
+            for branch_id, branch in fluids.branch.items():
+                _flat_state_numbers(branch, f'fluid.branch.{branch_id}', row)
+            thermal = state['plant'].thermal
+            if thermal is not None:
+                _flat_state_numbers(thermal.node, 'thermal.node', row)
+        rows.append(row)
+    return rows
+
+
+def _fluid_statistics(history: list, result: Any) -> dict:
+    """Derive actual initial, minimum, maximum and powered-EOL node states.
+
+    EOL is the first accepted flight endpoint at engine shutdown, not apogee.
+    When no shutdown is recorded EOL is unavailable, not fabricated.
+    """
+    if not history or not all(isinstance(state, dict) and 'kinematics' in state for state in history):
+        return {}
+    eol_index = None
+    for i, state in enumerate(history):
+        if i and history[i-1].get('engine_on') and not state.get('engine_on'):
+            eol_index = i
+            break
+    if eol_index is None and getattr(result, 'burn_complete', False) and getattr(result, 'burn_duration', 0) > 0:
+        duration = getattr(result, 'burn_duration', None)
+        if duration is not None:
+            eol_index = min(range(len(history)), key=lambda i: abs(history[i]['kinematics'].t - duration))
+    nodes = [_fluid_nodes(state) for state in history]
+    initial = _fluid_nodes(getattr(result, 'initial_state', None))
+    names = sorted({name for node in [initial, *nodes] for name in node})
+    summary = {}
+    if eol_index is not None:
+        summary['fluid.eol_time_s'] = float(history[eol_index]['kinematics'].t)
+    for name in names:
+        measurements = {}
+        for i, node_map in [(-1, initial), *enumerate(nodes)]:
+            node = node_map.get(name, {})
+            if not isinstance(node, dict):
+                continue
+            # Volume-component masses/energies and P/T are physical state variables.
+            # Use NodeState.as_dict() results; never infer an EOS from P alone.
+            for field in ('P', 'T', 'T_ull', 'T_liq', 'm', 'm_ull', 'm_liq',
+                          'U', 'U_ull', 'U_liq', 'quality'):
+                value = node.get(field)
+                if isinstance(value, (int, float, np.number)) and math.isfinite(float(value)):
+                    measurements.setdefault(field, []).append((i, float(value)))
+        for field, values in measurements.items():
+            by_index = dict(values)
+            prefix = f'fluid.{name}'
+            summary[f'{prefix}.initial.{field}'] = values[0][1]
+            summary[f'{prefix}.final.{field}'] = values[-1][1]
+            summary[f'{prefix}.minimum.{field}'] = min(v for _, v in values)
+            summary[f'{prefix}.maximum.{field}'] = max(v for _, v in values)
+            if eol_index in by_index:
+                summary[f'{prefix}.eol.{field}'] = by_index[eol_index]
+        for nickname, field in [('pressure', 'P'), ('temperature', 'T'),
+                                ('gas_temperature', 'T_ull'), ('gas_mass', 'm_ull'),
+                                ('mass', 'm')]:
+            key = f'fluid.{name}.eol.{field}'
+            if key in summary:
+                summary[f'fluid.{name}.eol_{nickname}'] = summary[key]
+    return summary
 
 def _write_csv(path: Path, rows: list[dict], leading: tuple[str, ...]) -> None:
     fields = list(dict.fromkeys([*leading, *(k for row in rows for k in row)]))
@@ -153,7 +262,7 @@ def _model_resources(cfg: dict) -> dict:
 def _evaluate(candidate: dict, record_history: bool, compute_loads: bool,
               simulate_fn: Callable | None, history_fn: Callable | None,
               models: dict | None, ignore_feasibility: bool = False,
-              ignore_wind: bool = False) -> dict:
+              ignore_wind: bool = False, history_detail: str = 'standard') -> dict:
     """Run a case and return only serializable scalar/history data, not SimResult."""
     result = None
     failure = None
@@ -171,6 +280,7 @@ def _evaluate(candidate: dict, record_history: bool, compute_loads: bool,
         if simulate_fn is None:
             from simulation import simulate as simulate_fn
             simulation_kwargs['ignore_feasibility'] = ignore_feasibility
+            simulation_kwargs['record_design_summary'] = True
         result = simulate_fn(candidate, **simulation_kwargs)
     except Exception as exc:
         result = getattr(exc, 'partial_result', None)
@@ -180,13 +290,24 @@ def _evaluate(candidate: dict, record_history: bool, compute_loads: bool,
         errors.append({'message': failure, 'traceback': traceback.format_exc()})
 
     scalar = scalar_outputs(result) if result is not None else {}
+    if result is not None and getattr(result, 'history', None):
+        try:
+            scalar.update(_fluid_statistics(result.history, result))
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            issue = f'Fluid summary export failed: {type(exc).__name__}: {exc}'
+            errors.append({'message': issue, 'traceback': traceback.format_exc()})
+            scalar['fluid_summary_error'] = issue
     status = _case_status(scalar, failure, ignore_feasibility)
     names, matrix = [], None
     if record_history and result is not None and getattr(result, 'history', None):
         try:
             if history_fn is None:
                 from main import history_rows as history_fn
-            names, matrix = _numeric_history(history_fn(result.history))
+            rows = history_fn(result.history)
+            extra = _fluid_history_rows(result.history, history_detail)
+            if len(rows) != len(extra):
+                raise ValueError('Flight history and fluid-state history lengths differ')
+            names, matrix = _numeric_history([{**row, **fluid} for row, fluid in zip(rows, extra)])
         except Exception as exc:
             issue = f'History export failed: {type(exc).__name__}: {exc}'
             errors.append({'message': issue, 'traceback': traceback.format_exc()})
@@ -204,14 +325,15 @@ _WORKER_STATE = None
 def _worker_initializer(base_cfg: dict, parameters: list, record_history: bool,
                         compute_loads: bool, reuse_models: bool,
                         simulate_fn: Callable | None, history_fn: Callable | None,
-                        ignore_feasibility: bool, ignore_wind: bool) -> None:
+                        ignore_feasibility: bool, ignore_wind: bool,
+                        history_detail: str = 'standard') -> None:
     global _WORKER_STATE
     _WORKER_STATE = dict(base_cfg=base_cfg, parameters=parameters,
                          record_history=record_history, compute_loads=compute_loads,
                          reuse_models=reuse_models, simulate_fn=simulate_fn,
                          history_fn=history_fn, models=None,
                          ignore_feasibility=ignore_feasibility,
-                         ignore_wind=ignore_wind)
+                         ignore_wind=ignore_wind, history_detail=history_detail)
 
 
 def _worker_evaluate(case: SweepCase) -> dict:
@@ -224,7 +346,8 @@ def _worker_evaluate(case: SweepCase) -> dict:
             state['models'] = _model_resources(state['base_cfg'])
         return _evaluate(candidate, state['record_history'], state['compute_loads'],
                          state['simulate_fn'], state['history_fn'], state['models'],
-                         state['ignore_feasibility'], state['ignore_wind'])
+                         state['ignore_feasibility'], state['ignore_wind'],
+                         state['history_detail'])
     except Exception as exc:
         message = f'{type(exc).__name__}: {exc}'
         return {'status': 'error', 'failure': message, 'scalar': {},
@@ -240,12 +363,9 @@ def _case_row(base_cfg: dict, case: SweepCase, parameters: list) -> dict:
             row[p.name] = case.overrides[p.name]
         else:
             try:
-                node = candidate
-                for part in p.path.split('.'):
-                    node = node[part]
-                row[p.name] = node
-            except KeyError:
-                row[p.name] = 0.0 if p.name == 'thrust_tilt' else ''
+                row[p.name] = _get_candidate(candidate, p.path)
+            except (KeyError, ValueError):
+                row[p.name] = 0.0 if p.path == 'engine.thrust_tilt_deg' else ''
     return row
 
 
@@ -253,14 +373,16 @@ def _parallel_evaluations(cases: list[SweepCase], base_cfg: dict, parameters: li
                           record_history: bool, compute_loads: bool,
                           reuse_models: bool, simulate_fn: Callable | None,
                           history_fn: Callable | None, workers: int,
-                          ignore_feasibility: bool, ignore_wind: bool):
+                          ignore_feasibility: bool, ignore_wind: bool,
+                          history_detail: str = 'standard'):
     """Yield results as jobs finish, with bounded in-flight tasks/memory."""
     ctx = multiprocessing.get_context('spawn')
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=ctx,
         initializer=_worker_initializer,
         initargs=(base_cfg, parameters, record_history, compute_loads,
-                  reuse_models, simulate_fn, history_fn, ignore_feasibility, ignore_wind),
+                  reuse_models, simulate_fn, history_fn, ignore_feasibility,
+                  ignore_wind, history_detail),
     ) as pool:
         todo = iter(enumerate(cases))
         pending = {}
@@ -304,10 +426,19 @@ def run_sweep(base_cfg: dict, spec: dict, *, simulate_fn: Callable | None = None
     ignore_feasibility = _ignore_feasibility(spec)
     ignore_wind = _ignore_wind(spec)
     workers = _worker_count(spec, len(cases))
+    # A reusable property/aerodynamic source may depend on swept fields.
+    # In such cases build resources per candidate so each case actually uses
+    # its selected fluid, combustion model, or aerodynamic lookup table.
+    resource_paths = ('property_models.', 'aero.model', 'engine.fuel', 'engine.oxidizer')
+    if any(p.path.startswith(resource_paths) for p in parameters):
+        reuse_models = False
     output_cfg = spec.get('outputs', {})
     if not isinstance(output_cfg, dict):
         raise ValueError('outputs must be a mapping')
     record_history = output_cfg.get('record_history', True)
+    history_detail = output_cfg.get('history_detail', 'standard')
+    if history_detail not in ('standard', 'full'):
+        raise ValueError('outputs.history_detail must be standard or full')
     compute_loads = output_cfg.get('compute_loads', False)
     if type(record_history) is not bool or type(compute_loads) is not bool:
         raise ValueError('record_history and compute_loads must be booleans')
@@ -330,7 +461,7 @@ def run_sweep(base_cfg: dict, spec: dict, *, simulate_fn: Callable | None = None
                                                 record_history, compute_loads,
                                                 reuse_models, simulate_fn,
                                                 history_fn, workers,
-                                                ignore_feasibility, ignore_wind)
+                                                ignore_feasibility, ignore_wind, history_detail)
         else:
             def serial_evaluations():
                 for index, case in enumerate(cases):
@@ -338,7 +469,7 @@ def run_sweep(base_cfg: dict, spec: dict, *, simulate_fn: Callable | None = None
                     yield index, case, _evaluate(candidate, record_history,
                                                  compute_loads, simulate_fn,
                                                  history_fn, models,
-                                                 ignore_feasibility, ignore_wind)
+                                                 ignore_feasibility, ignore_wind, history_detail)
             evaluations = serial_evaluations()
 
         for finished, (index, case, data) in enumerate(evaluations, start=1):
@@ -349,12 +480,17 @@ def run_sweep(base_cfg: dict, spec: dict, *, simulate_fn: Callable | None = None
             # A baseline using explicit throat area lacks target_thrust in the
             # config, and vice versa. Give it the actual computed design value.
             if case.is_baseline and scalar:
-                if 'target_thrust' in input_columns and row.get('target_thrust') == '':
-                    row['target_thrust'] = scalar.get('design_summary.design_thrust', '')
-                if 'throat_area' in input_columns and row.get('throat_area') == '':
-                    row['throat_area'] = scalar.get('design_summary.throat_area', '')
+                for p in parameters:
+                    if row.get(p.name) != '':
+                        continue
+                    if p.path == 'prop_system.thrust_target':
+                        row[p.name] = scalar.get('design_summary.design_thrust', '')
+                    elif p.path == 'engine.throat_area':
+                        row[p.name] = scalar.get('design_summary.throat_area', '')
             cases_table[index] = dict(row, overrides=json.dumps(case.overrides))
-            summaries[index] = dict(row, status=status, error=failure or '', **scalar)
+            input_values = {f'inputs.{p.path}': row.get(p.name) for p in parameters}
+            summaries[index] = dict(row, **input_values, status=status,
+                                    error=failure or '', **scalar)
             for error in data['errors']:
                 errors.append(dict(case_id=case.case_id, **error))
             matrix = data['history_matrix']

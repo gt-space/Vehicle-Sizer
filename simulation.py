@@ -77,7 +77,8 @@ def property_sources(cfg: dict):
 
 def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
              aero_model=None, record_history=False, compute_loads=False,
-             progress=None, ignore_feasibility=False) -> SimResult:
+             progress=None, ignore_feasibility=False,
+             record_design_summary=False) -> SimResult:
     """Evaluate a fresh candidate; expected rejects return, unexpected failures raise.
 
     EvaluationFailure retains a typed cause and copied configuration. The caller
@@ -92,7 +93,8 @@ def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
                                combustion_properties=combustion_properties,
                                aero_model=aero_model, record_history=record_history,
                                compute_loads=compute_loads, progress=progress, context=context,
-                               ignore_feasibility=ignore_feasibility)
+                               ignore_feasibility=ignore_feasibility,
+                               record_design_summary=record_design_summary)
             return result
         except Exception as error:
             result = getattr(context["flight"], "result", None)
@@ -111,7 +113,8 @@ def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
 
 
 def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
-              record_history, compute_loads, progress, context, ignore_feasibility):
+              record_history, compute_loads, progress, context, ignore_feasibility,
+              record_design_summary=False):
     """Build fresh mutable state and run one candidate without output side effects.
 
     Reuse injected read-only property sources/aero_model across candidates to
@@ -156,7 +159,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
         return finalize(result, limits)
     context["phase"] = "flight initialization"
     design_summary = {}
-    if record_history:
+    if record_history or record_design_summary:
         from reporting.run_report import collect_design_summary
         design_summary = collect_design_summary(cfg, vehicle, propulsion)
     from Thermals.heat_sources import thermal_model
