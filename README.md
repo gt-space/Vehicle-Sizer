@@ -19,6 +19,16 @@ To simulate a flight:
 
 Outputs are a terminal summary, flight/event/load CSVs, and PNG plots at the config's `simulation.output` and `simulation.plot` paths. Use `--dt` or `--t-end` to change the run; `--enforce-constraints` applies the saved flight limits.
 
+Run a sensitivity sweep using copies of your existing vehicle configuration:
+
+```bash
+.venv/bin/python -m sensitivity Configs/sweeps/copv_volume.yaml --dry-run
+.venv/bin/python -m sensitivity Configs/sweeps/copv_volume.yaml
+```
+
+See [sensitivity/README.md](sensitivity/README.md) for sweep inputs, parallel
+execution, saved plots, and numerical partial derivatives.
+
 Run an optimization with a new output directory:
 
 ```bash
@@ -44,6 +54,7 @@ Run tests:
 | Folder | Purpose |
 | --- | --- |
 | [optimizer](optimizer/README.md) | Design searches, process workers, profiling |
+| [sensitivity](sensitivity/README.md) | Parameter sweeps, saved histories, plots, partial derivatives |
 | [diagnostics](diagnostics/README.md) | Errors, feasibility constraints, warnings |
 | [reporting](reporting/README.md) | Flight plots and run summaries |
 | [Configs](Configs/README.md) | Flight inputs, search settings, network wiring |

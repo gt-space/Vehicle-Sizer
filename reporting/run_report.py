@@ -12,6 +12,7 @@ G0 = 9.80665
 def collect_design_summary(cfg, vehicle, propulsion):
     """Capture the dry assembled vehicle before fluid inventories are attached."""
     sections, tanks = [], []
+    section_details, tank_details = {}, {}
     counts = Counter()
     names = {"nosecone": "Nosecone", "avi_bay": "Avionics bay",
              "fin_can": "Fin can / boattail", "inter_tank": "Intertank"}
@@ -21,16 +22,36 @@ def collect_design_summary(cfg, vehicle, propulsion):
         label = definition.get("name", definition.get("tank_id", names.get(kind, kind)))
         if kind == "inter_tank" and "name" not in definition:
             label = f"Intertank {counts[kind]}"
+        section_mass = float(np.sum(section.mass))
+        section_key = (definition.get("tank_id") or
+                       f"{kind}_{counts[kind]}")
+        section_details[section_key] = dict(
+            station=float(section.start_station), length=float(section.length),
+            mass=section_mass)
         sections.append([label, float(section.start_station), float(section.length),
-                         float(np.sum(section.mass))])
+                         section_mass])
         if kind == "fin_can":
             sections.append(["Engine", float(vehicle.engine_start_station),
                              float(vehicle.engine.length), float(vehicle.engine.mass)])
+            section_details['engine'] = dict(
+                station=float(vehicle.engine_start_station),
+                length=float(vehicle.engine.length),
+                mass=float(vehicle.engine.mass))
         if "tank_id" in definition:
             tank_id = definition["tank_id"]
             tank_cfg = cfg["tanks"][tank_id]
+            dry_mass = float(np.sum(section.dry_mass))
+            shell_mass = float(np.sum(section.shell_mass))
+            tank_details[tank_id] = dict(
+                mass=dry_mass, shell_mass=shell_mass,
+                hardware_mass=dry_mass - shell_mass,
+                volume=float(section.volume), length=float(section.length),
+                diameter=float(section.diameter if tank_cfg["type"] == "pressurant" else section.OMLD),
+                thickness=float(section.wall_thickness))
             tanks.append(dict(
                 id=tank_id, type=tank_cfg["type"],
+                mass=dry_mass, shell_mass=shell_mass,
+                hardware_mass=dry_mass - shell_mass,
                 volume=float(section.volume), length=float(section.length),
                 diameter=float(section.diameter if tank_cfg["type"] == "pressurant" else section.OMLD),
                 thickness=float(section.wall_thickness),
@@ -47,7 +68,13 @@ def collect_design_summary(cfg, vehicle, propulsion):
     physical_exit_diameter = 2 * np.sqrt(propulsion.throat_area * propulsion.expansion_ratio / np.pi)
     return dict(
         battery_sizing=deepcopy(getattr(vehicle, "battery_sizing", {})),
-        sections=sections, tanks=tanks, length=float(vehicle.length),
+        sections=sections, tanks=tanks,
+        section=section_details, tank={**tank_details,
+            'total_mass': sum(t['mass'] for t in tank_details.values()),
+            'total_shell_mass': sum(t['shell_mass'] for t in tank_details.values()),
+            'total_hardware_mass': sum(t['hardware_mass'] for t in tank_details.values()),
+        },
+        length=float(vehicle.length),
         diameter=float(cfg["vehicle"]["OMLD"]),
         dry_inertia={"Ixx": float(vehicle.Ixx), "Iyy": float(vehicle.Iyy)},
         design_mdot=float(propulsion.mdot_total),

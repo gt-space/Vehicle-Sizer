@@ -21,3 +21,15 @@ Plot saved optimizer results from the project root with
 This writes `convergence.png` and `convergence.svg` in the search directory;
 use `--output` to choose another output prefix or `--window` to set the
 constraint violation rolling window.
+
+Plot existing sensitivity sweep results with:
+
+```bash
+python -m reporting.plot_sensitivities outputs/sensitivity/my_sweep --list-fields
+python -m reporting.plot_sensitivities outputs/sensitivity/my_sweep \
+  --x tanks.press_tank.volume --y apogee --xscale 0.001 --yscale 1000 \
+  --xlabel "COPV volume (L)" --ylabel "Apogee (km)" --output /tmp/sweep.png
+```
+
+See [the sensitivity plotting documentation](../sensitivity/README.md) for
+history plots, derivatives, multiple axes, and the Python API.

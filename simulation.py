@@ -77,7 +77,8 @@ def property_sources(cfg: dict):
 
 def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
              aero_model=None, record_history=False, compute_loads=False,
-             progress=None) -> SimResult:
+             progress=None, ignore_feasibility=False,
+             record_design_summary=False) -> SimResult:
     """Evaluate a fresh candidate; expected rejects return, unexpected failures raise.
 
     EvaluationFailure retains a typed cause and copied configuration. The caller
@@ -91,7 +92,9 @@ def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
             result = _simulate(candidate, pure_properties=pure_properties,
                                combustion_properties=combustion_properties,
                                aero_model=aero_model, record_history=record_history,
-                               compute_loads=compute_loads, progress=progress, context=context)
+                               compute_loads=compute_loads, progress=progress, context=context,
+                               ignore_feasibility=ignore_feasibility,
+                               record_design_summary=record_design_summary)
             return result
         except Exception as error:
             result = getattr(context["flight"], "result", None)
@@ -110,7 +113,8 @@ def simulate(cfg: dict, *, pure_properties=None, combustion_properties=None,
 
 
 def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
-              record_history, compute_loads, progress, context):
+              record_history, compute_loads, progress, context, ignore_feasibility,
+              record_design_summary=False):
     """Build fresh mutable state and run one candidate without output side effects.
 
     Reuse injected read-only property sources/aero_model across candidates to
@@ -128,11 +132,13 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
     try:
         vehicle = Vehicle(cfg, pure_properties)
         propulsion = PropSystem(cfg, vehicle.tanks, fluid_properties=pure_properties,
-                                combustion_properties=combustion_properties)
+                                combustion_properties=combustion_properties,
+                                ignore_feasibility=ignore_feasibility)
         context["propulsion"] = propulsion
         vehicle.build(propulsion)
         context["battery_sizing"] = deepcopy(vehicle.battery_sizing)
-        static_margins = vehicle_limit_margins(cfg, vehicle)
+        static_margins = vehicle_limit_margins(cfg, vehicle,
+                                               reject_infeasible=not ignore_feasibility)
     except DesignInfeasible as error:
         geometry = isinstance(error, GeometryError)
         result = SimResult(termination="infeasible_initial_design",
@@ -153,7 +159,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
         return finalize(result, limits)
     context["phase"] = "flight initialization"
     design_summary = {}
-    if record_history:
+    if record_history or record_design_summary:
         from reporting.run_report import collect_design_summary
         design_summary = collect_design_summary(cfg, vehicle, propulsion)
     from Thermals.heat_sources import thermal_model
@@ -185,7 +191,8 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
     if aero_model is None:
         aero_model = DragModel(project_path(cfg["aero"]["model"]))
     flight = FlightSim(cfg, environment, Aero(cfg["aero"], vehicle.aero_candidate(), aero_model),
-                       propulsion, vehicle, thermal=thermal)
+                       propulsion, vehicle, thermal=thermal,
+                       ignore_feasibility=ignore_feasibility)
     context.update(phase="runtime", flight=flight)
     try:
         flight.run(h0=float(cfg["launch"]["altitude"]), v0=float(cfg["launch"]["velocity"]),

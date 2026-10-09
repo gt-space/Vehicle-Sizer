@@ -41,7 +41,7 @@ engine:
   oxidizer: LOX
 environment:
   wind:
-    enabled: false
+    enabled: true
     profile: AeroTables/WindProfiles/RAP_HWM.csv
   altitude_step: 100.0
   max_altitude: 300000.0

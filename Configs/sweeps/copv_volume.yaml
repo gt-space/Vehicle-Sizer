@@ -1,0 +1,19 @@
+# Sweep copies of the existing pressure-fed vehicle. All input values are SI.
+base_config: Configs/flight_pressure_fed_regulator.yaml
+
+sweep:
+  mode: one_at_a_time
+  workers: 1                 # Increase for independent parallel simulations.
+  max_cases: 100
+  ignore_feasibility: false   # Preserve normal design and operating checks.
+  ignore_wind: true           # Disable wind in candidate copies only.
+  parameters:
+    tanks.press_tank.volume:
+      values: [0.060, 0.065, 0.070, 0.075, 0.080]  # m^3
+
+outputs:
+  record_history: true
+  history_detail: full
+  compute_loads: false
+  record_structural_profiles: false
+  directory: outputs/sensitivity/copv_volume

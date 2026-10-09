@@ -10,5 +10,7 @@ tests/*
 !tests/test_battery_sizing.py
 !tests/test_examples_independence.py
 !tests/test_gas_generator.py
+!tests/test_sensitivity_plots.py
+!tests/test_sensitivity_runner.py
 
 .venv/

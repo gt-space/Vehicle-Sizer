@@ -18,6 +18,7 @@ def fixture():
         "prop_system": {"thrust_target": 16000., "MR_target": 2.1},
     }
     sections = [SimpleNamespace(start_station=x, length=1., mass=np.array([m]),
+                                dry_mass=np.array([m]), shell_mass=np.array([m - 1.]),
                                 volume=.2, OMLD=.3, wall_thickness=.0014)
                 for x, m in ((0., 2.), (1., 3.), (2., 4.))]
     vehicle = SimpleNamespace(sections=sections, engine_start_station=2.,
@@ -50,6 +51,12 @@ def test_sections_are_dynamic_and_engine_not_double_counted():
     sections = result.design_summary["sections"]
     assert [s[0] for s in sections] == ["Payload", "custom_oxidizer", "Fin can / boattail", "Engine"]
     assert sum(s[3] for s in sections) == result.dry_mass
+    tank = result.design_summary['tank']['custom_oxidizer']
+    assert tank['mass'] == 3.
+    assert tank['shell_mass'] == 2.
+    assert tank['hardware_mass'] == 1.
+    assert result.design_summary['tank']['total_mass'] == 3.
+    assert result.design_summary['section']['engine']['mass'] == 20.
     output = "\n".join(build_run_tables(cfg, result))
     assert "Avionics" not in output
     assert "custom_pump_out" in output
@@ -115,7 +122,8 @@ def test_copv_report_uses_equivalent_density_without_material():
     cfg['tanks'] = {'nitrogen': {'type': 'pressurant', 'construction': 'copv', 'equivalent_density': 2238.6}}
     vessel = SimpleNamespace(volume=.07, length=1.5, diameter=.2794, wall_thickness=.012382)
     vehicle = SimpleNamespace(sections=[SimpleNamespace(volume=vessel.volume, diameter=vessel.diameter,
-        wall_thickness=vessel.wall_thickness, start_station=0., length=1.5, mass=np.array([20.]))], length=1.5, Ixx=1., Iyy=2.)
+        wall_thickness=vessel.wall_thickness, start_station=0., length=1.5, mass=np.array([20.]),
+        dry_mass=np.array([20.]), shell_mass=np.array([18.]))], length=1.5, Ixx=1., Iyy=2.)
     propulsion = SimpleNamespace(initial_states={'nitrogen': {'T': 300.}},
         Pc_target=2e6, MR_target=2.1, expansion_ratio=5., cstar_efficiency=.85,
         cf_efficiency=.95, throat_area=.01, mdot_total=8., design_thrust=16000.,
