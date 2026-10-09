@@ -1,8 +1,8 @@
 """Plot saved optimizer results without importing or running the solver.
 
 Examples:
-    python plot_optimizer_convergence.py outputs/pressure_fed_search_02
-    python plot_optimizer_convergence.py outputs/pressure_fed_search_01 --window 250
+    python reporting/plot_optimizer_convergence.py outputs/pressure_fed_search_02
+    python reporting/plot_optimizer_convergence.py outputs/pressure_fed_search_01 --window 250
 
 Writes PNG and SVG files. Candidate index is search order, not completion order.
 Supports serial evaluations.jsonl and parallel candidates/*/result.json logs.
@@ -109,9 +109,8 @@ def plot_convergence(directory, output, window=500):
         fig, axes = plt.subplots(3, 1, figsize=(12, 11), sharex=True,
                                  gridspec_kw={"height_ratios": [1.1, 1, 1]},
                                  layout="constrained")
-        fig.suptitle(f"Optimizer convergence — {directory.name}\n"
-                     f"{len(rows):,} saved evaluations · {len(accepted):,} feasible · "
-                     f"best score {best['score']:.6f}", fontsize=15)
+        fig.suptitle(f"Optimizer convergence — {directory.name}\n")
+
         score_ax, mass_ax, constraints_ax = axes
         score_ax.axhspan(0, 1, color="#16a34a", alpha=.08, label="Feasible score range")
         score_ax.axhline(1, color="#16a34a", linewidth=.8, linestyle=":")
@@ -132,7 +131,7 @@ def plot_convergence(directory, output, window=500):
                 ax.axvline(first["index"], color="#16a34a", linestyle="--", linewidth=.9)
             score_ax.scatter(first["index"], first["score"], color="#16a34a", zorder=5,
                              label=f"First feasible: #{first['index']}")
-        score_ax.set(ylabel="Objective score ↓", title="1  Best objective and population progress")
+        score_ax.set(ylabel="Objective score", title="Objective Score Progression")
         score_ax.legend(loc="upper right", fontsize=9, ncol=2)
 
         if feasible_mass:
@@ -151,23 +150,20 @@ def plot_convergence(directory, output, window=500):
         else:
             mass_ax.text(.5, .5, "No feasible candidates yet", ha="center", va="center",
                          transform=mass_ax.transAxes, color="#64748b")
-        mass_ax.set(ylabel="Launch mass (kg)", title="2  Feasible designs: mass and best-scoring candidate")
+        mass_ax.set(ylabel="Launch mass (kg)", title="Objective Progression")
 
         for (key, label), color in zip(CONSTRAINTS.items(), COLORS):
             constraints_ax.plot(x, violation_frequency(rows, key, window),
                                 label=label, color=color, linewidth=1.3)
         constraints_ax.set(ylabel="Violation frequency", ylim=(-.03, 1.06),
                            xlabel="Candidate evaluation index (search order)",
-                           title=f"3  Constraint failures among assessed margins — rolling {window} saved evaluations")
+                           title="Constraint Violation Frequency")
         constraints_ax.yaxis.set_major_formatter(PercentFormatter(1))
         constraints_ax.legend(loc="upper right", fontsize=9, ncol=2)
         for ax in axes:
             ax.grid(alpha=.17)
             ax.set_xlim(0, max(2, int(x[-1])))
             ax.xaxis.set_major_formatter(StrMethodFormatter("{x:,.0f}"))
-        fig.supxlabel("Search feasibility only; final verification is separate. Missing constraint measurements are excluded.\n"
-                      "Scores include soft penalties; crossing below 1 changes feasibility class. Parallel completion order may differ.",
-                      fontsize=9, color="#475569")
         output.parent.mkdir(parents=True, exist_ok=True)
         paths = [Path(str(output) + suffix) for suffix in (".png", ".svg")]
         for path in paths:
