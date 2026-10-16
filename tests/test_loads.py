@@ -1,8 +1,10 @@
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
 
 from Flight.loads import Loads
+from reporting.plot_peak_loads import summarize_loads
 
 
 class FakeVehicle:
@@ -82,6 +84,18 @@ class LoadsTests(unittest.TestCase):
         self.assertAlmostEqual(result["axial"][-1], 0.0)
         self.assertAlmostEqual(result["shear"][-1], 0.0)
         self.assertAlmostEqual(result["bending"][-1], 0.0)
+
+    def test_burn_envelope_preserves_station_peak_times_and_signed_snapshot(self):
+        samples = [dict(kinematics=SimpleNamespace(t=t), loads=dict(station=np.array([0.5, 1.5]),
+                                           axial=np.array(a), shear=np.array(s), bending=np.array(b)))
+                   for t, a, s, b in [(0, [8, -2], [1, 2], [1, 3]),
+                                      (2, [3, -9], [-4, 1], [-6, 2])]]
+        station, times, matrices, peaks, envelopes, envelope_times = summarize_loads(samples)
+        np.testing.assert_array_equal(envelopes['axial'], [8, 9])
+        np.testing.assert_array_equal(envelope_times['axial'], [0, 2])
+        self.assertEqual(peaks['bending']['time_s'], 2)
+        self.assertEqual(peaks['bending']['signed_value_SI'], -6)
+        np.testing.assert_array_equal(matrices['axial'][peaks['bending']['sample_index']], [3, -9])
 
 
 if __name__ == "__main__":

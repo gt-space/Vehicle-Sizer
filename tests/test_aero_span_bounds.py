@@ -1,9 +1,11 @@
 """Diameter-dependent fin geometry through the actual expanded aero deck."""
+from Fluids.design import prepare_design_inputs
 from copy import deepcopy
 
 import numpy as np
 import pytest
 
+from Fluids.PropSystem import PropSystem
 import optimizer.core as opt
 from Configs.loader import load_config
 from Flight.flight_forces import Aero
@@ -110,8 +112,9 @@ def test_si_round_trip_does_not_reject_exact_span_boundaries(model):
 def test_current_configs_size_and_export_valid_new_deck_geometry(model, architecture, controller):
     cfg = load_config(f'Configs/flight_{architecture}_{controller}.yaml')
     pure, combustion = opt.property_sources(cfg)
-    vehicle = Vehicle(cfg, pure)
-    with opt.PropSystem(cfg, vehicle.tanks, pure, combustion) as prop:
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    vehicle = Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures)
+    with PropSystem(cfg, vehicle.tanks, pure, combustion, initial_states=states, template=template) as prop:
         vehicle.build(prop)
         candidate = vehicle.aero_candidate()
         model.check(candidate)

@@ -7,6 +7,7 @@ class Section(ABC):
     def __init__(self, cfg: dict):
 
         self.cfg: dict = cfg
+        self.radius = float(cfg["vehicle"]["OMLD"]) / 2
 
         self.dx: float = cfg["vehicle"]["dx"]
         self.length: float = None
@@ -94,24 +95,24 @@ class Section(ABC):
     def get_EI(self) -> np.ndarray:
         pass
 
-    @abstractmethod
     def get_area(self) -> np.ndarray:
-        pass
+        self.lat_area = np.full(self.n, 2 * self.radius * self.length / self.n)
+        self.surf_area = np.full(self.n, 2 * np.pi * self.radius * self.length / self.n)
 
-    @abstractmethod
     def get_MOI(self):
-        pass
+        total = np.sum(self.mass)
+        self.cg = np.sum(self.mass * self.station) / total if total > 0 else np.mean(self.station)
+        self.Ixx = np.sum(self.mass * self.radius**2)
+        self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
 
 
-    @abstractmethod
     def get_thermal_oml_area(self) -> np.ndarray:
         """Return external heated area [m^2] for each axial cell."""
-        pass
+        return self.surf_area.copy()
 
-    @abstractmethod
     def get_thermal_shell_mass(self) -> np.ndarray:
         """Return thermally active shell mass [kg] for each axial cell."""
-        pass
+        return self.shell_mass.copy()
 
     def get_thermal_internal_area(self) -> np.ndarray:
         """Return internal heat-transfer area [m^2] for each axial cell."""

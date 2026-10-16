@@ -10,17 +10,7 @@ import numpy as np
 
 
 def _series(rows, name, scale=1.0):
-    return np.asarray([row[name] for row in rows], dtype=float) * scale
-
-
-def _burnout_time(rows):
-    was_on = False
-    for row in rows:
-        if row["engine_on"]:
-            was_on = True
-        elif was_on:
-            return float(row["time_s"])
-    return None
+    return np.asarray([row.get(name, np.nan) for row in rows], dtype=float) * scale
 
 
 def _mark_burnout(axes, burnout):
@@ -134,15 +124,6 @@ def _load_surface(axis, time, station, values, title, zlabel, burnout):
     return surface
 
 
-def _tank_nodes(history):
-    nodes = history[0]["plant"].fluids.node
-    return {
-        node.get("tank_id"): node_id
-        for node_id, node in nodes.items()
-        if node.get("tank_id")
-    }
-
-
 def _valve_history(history, branch_id):
     """Reconstruct substep transitions; endpoint samples cannot resolve fast cycling."""
     first = history[0]["plant"].fluids
@@ -183,12 +164,12 @@ def plot_valve_actuations(history, path, burnout=None):
 
 def plot_aoa_flight_path(rows, path, burnout=None):
     """Overlay true AoA and ground-relative flight-path angle on separate scales."""
-    time = _series(rows, "time_s")
+    time = _series(rows, "state.kinematics.t")
     figure, aoa_axis = plt.subplots(figsize=(11, 6))
     path_axis = aoa_axis.twinx()
-    aoa_axis.plot(time, _series(rows, "angle_of_attack_deg"),
+    aoa_axis.plot(time, _series(rows, "state.kinematics.alpha", 180 / np.pi),
                   color="tab:blue", label="Angle of attack")
-    path_axis.plot(time, _series(rows, "flight_path_angle_deg"),
+    path_axis.plot(time, _series(rows, "derived.flight_path_angle_rad", 180 / np.pi),
                    color="tab:orange", linestyle="--", label="Flight-path angle (ground-relative)")
     aoa_axis.set(xlabel="Time [s]", title="Angle of attack and flight-path angle")
     aoa_axis.set_ylabel("Angle of attack [deg]", color="tab:blue")
@@ -205,7 +186,7 @@ def plot_aoa_flight_path(rows, path, burnout=None):
     plt.close(figure)
 
 
-def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, Path]:
+def plot_flight(history: list, rows: list[dict], base_path: Path, burnout) -> dict[str, Path]:
     """Write the standard flight diagnostic figures and return their paths."""
 
     base_path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,22 +196,22 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
         "bang_bang", "pressurant_mdot", "engine_mdot_mr", "mass_distribution", "dry_mass_distribution",
         "force_distributions", "wind", "aoa_flight_path",
     )}
-    time = _series(rows, "time_s")
-    burnout = _burnout_time(rows)
+    time = _series(rows, "state.kinematics.t")
     plot_aoa_flight_path(rows, paths["aoa_flight_path"], burnout)
-    tank_nodes = _tank_nodes(history)
+    tank_nodes = {node["tank_id"]: node_id for node_id, node in history[0]["plant"].fluids.node.items()
+                  if node.get("tank_id")}
     press_node = tank_nodes["press_tank"]
 
     figure, axis = plt.subplots(figsize=(11, 7))
     for node_id, node in history[0]["plant"].fluids.node.items():
         if "P" in node and node_id != press_node:
-            axis.plot(time, [state["plant"].fluids.node[node_id]["P"] / 1e6 for state in history],
+            axis.plot(time, _series(rows, f"state.plant.fluids.node.{node_id}.P", 1e-6),
                       label=node_id.replace("_", " "))
     axis.set(xlabel="Time [s]", ylabel="Pressure [MPa]", title="System pressure ladder (pressurant excluded)")
     _finish(figure, axis, paths["pressure_ladder"], burnout)
 
     figure, axis = plt.subplots(figsize=(11, 6))
-    axis.plot(time, [state["plant"].fluids.node[press_node]["P"] / 1e6 for state in history],
+    axis.plot(time, _series(rows, f"state.plant.fluids.node.{press_node}.P", 1e-6),
               label="Pressurant pressure")
     axis.set(xlabel="Time [s]", ylabel="Pressure [MPa]", title="Pressurant blowdown")
     _finish(figure, axis, paths["copv_blowdown"], burnout)
@@ -239,7 +220,7 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     for tank_id, node_id in tank_nodes.items():
         for key, phase in (("T", ""), ("T_liq", " liquid"), ("T_ull", " ullage")):
             if key in history[0]["plant"].fluids.node[node_id]:
-                axis.plot(time, [state["plant"].fluids.node[node_id].get(key, np.nan) for state in history],
+                axis.plot(time, _series(rows, f"state.plant.fluids.node.{node_id}.{key}"),
                           label=f"{tank_id.replace('_', ' ')}{phase}")
     axis.set(xlabel="Time [s]", ylabel="Temperature [K]", title="Tank temperatures")
     _finish(figure, axis, paths["tank_temperatures"], burnout)
@@ -247,15 +228,15 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     figure, axis = plt.subplots(figsize=(11, 6))
     for tank_id, label in (("ox_tank", "Oxidizer"), ("fuel_tank", "Fuel")):
         node_id = tank_nodes[tank_id]
-        axis.plot(time, [state["plant"].fluids.node[node_id].get("m_liq", 0.0) for state in history],
+        axis.plot(time, [row.get(f"state.plant.fluids.node.{node_id}.m_liq", 0.) for row in rows],
                   label=label)
     axis.set(xlabel="Time [s]", ylabel="Liquid mass [kg]", title="Remaining propellant mass")
     _finish(figure, axis, paths["propellant_mass"], burnout)
 
     figure, pressure_axis = plt.subplots(figsize=(11, 6))
     thrust_axis = pressure_axis.twinx()
-    pressure_axis.plot(time, _series(rows, "chamber_pressure_Pa", 1e-6), label="Chamber pressure")
-    thrust_axis.plot(time, _series(rows, "thrust_N", 1 / 1000), color="tab:orange", label="Thrust")
+    pressure_axis.plot(time, _series(rows, "state.plant.fluids.propulsion.Pc", 1e-6), label="Chamber pressure")
+    thrust_axis.plot(time, _series(rows, "state.plant.fluids.propulsion.thrust", 1 / 1000), color="tab:orange", label="Thrust")
     pressure_axis.set(xlabel="Time [s]", ylabel="Chamber pressure [MPa]", title="Chamber pressure and thrust")
     thrust_axis.set_ylabel("Thrust [kN]")
     _mark_burnout(pressure_axis, burnout)
@@ -270,25 +251,25 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
                 grid[row, col], sharex=axes[0, 0] if row or col else None
             )
 
-    axes[0, 0].plot(time, _series(rows, "altitude_m"))
+    axes[0, 0].plot(time, _series(rows, "state.kinematics.h"))
     axes[0, 0].set_ylabel("Altitude [m]")
 
-    axes[0, 1].plot(time, _series(rows, "x_m"))
+    axes[0, 1].plot(time, _series(rows, "state.kinematics.x"))
     axes[0, 1].set_ylabel("Downrange distance [m]")
 
-    axes[1, 0].plot(time, _series(rows, "speed_m_s"), label="Speed")
-    axes[1, 0].plot(time, _series(rows, "airspeed_m_s"), linestyle="--", label="Airspeed")
-    axes[1, 0].plot(time, _series(rows, "vx_m_s"), label="Horizontal velocity")
-    axes[1, 0].plot(time, _series(rows, "vz_m_s"), label="Vertical velocity")
+    axes[1, 0].plot(time, _series(rows, "derived.speed_m_s"), label="Speed")
+    axes[1, 0].plot(time, _series(rows, "state.wind.airspeed"), linestyle="--", label="Airspeed")
+    axes[1, 0].plot(time, _series(rows, "state.kinematics.vx"), label="Horizontal velocity")
+    axes[1, 0].plot(time, _series(rows, "state.kinematics.vz"), label="Vertical velocity")
     axes[1, 0].set_ylabel("Velocity [m/s]")
 
-    axes[1, 1].plot(time, _series(rows, "acceleration_m_s2"))
+    axes[1, 1].plot(time, _series(rows, "state.forces.acceleration"))
     axes[1, 1].set_ylabel("Vertical acceleration [m/s²]")
 
-    axes[2, 0].plot(time, _series(rows, "mach"))
+    axes[2, 0].plot(time, _series(rows, "state.atmosphere.Ma"))
     axes[2, 0].set_ylabel("Mach")
 
-    q = _series(rows, "dynamic_pressure_Pa", 1e-3)
+    q = _series(rows, "state.atmosphere.q", 1e-3)
     axes[2, 1].plot(time, q)
     max_q = int(np.nanargmax(q))
     axes[2, 1].plot(
@@ -299,22 +280,22 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     )
     axes[2, 1].set_ylabel("Dynamic pressure [kPa]")
 
-    axes[3, 0].plot(time, _series(rows, "pitch_angle_deg"), label="Pitch angle")
+    axes[3, 0].plot(time, _series(rows, "state.kinematics.theta", 180 / np.pi), label="Pitch angle")
     axes[3, 0].plot(
         time,
-        _series(rows, "flight_path_angle_deg"),
+        _series(rows, "derived.flight_path_angle_rad", 180 / np.pi),
         label="Flight-path angle",
     )
     axes[3, 0].plot(
         time,
-        _series(rows, "angle_of_attack_deg"),
+        _series(rows, "state.kinematics.alpha", 180 / np.pi),
         label="Angle of attack",
     )
     axes[3, 0].set_ylabel("Angle [deg]")
-    axes[3, 0].plot(time, _series(rows, "air_flight_path_angle_deg"),
+    axes[3, 0].plot(time, _series(rows, "state.wind.gamma_air", 180 / np.pi),
                     linestyle="--", label="Air-relative flight-path angle")
 
-    axes[3, 1].plot(time, _series(rows, "pitch_rate_rad_s"))
+    axes[3, 1].plot(time, _series(rows, "state.kinematics.q"))
     axes[3, 1].set_ylabel("Pitch rate [rad/s]")
 
     for axis in axes[-1]:
@@ -322,7 +303,7 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
 
     _mark_burnout(axes, burnout)
     axis = figure.add_subplot(grid[:, 2])
-    axis.plot(_series(rows, "x_m"), _series(rows, "altitude_m"))
+    axis.plot(_series(rows, "state.kinematics.x"), _series(rows, "state.kinematics.h"))
     axis.set(
         xlabel="Downrange distance [m]",
         ylabel="Altitude [m]",
@@ -330,16 +311,16 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     )
     if burnout is not None:
         index = int(np.abs(time - burnout).argmin())
-        axis.plot(rows[index]["x_m"], rows[index]["altitude_m"], "ko", label="Burnout")
+        axis.plot(rows[index]["state.kinematics.x"], rows[index]["state.kinematics.h"], "ko", label="Burnout")
     figure.suptitle("Flight kinematics and trajectory")
     _finish(figure, [*axes.flat, axis], paths["kinematics"])
 
     figure, stability_axis = plt.subplots(figsize=(11, 6))
     mach_axis = stability_axis.twinx()
-    stability_axis.plot(time, _series(rows, "static_stability_margin_calibers"),
+    stability_axis.plot(time, _series(rows, "derived.static_stability_margin_calibers"),
                         color="tab:blue", label="Static stability margin")
     stability_axis.axhline(0, color="gray", linewidth=1, linestyle=":")
-    mach_axis.plot(time, _series(rows, "mach"), color="tab:orange", linestyle="--", label="Mach")
+    mach_axis.plot(time, _series(rows, "state.atmosphere.Ma"), color="tab:orange", linestyle="--", label="Mach")
     stability_axis.set(xlabel="Time [s]", ylabel="Static stability margin [calibers]",
                        title="Static stability margin and Mach")
     mach_axis.set_ylabel("Mach")
@@ -353,9 +334,9 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     plt.close(figure)
 
     figure, axis = plt.subplots(figsize=(8, 8))
-    altitude = _series(rows, "altitude_m")
-    axis.plot(_series(rows, "wind_x_m_s"), altitude, label="Wind x")
-    axis.plot(_series(rows, "wind_z_m_s"), altitude, label="Wind z")
+    altitude = _series(rows, "state.kinematics.h")
+    axis.plot(_series(rows, "state.wind.wind_x"), altitude, label="Wind x")
+    axis.plot(_series(rows, "state.wind.wind_z"), altitude, label="Wind z")
     axis.set(xlabel="Wind velocity [m/s]", ylabel="Altitude [m]",
              title="Wind profile sampled along trajectory")
     _finish(figure, axis, paths["wind"])
@@ -372,7 +353,7 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
         figure, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
         for branch_id in regulators:
             for axis, field in zip(axes, ("opening_fraction", "pressure_error")):
-                axis.plot(time, [state["plant"].fluids.branch[branch_id][field] for state in history],
+                axis.plot(time, _series(rows, f"state.plant.fluids.branch.{branch_id}.{field}"),
                           label=branch_id.replace("_", " "))
         axes[0].set(ylabel="Opening fraction", title="Ideal pressure regulators")
         axes[1].set(xlabel="Time [s]", ylabel="Tank pressure − target [Pa]")
@@ -380,17 +361,17 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
 
     figure, axis = plt.subplots(figsize=(11, 6))
     for branch_id in valve_ids:
-        axis.plot(time, [state["plant"].fluids.mdot[branch_id] for state in history],
+        axis.plot(time, _series(rows, f"state.plant.fluids.mdot.{branch_id}"),
                   label=branch_id.replace("_BANGBANG", "").replace("_", " "))
     axis.set(xlabel="Time [s]", ylabel="Pressurant mass flow [kg/s]", title="Pressurant mass flow")
     _finish(figure, axis, paths["pressurant_mdot"], burnout)
 
     figure, flow_axis = plt.subplots(figsize=(11, 6))
     mr_axis = flow_axis.twinx()
-    for name, label in (("oxidizer_mdot_kg_s", "Oxidizer"), ("fuel_mdot_kg_s", "Fuel"),
-                        ("nozzle_mdot_kg_s", "Nozzle")):
+    for name, label in (("state.plant.fluids.propulsion.mdot_ox", "Oxidizer"), ("state.plant.fluids.propulsion.mdot_fuel", "Fuel"),
+                        ("state.plant.fluids.propulsion.mdot_nozzle", "Nozzle")):
         flow_axis.plot(time, _series(rows, name), label=label)
-    mr_axis.plot(time, _series(rows, "mixture_ratio"), color="black", linestyle=":", label="Mixture ratio")
+    mr_axis.plot(time, _series(rows, "state.plant.fluids.propulsion.MR"), color="black", linestyle=":", label="Mixture ratio")
     flow_axis.set(xlabel="Time [s]", ylabel="Mass flow [kg/s]", title="Engine mass flow and mixture ratio")
     mr_axis.set_ylabel("Mixture ratio")
     _mark_burnout(flow_axis, burnout)
@@ -403,8 +384,8 @@ def plot_flight(history: list, rows: list[dict], base_path: Path) -> dict[str, P
     figure, axis = plt.subplots(figsize=(11, 7))
     field = axis.pcolormesh(time, station, (mass / cell_widths).T, shading="nearest")
     figure.colorbar(field, ax=axis, label="Mass per unit length [kg/m]")
-    axis.plot(time, _series(rows, "cg_m"), color="white", linewidth=2, label="Center of mass")
-    axis.plot(time, _series(rows, "cp_m"), color="black", linewidth=2, label="Center of pressure")
+    axis.plot(time, _series(rows, "state.mass_properties.cg"), color="white", linewidth=2, label="Center of mass")
+    axis.plot(time, _series(rows, "state.plant.aero.cp"), color="black", linewidth=2, label="Center of pressure")
     axis.set(xlabel="Time [s]", ylabel="Axial station [m]", title="Vehicle mass distribution")
     _finish(figure, axis, paths["mass_distribution"], burnout)
 

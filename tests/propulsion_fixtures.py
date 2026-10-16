@@ -109,7 +109,6 @@ def config():
             },
         },
         "engine": {
-            "property_source": "cea",
             "oxidizer": "LOX",
             "fuel": "RP-1",
             "cstar_efficiency": 1.0,

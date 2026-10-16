@@ -4,6 +4,9 @@ Sizes propulsion components and solves connected fluid mass, energy, and flow eq
 
 Inputs: tank geometry, initial states, property sources, a network template, ambient pressure, heat rates, and axial acceleration.
 
+Network node and branch definitions select their implementation with `component`.
+Template binding validates this key; sizing and assembly use it directly.
+
 Outputs: node pressures, temperatures and inventories; branch mass flows; engine thrust; events; and operating-limit margins.
 
 Detected thermodynamic phase transitions in volume models (condensation, evaporation, or reaching the saturated-liquid limit) raise `UnsupportedPhaseChangeError` before changing the model state. The error records the volume, fluid, transition, and event time. Optimization marks the candidate unresolved/outside model coverage and continues without adding a constraint penalty or counting it toward numerical-failure limits. This applies to all volume IDs and fluids. Propellant dryout remains an inventory-depletion event and follows its existing shutdown/flow behavior.
@@ -69,3 +72,45 @@ network. `PropSystem.gg_sizing` and `SimResult.gg_sizing` expose design calculat
 Direct tank drains account for consumption only; downstream GG feeds requiring
 additional pump throughput are rejected until coupled design-flow sizing exists.
 The model includes no turbine dynamics, GG exhaust thrust, or GG hardware mass.
+
+Network state and rollback
+--------------------------
+
+`initialize()` and `update()` use one bounded retry/restore loop. Initialization
+sets the starting time; updates can also initialize an unused network. Each
+operation has one retry budget, including initialization and any subsequent
+advance. `commit=False` advances an isolated runtime copy and closes its solver,
+leaving the accepted network and native solver history intact.
+
+Checkpoints copy the fields declared in `FluidNetwork._runtime_fields`, including
+component runtime attributes, numerical layouts, constraint extrema, pressure
+tracking, event counts, and effective solver controls. Restore is reusable.
+Component definitions, geometry, property providers, and monitor callbacks are
+shared; fixed definitions and solver options must remain unchanged during a run.
+`effective_horizon` holds retry adjustments independently of configured options.
+New component attributes participate automatically in rollback. New network-level
+runtime fields belong in `_runtime_fields`; subclasses can extend that tuple.
+
+`NetworkState` lives with the other records in `FluidState.py` and owns snapshot
+serialization. Returned `node`/`branch` data are detached from solver state and
+are the canonical access points; redundant `td_state` and `state` exports have
+been removed. Constraint monitors receive a detached `NetworkState` with `nodes`
+and `branches`.
+
+`events` and `numerical_remainders` contain only records from the current operation;
+`event_counts` remains cumulative. Event numbering is assigned once by the network
+and rolls back with the operation. Numerical remainders are derived from those
+events rather than stored separately. Consumers retaining complete history append
+the returned events; the flight history already does this. Saved output snapshots
+remain valid after later advances, previews, and restores.
+
+Assessments use immutable `constraint_records` throughout network and propulsion
+outputs; monitors return the same record type. Margin and measurement time roll
+back together. Initial assessment records are seeded once, instead of being
+merged into every propulsion output. Pump-domain validation remains active even
+when optional assessment is disabled. External-heating nodes and pump curves
+are identified once during propulsion construction.
+
+Sizing and runtime gas restrictions use the same `compressible_mass_flux()`
+equation. Invalid physical inputs raise `ValueError` for sizing; the runtime
+adapter classifies them as recoverable `TrialDomainError` solver inputs.

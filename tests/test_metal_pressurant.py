@@ -2,6 +2,7 @@ import unittest
 from copy import deepcopy
 import numpy as np
 import pytest
+from Fluids.design import prepare_design_inputs
 from Configs.loader import load_config
 from Vehicle.Vehicle import Vehicle
 from Vehicle.Material import MaterialProperties
@@ -16,12 +17,14 @@ class MetalPressurantTests(unittest.TestCase):
         tank.update(construction='metal', material='aluminum_6061', design_pressure=2e6)
         for key in ('equivalent_density', 'thickness_slope', 'thickness_intercept'):
             tank.pop(key)
-        vessel = Vehicle(cfg, CoolPropPropertySource()).tanks['press_tank']
+        template, states, wall_pressures = prepare_design_inputs(cfg)
+        vessel = Vehicle(cfg, CoolPropPropertySource(), initial_states=states, wall_pressures=wall_pressures).tanks['press_tank']
         self.assertAlmostEqual(vessel.wall_thickness,
             1.5 * 2e6 * tank['outer_diameter'] / (2 * cfg['advanced']['weld_allowable']))
         self.assertAlmostEqual(vessel._get_dry_mass(), vessel.shell_volume * MaterialProperties.from_name('aluminum_6061').density)
         tank['mass'] = 15
-        self.assertEqual(Vehicle(cfg, CoolPropPropertySource()).tanks['press_tank']._get_dry_mass(), 15)
+        template, states, wall_pressures = prepare_design_inputs(cfg)
+        self.assertEqual(Vehicle(cfg, CoolPropPropertySource(), initial_states=states, wall_pressures=wall_pressures).tanks['press_tank']._get_dry_mass(), 15)
 
 
 def metal_config():
@@ -63,7 +66,14 @@ def test_metal_length_mass_and_section_overrides_survive_fluid_updates():
     press.build()
     assert press.length == 2.
     assert press.dry_mass.sum() == pytest.approx(18.)
-    press.set_fluid_mass(np.full(press.n, 2. / press.n))
+    from Vehicle.Vehicle import Vehicle
+    vehicle = Vehicle.__new__(Vehicle)
+    vehicle.cfg, vehicle.sections = cfg, [press]
+    vehicle.station, vehicle.mass = press.station, press.mass.copy()
+    vehicle.engine_mass = np.zeros(press.n)
+    vehicle.dry_pitch_correction = 0.
+    vehicle.fluid_sections = [('press', press, slice(None))]
+    vehicle.update_mass_distribution({'press': {'axial_mass': np.full(press.n, 2. / press.n)}})
     assert press.mass.sum() == pytest.approx(20.)
     press.build()
     assert press.mass.sum() == pytest.approx(18.)
@@ -85,22 +95,18 @@ def test_supplied_metal_gauge_has_a_geometry_constraint():
     with pytest.warns(RuntimeWarning, match='below'):
         press = PressTank(cfg, 'press_tank')
     margins = geometry_constraints(SimpleNamespace(cfg=cfg, sections=[press]))
-    assert margins['press_tank.wall_gauge'] < 0
-    assert margins['press_tank.airframe'] > 0
+    assert margins['press_tank.wall_gauge'].margin < 0
+    assert margins['press_tank.airframe'].margin > 0
 
 
-def test_volume_units_and_generic_default():
+def test_default_construction_matches_explicit_metal():
     cfg = metal_config()
     definition = cfg['tanks']['press_tank']
-    definition.pop('construction')
     reference = PressTank(cfg, 'press_tank')
-    definition['volume_liters'] = definition.pop('volume') * 1000
+    definition.pop('construction')
     press = PressTank(cfg, 'press_tank')
     assert press._get_dry_mass() == pytest.approx(reference._get_dry_mass())
     assert press.length == pytest.approx(reference.length)
-    definition['volume'] = .07
-    with pytest.raises(ValueError, match='not both'):
-        PressTank(cfg, 'press_tank')
 
 
 @pytest.mark.parametrize('field,value', [('wall_thickness', float('nan')),

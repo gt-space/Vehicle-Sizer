@@ -32,9 +32,9 @@ def test_phase_interface_work_cancels_in_total_energy():
     np.testing.assert_allclose(gas, 0)
 
 
-def test_network_copies_definitions():
+def test_network_owns_one_detached_definition_per_component():
     nodes = {"tank": {"component": "boundary", "P": 1e5}}
     network = FluidNetwork(nodes, {}, fluid_properties=object())
-    network.node_definitions["tank"]["P"] = 2e5
-    assert nodes["tank"]["P"] == 1e5
-    assert network.nodes["tank"].definition["P"] == 1e5
+    nodes["tank"]["P"] = 2e5
+    assert network.node_definitions["tank"]["P"] == 1e5
+    assert network.nodes["tank"].definition is network.node_definitions["tank"]

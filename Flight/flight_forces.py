@@ -7,6 +7,7 @@ from scipy.interpolate import PchipInterpolator
 
 from AeroTables import DragModel
 from simulation_types import AeroOut, AtmosState, KinematicsState
+from diagnostics.errors import LookupBoundsError
 
 
 INCH = 0.0254
@@ -24,22 +25,12 @@ class Aero:
         self.drag_multiplier = float(cfg.get("drag_multiplier", 1.0))
         if not np.isfinite(self.drag_multiplier) or self.drag_multiplier < 0.0:
             raise ValueError("aero.drag_multiplier must be finite and nonnegative")
-        schedule = cfg.get("aoa_schedule")
-        if schedule is None:
-            self.schedule_time = None
-            self.schedule_alpha = None
-        else:
-            schedule = np.asarray(schedule, dtype=float)
-            if schedule.ndim != 2 or schedule.shape[1] != 2 or len(schedule) < 2:
-                raise ValueError("aoa_schedule requires at least two [time, aoa_deg] rows")
-            if not np.all(np.isfinite(schedule)) or np.any(np.diff(schedule[:, 0]) <= 0.0):
-                raise ValueError("AoA schedule times must be finite and strictly increasing")
-            self.schedule_time = schedule[:, 0]
-            self.schedule_alpha = np.deg2rad(schedule[:, 1])
-
         self.model = model
         self.candidate = {name: float(value) for name, value in candidate.items()}
-        model.check(self.candidate)
+        try:
+            model.check(self.candidate)
+        except ValueError as error:
+            raise LookupBoundsError(str(error), table='aerodynamics') from error
         self.nose = str(cfg.get("nose", "vonkarman"))
         self.finish = str(cfg.get("finish", "10um"))
         self.fins_on_boattail = bool(cfg.get("fins_on_boattail", True))
@@ -67,15 +58,6 @@ class Aero:
         }
         self._cn = PchipInterpolator(self.alpha_deg, cn, axis=1)
         self._cp = PchipInterpolator(self.alpha_deg, cp, axis=1)
-
-    def aoa(self, time: float) -> float:
-        """Return a legacy scheduled angle of attack in radians, if configured."""
-
-        if self.schedule_time is None or self.schedule_alpha is None:
-            raise RuntimeError("No legacy AoA schedule is configured")
-        if time < self.schedule_time[0] or time > self.schedule_time[-1]:
-            raise ValueError("Flight time is outside the AoA schedule")
-        return float(np.interp(time, self.schedule_time, self.schedule_alpha))
 
     def _coordinates(self, mach: float, alpha: float) -> tuple[float, float, float]:
         if not np.isfinite(mach) or not np.isfinite(alpha):

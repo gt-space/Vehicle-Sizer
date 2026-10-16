@@ -7,8 +7,7 @@ import numpy as np
 import pytest
 import yaml
 
-from Fluids.design import initial_conditions, tank_design_pressure
-from Fluids.helpers.templates import load_template
+from Fluids.design import prepare_design_inputs
 from Fluids.PropSystem import PropSystem
 from FluidTables.PropertyModels import CEAPropertySource, CoolPropPropertySource, TablePureFluidPropertySource
 import propulsion_fixtures as fixtures
@@ -40,7 +39,7 @@ def build(cfg, mass=.2, tabled=False):
     props = (TablePureFluidPropertySource(Path(__file__).resolve().parents[1] / 'FluidTables/sizer_lookups.h5',
              {'Oxygen':'oxygen_pt','Nitrogen':{'pt':'nitrogen_pt','saturation':'nitrogen_saturation'},
               'n-Dodecane':'ndodecane_pt'}) if tabled else CoolPropPropertySource())
-    states = initial_conditions(cfg)
+    template, states, _ = prepare_design_inputs(cfg)
     tanks = {}
     for key,state in states.items():
         if 'gas_fluid' in state:
@@ -49,7 +48,7 @@ def build(cfg, mass=.2, tabled=False):
             tanks[key] = GeometrySource(TankGeometry(liquid_mass/rho + .01), prop_mass=liquid_mass)
         else:
             tanks[key] = GeometrySource(GasGeometry(.05))
-    return PropSystem(cfg,tanks,props,CEAPropertySource(FakeCEA()))
+    return PropSystem(cfg,tanks,props,CEAPropertySource(FakeCEA()), initial_states=states, template=template)
 
 
 @pytest.mark.parametrize('feed', ['pressure_fed','pump_fed'])
@@ -61,9 +60,9 @@ def test_templates_size_without_solver_and_preserve_design_physics(feed, control
         assert prop.throat_area == pytest.approx(12000 / (2e6*1.5))
         assert prop.mdot_ox/prop.mdot_fuel == 3
         assert prop.network.y is None
-        assert set(prop.network.branches) == set(load_template(cfg)['branches'])
+        assert set(prop.network.branches) == set(prepare_design_inputs(cfg)[0]['branches'])
         assert len(prop.pump_sizing) == (2 if feed == 'pump_fed' else 0)
-        assert tank_design_pressure(cfg,'ox_tank') == pytest.approx(1.8e6 if feed=='pump_fed' else 2.6e6)
+        assert prop.template['nodes']['ox_ullage']['P0'] == pytest.approx(1.8e6 if feed=='pump_fed' else 2.6e6)
     assert cfg == before
 
 
@@ -75,7 +74,7 @@ def test_template_is_required_and_topology_not_selected_by_feed_flags():
         assert 'OX_REGULATOR' in prop.network.branches
     del cfg['prop_system']['template']
     with pytest.raises(ValueError,match='template'):
-        load_template(cfg)
+        prepare_design_inputs(cfg)[0]
 
 
 @pytest.mark.parametrize('control,expected', [('regulator', 1e-4), ('bang_bang', 1e-5), ('blowdown', 1e-7)])
@@ -94,7 +93,7 @@ def test_template_sets_default_rtol_and_config_overrides(control, expected):
 
 def test_custom_template_renames_nodes_and_adds_a_loss_without_code_changes():
     cfg=config('pump_fed')
-    template=load_template(cfg)
+    template=prepare_design_inputs(cfg)[0]
     template['nodes']['extra_junction']={'component':'junction','P0':2.8e6, 'fluid':'Oxygen', 'phase':'liquid', 'state0':{'P':2.8e6,'T':90.}}
     template['nodes']['ox_pump_out']['P0']=3e6
     template['nodes']['ox_pump_in']['P0']=2e6
@@ -116,15 +115,15 @@ def test_custom_template_renames_nodes_and_adds_a_loss_without_code_changes():
 
 def test_template_pressure_cycle_and_wiring_override_are_rejected():
     cfg=config()
-    template=load_template(cfg)
+    template=prepare_design_inputs(cfg)[0]
     cfg['prop_system']['template']=template
     template['nodes']['ox_ullage']['P0']={'node':'ox_ullage'}
     with pytest.raises(ValueError,match='Cyclic'):
-        load_template(cfg)
+        prepare_design_inputs(cfg)[0]
     template['nodes']['ox_ullage']['P0']=2.6e6
     template['branches']['OX_REGULATOR']['parameters']={'to':'ambient'}
     with pytest.raises(ValueError,match='wiring'):
-        load_template(cfg)
+        prepare_design_inputs(cfg)[0]
 
 
 @pytest.mark.parametrize('feed,control', [('pressure_fed','blowdown'), ('pressure_fed','bang_bang'), ('pump_fed','regulator')])
@@ -155,12 +154,14 @@ def test_actual_template_preview_commit_dryout_and_stopping(feed,control):
         for record in tracking.values():
             assert record['duration_s'] == pytest.approx(dryout_time, abs=1e-7)
             assert record['integral_pa_s'] > 0
-        for key in first.td_state:
-            assert actual.td_state[key]['mass']==pytest.approx(trial.td_state[key]['mass'])
+        for key in first.node:
+            if 'mass' not in first.node[key]:
+                continue
+            assert actual.node[key]['mass']==pytest.approx(trial.node[key]['mass'])
         later=prop.update(.3,atm,{})
         assert later.events==()
         assert later.event_counts==actual.event_counts
-        assert later.td_state==actual.td_state
+        assert later.node==actual.node
         assert prop.network.time==pytest.approx(.5)
         assert prop.network.pressure_tracking.records == tracking
 

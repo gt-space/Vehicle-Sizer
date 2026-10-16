@@ -189,7 +189,7 @@ def test_apogee_is_localized_before_reversed_airflow_query(monkeypatch):
 
 @pytest.mark.parametrize('angle', [-16., 16.])
 def test_aoa_exceedance_is_a_signed_operating_constraint(monkeypatch, angle):
-    from diagnostics.constraints import OperatingInfeasible, finalize
+    from diagnostics.errors import ModelDomainExceeded
     from diagnostics.errors import TrialDomainError
     from simulation_types import KinematicsState, SimResult
     sim = flight(monkeypatch)
@@ -199,17 +199,9 @@ def test_aoa_exceedance_is_a_signed_operating_constraint(monkeypatch, angle):
                           alpha=np.radians(angle), m=16., Iyy=3.)
     with pytest.raises(TrialDomainError):
         sim.trial_aero(kin, FakeEnvironment.atmosphere(kin.h, kin.vz), True)
-    with pytest.raises(OperatingInfeasible) as caught:
+    with pytest.raises(ModelDomainExceeded) as caught:
         sim.check_commit(kin, kin)
-    assert caught.value.constraints['max_aoa_deg'] == pytest.approx(-1.)
-    assert caught.value.time == 2.
-    result = finalize(SimResult(termination='infeasible_operating_state',
-                               constraints=caught.value.constraints,
-                               constraint_times={'max_aoa_deg': 2.}), {'max_aoa_deg': 15.})
-    record = result.constraint_records['max_aoa_deg']
-    assert record.margin == pytest.approx(-1.)
-    assert (record.source, record.units, record.time) == ('Flight.Flight', 'deg', 2.)
-    assert result.feasible is False and not result.accepted
+    assert caught.value.details['time'] == 2.
 
 
 @pytest.mark.parametrize('stage', ['predictor', 'corrector'])
@@ -263,34 +255,95 @@ def test_trial_recovery_is_bounded_and_restores_state(monkeypatch):
 
 
 def test_mission_aoa_limit_is_checked_only_after_convergence(monkeypatch):
-    from diagnostics.constraints import OperatingInfeasible
+    from diagnostics.errors import ModelDomainExceeded
     from simulation_types import KinematicsState
     sim = flight(monkeypatch)
     sim.cfg['constraints'] = {'max_aoa_deg': 5.}
     kin = KinematicsState(1., .1, 0., 10., 0., 10., np.pi/2 + np.radians(10),
                           0., np.radians(10), 16., 3.)
     sim.trial_aero(kin, sim._atmosphere(kin), True)
-    with pytest.raises(OperatingInfeasible):
-        sim.check_commit(kin, kin)
+    assert sim.check_commit(kin, kin) is None
     # Descent is a stopping condition before the reversed-flow AoA check.
     event = sim.check_commit(kin, replace(kin, t=1.1, vz=-1., alpha=np.pi))
     assert event['event'] == 'apogee'
 
 
 def test_converged_violation_rolls_back_before_commit(monkeypatch):
-    from diagnostics.constraints import OperatingInfeasible
+    from diagnostics.errors import ModelDomainExceeded
     thermal = IntegratingThermal()
     sim = flight(monkeypatch, thermal=thermal)
     sim.cfg['constraints'] = {'max_aoa_deg': 5.}
     original = sim.correct_kinematics
 
     def corrected(kin, *args):
-        return replace(original(kin, *args), theta=np.pi/2 + np.radians(10))
+        return replace(original(kin, *args), theta=np.pi/2 + np.radians(16))
 
     monkeypatch.setattr(sim, 'correct_kinematics', corrected)
-    with pytest.raises(OperatingInfeasible) as error:
+    with pytest.raises(RuntimeError, match='recovery exhausted') as error:
         sim.run(v0=10., compute_loads=False)
-    assert error.value.constraints['max_aoa_deg'] < 0
+    assert 'AoA' in str(error.value.__cause__)
     assert sim.prop_system.time == 0
     assert thermal.temperature == 300. and thermal.commits == []
     assert sim.result.history == [] and sim.result.burn_duration == 0
+
+
+def test_shared_samples_preserve_powered_cutoff_and_exclude_rejected_trials(monkeypatch, tmp_path):
+    from simulation_types import history_samples
+    from reporting.plot_peak_loads import plot_loads
+    from reporting.history import snapshot_row, capture_history
+    sim = flight(monkeypatch, cutoff=.35)
+    sim.run(v0=10., compute_loads=True)
+    samples = list(history_samples(sim.result))
+    assert [s['kinematics'].t for s in samples] == pytest.approx([0, .35, .35, 1.])
+    before, after = samples[1:3]
+    assert before['engine_on'] and not after['engine_on']
+    assert before['forces']['thrust'] == 160. and after['forces']['thrust'] == 0.
+    assert before['loads'] is not after['loads']
+    assert [s['kinematics'].t for s in sim.result.history] == pytest.approx([.35, 1.])
+    assert not any('before_event' in key for key in snapshot_row(after))
+    assert capture_history(sim.result)[1]['propulsion.total_impulse_sampled_Ns'] == pytest.approx(56.)
+    sim.result.design_summary = {'section': {}, 'length': sim.vehicle.length}
+    plot_loads(sim.result, tmp_path)
+    saved = np.load(tmp_path / 'burn_load_history.npz')
+    assert saved['time_s'] == pytest.approx([0, .35])
+    assert (tmp_path / 'burn_envelope.png').is_file()
+    assert (tmp_path / 'peak_bending_snapshot.png').is_file()
+
+
+def test_recording_reuses_accepted_evaluations_and_predictor_reuses_forces(monkeypatch):
+    from unittest.mock import patch
+    sim = flight(monkeypatch, cutoff=.35, rail=2.18)
+    endpoints = {}
+    attempt = sim._attempt_segment
+
+    def capture(*args):
+        output = attempt(*args)
+        if output[0] is not None:
+            endpoints[id(output[0])] = output[2]
+        return output
+
+    with patch.object(sim, '_attempt_segment', side_effect=capture), \
+         patch.object(sim, 'evaluate_state', wraps=sim.evaluate_state) as evaluate, \
+         patch.object(sim, 'forces', wraps=sim.forces) as forces:
+        history = sim.run(v0=10., compute_loads=False)
+    assert forces.call_count == evaluate.call_count
+    for row in history:
+        # The solved endpoint is the left side when the accepted state switches mode.
+        sample = row.get('before_event', row)
+        expected = endpoints[id(sample['kinematics'])]
+        assert all(sample[key] is value for key, value in zip(('atmosphere', 'plant', 'forces'), expected))
+    shutdown = next(row for row in history if row['plant'].fluids.events)
+    assert shutdown['before_event']['forces']['thrust'] == 160.
+    assert shutdown['forces']['thrust'] == 0.
+    assert shutdown['plant'] is not shutdown['before_event']['plant']
+
+
+@pytest.mark.parametrize('setting,value', [('corrector_tolerance', float('nan')),
+    ('corrector_tolerance', -1), ('corrector_max_iterations', 0),
+    ('corrector_max_iterations', 1.5), ('corrector_max_iterations', True)])
+def test_invalid_corrector_settings_fail_before_advancing_fluids(monkeypatch, setting, value):
+    sim = flight(monkeypatch)
+    sim.cfg['advanced'] = {'flight': {setting: value}}
+    with pytest.raises(ValueError, match='corrector'):
+        sim.run(v0=10., compute_loads=False)
+    assert sim.prop_system.time == 0.

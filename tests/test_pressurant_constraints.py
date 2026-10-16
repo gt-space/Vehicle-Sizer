@@ -1,11 +1,14 @@
+from diagnostics.constraints import ConstraintRecord
 """Topology-independent sizing and optimizer constraint regression checks."""
+from FluidTables.PropertyModels import CoolPropPropertySource, CEAPropertySource
+from Fluids.design import prepare_design_inputs
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
-from Fluids.PropSystem import DesignInfeasible, PropSystem
+from Fluids.PropSystem import PropSystem
+from diagnostics.constraints import PropulsionAssessment
 import propulsion_fixtures as support
 from propulsion_fixtures import FakeCEA, GasGeometry, GeometrySource
 from test_simulation_api import make_flight
@@ -13,8 +16,11 @@ from test_flight import FakePropSystem
 
 
 def build(cfg, tanks):
-    with patch("Fluids.PropSystem._make_cea", return_value=FakeCEA()):
-        return PropSystem(cfg, tanks)
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    system = PropSystem(cfg, tanks, initial_states=states, template=template, fluid_properties=CoolPropPropertySource(), combustion_properties=CEAPropertySource(FakeCEA()))
+    system.constraint_monitor = PropulsionAssessment(system)
+    system.network.constraint_records.update(system.constraint_monitor.initial)
+    return system
 
 
 @pytest.fixture(scope="module")
@@ -79,10 +85,10 @@ def test_renamed_shared_and_independent_supplies(example, split):
     assert cfg == original
     assert system.chamber_id == "node_thrust_chamber"
     assert system.nozzle_id == "edge_NOZZLE"
-    assert not any('choked' in key for key in system.initial_constraints)
-    assert all(value >= 0 for value in system.initial_constraints.values())
+    assert not any('choked' in key for key in system.network.constraint_records)
+    assert all(value.margin >= 0 for value in system.network.constraint_records.values())
     out = system.network.update(bcs={system.ambient_id: {"P": 1e5}})
-    assert len(out["constraints"]) == (2 if split else 1)
+    assert len(out["constraint_records"]) == (2 if split else 1)
     if split:
         ox = system.branch_definitions["edge_OX_BANGBANG"]
         fuel = system.branch_definitions["edge_FUEL_BANGBANG"]
@@ -103,9 +109,9 @@ def test_initial_pressure_and_temperature_failures_are_constraints(example):
             candidate["tanks"]["press_tank"]["design_pressure"] = value
         else:
             candidate["prop_system"]["initial_conditions"]["press_tank"][field] = value
-        with pytest.raises(DesignInfeasible) as caught:
-            build(candidate, tanks)
-        assert caught.value.constraints[f"tank.press_tank.{suffix}"] < 0
+        system = build(candidate, tanks)
+        assert system.network.constraint_records[f"tank.press_tank.{suffix}"].margin < 0
+        system.close()
 
 
 def test_two_supplies_to_one_tank_allocate_sizing_demand(example):
@@ -118,7 +124,7 @@ def test_two_supplies_to_one_tank_allocate_sizing_demand(example):
         "circuit": "circuit_second_gas", "demand_fraction": .6}
     system = build(cfg, tanks)
     assert system.branch_definitions["edge_OX_BANGBANG"]["CdA"] == pytest.approx(.4*original)
-    assert not any('choked' in key for key in system.initial_constraints)
+    assert not any('choked' in key for key in system.network.constraint_records)
     branches["additional_supply"]["demand_fraction"] = .5
     with pytest.raises(ValueError, match="summing to one"):
         build(cfg, tanks)
@@ -143,20 +149,16 @@ def test_design_defaults_follow_template_roles_not_tank_names(example):
     assert build(cfg, tanks).initial_states["storage_fuel_supply"]["P"] == 25e6
 
 
-def test_api_returns_initial_design_rejection(example):
-    import simulation
+def test_default_propulsion_does_not_assess_initial_limits(example):
     cfg, tanks, _ = example
     cfg = deepcopy(cfg)
-    cfg["launch"] = {"altitude": 0, "velocity": 0}
-    cfg["tanks"]["press_tank"]["design_pressure"] = 3e6
+    cfg['tanks']['press_tank']['design_pressure'] = 3e6
     cfg['tanks']['press_tank']['min_pressure'] = 4e6
-    with patch.object(simulation, "Vehicle", return_value=SimpleNamespace(tanks=tanks)), \
-         patch("Fluids.PropSystem._make_cea", return_value=FakeCEA()):
-        result = simulation.simulate(cfg, pure_properties=example[2].fluid_properties,
-                                     combustion_properties=example[2].combustion_properties)
-    assert result.termination == "infeasible_initial_design"
-    assert result.feasible is False
-    assert result.history is None
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    with PropSystem(cfg, tanks, initial_states=states, template=template, fluid_properties=CoolPropPropertySource(), combustion_properties=CEAPropertySource(FakeCEA())) as system:
+        assert system.network.constraint_records == {}
+        assert system.constraint_monitor is None
+        assert PropulsionAssessment(system).initial['tank.press_tank.Pmin'].margin < 0
 
 
 def test_blowdown_has_no_implicit_copv_requirements(example):
@@ -166,8 +168,8 @@ def test_blowdown_has_no_implicit_copv_requirements(example):
     del cfg["prop_system"]["initial_conditions"]["press_tank"]
     del tanks["press_tank"]
     system = build(cfg, tanks)
-    assert system.initial_constraints == {}
-    assert system.network.update(bcs={system.ambient_id: {"P": 1e5}})["constraints"] == {}
+    assert system.network.constraint_records == {}
+    assert system.network.update(bcs={system.ambient_id: {"P": 1e5}})["constraint_records"] == {}
 
 
 def test_runtime_pressure_floor_is_independent_of_choking(example):
@@ -180,9 +182,9 @@ def test_runtime_pressure_floor_is_independent_of_choking(example):
     nodes["press_tank"].update(P=4e6, T=210, fluids={"Nitrogen": {"T": 210, "gamma": 1.4}})
     nodes["ox_ullage"]["P"] = 2.6e6
     nodes["fuel_ullage"]["P"] = 2.7e6
-    margins = system._constraint_margins(SimpleNamespace(nodes=nodes, branches={}))
-    assert margins["tank.press_tank.Tmin"] == -10
-    assert margins["tank.press_tank.Pmin"] == pytest.approx(.5e6)
+    margins = system.constraint_monitor(SimpleNamespace(nodes=nodes, branches={}))
+    assert margins["tank.press_tank.Tmin"].margin == -10
+    assert margins["tank.press_tank.Pmin"].margin == pytest.approx(.5e6)
     assert not any('choked' in key for key in margins)
 
 
@@ -190,9 +192,9 @@ def test_flight_retains_a_violation_after_recovery():
     class Propulsion(FakePropSystem):
         def update(self, *args, **kwargs):
             out = super().update(*args, **kwargs)
-            out.constraints = {"tank.supply.Tmin": -1 if len(self.calls) == 1 else 10}
+            out.constraint_records = {"tank.supply.Tmin": ConstraintRecord(-1 if len(self.calls) == 1 else 10, "test", "runtime", "K")}
             return out
     flight = make_flight(end=.3, propulsion=Propulsion())
     flight.run(record_history=False)
-    assert flight.result.constraints["tank.supply.Tmin"] == -1
+    assert flight.result.constraint_records["tank.supply.Tmin"].margin == -1
     assert flight.result.feasible is False

@@ -11,6 +11,7 @@ from math import copysign, isfinite, sqrt
 import numpy as np
 
 from .FluidState import BranchState
+from .FluidsDef import compressible_mass_flux
 from .events import Event
 from diagnostics.errors import TrialDomainError
 
@@ -23,21 +24,11 @@ def _port_pressure(node, port):
 
 
 def _gas_flux(upstream, downstream, fluid):
-    """Isentropic gas mass flux [kg/(m² s)], including choking."""
-    temperature, gas_constant, gamma = fluid["T"], fluid["R"], fluid["gamma"]
-    if (not all(isfinite(v) for v in (upstream, downstream, temperature, gas_constant, gamma))
-            or upstream <= 0 or downstream < 0 or temperature <= 0 or gas_constant <= 0 or gamma <= 1):
-        raise TrialDomainError("Gas flow requires finite physical absolute pressures, T, R and gamma")
-    if downstream >= upstream:
-        return 0.0
-    ratio = downstream / upstream
-    critical = (2 / (gamma + 1)) ** (gamma / (gamma - 1))
-    if ratio <= critical:
-        factor = sqrt(gamma) * (2 / (gamma + 1)) ** ((gamma + 1) / (2 * (gamma - 1)))
-    else:
-        factor = sqrt(max(0.0, 2 * gamma / (gamma - 1)
-                          * (ratio ** (2 / gamma) - ratio ** ((gamma + 1) / gamma))))
-    return upstream * factor / sqrt(gas_constant * temperature)
+    """Classify invalid gas-law inputs as recoverable solver trials."""
+    try:
+        return compressible_mass_flux(upstream, downstream, fluid['T'], fluid['R'], fluid['gamma'])
+    except ValueError as error:
+        raise TrialDomainError(str(error)) from error
 
 
 def _liquid_flux(pressure_drop, fluid):

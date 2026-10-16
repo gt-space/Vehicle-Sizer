@@ -158,6 +158,7 @@ def test_retry_restores_state_and_preserves_error_type(kind, expected_calls):
     net.time, net.effective_rtol, net.effective_max_step = 0., 1e-4, 1.
     net.options = dict(residual_retries=2, retry_rtol_floor=1e-8, retry_rtol_factor=.1)
     net.retry_diagnostics = []
+    net.effective_horizon, net._initializing = .001, False
     net._checkpoint = lambda: None
     def restore(checkpoint):
         net.time, net.effective_rtol, net.effective_max_step = 0., 1e-4, 1.

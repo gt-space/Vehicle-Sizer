@@ -49,8 +49,8 @@ advanced defaults. Cylinder mass uses the annular wall volume; endcap mass uses
 the ellipsoidal area, wall gauge, and `advanced.endcap_mass_multiplier`.
 
 Both options accept `wall_thickness`, `length`, and tank `mass` overrides, and
-require `outer_diameter`, `ellipse_ratio`, and either `volume` [m³] or
-`volume_liters`. A metal gauge below the pressure requirement produces a negative
+require `outer_diameter`, `ellipse_ratio`, and `volume` [m³].
+A metal gauge below the pressure requirement produces a negative
 `<tank_id>.wall_gauge` constraint. Section mass additions and total-section
 `mass_override` continue to apply after tank sizing. Packaging checks use
 `<tank_id>.airframe`; optimizer capacity checks use `geometry.pressurant_cylinder`.

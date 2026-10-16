@@ -1,8 +1,6 @@
 from copy import deepcopy
 from math import isfinite
 import numpy as np
-from Fluids.design import initial_conditions, tank_design_pressure
-from Fluids.helpers.templates import load_template
 
 from .Engine import Engine
 from .Material import MaterialProperties
@@ -12,18 +10,18 @@ from .sections.InterTank import InterTank
 from .sections.Nosecone import Nosecone
 from .sections.PressTank import PressTank
 from .sections.PropTank import PropTank
-from .geometry_constraints import geometry_constraints, GeometryError
 
 class Vehicle:
 
-    def __init__(self, cfg: dict, fluid_properties=None):
+    def __init__(self, cfg: dict, fluid_properties=None, *, initial_states, wall_pressures):
 
         self.cfg: dict = cfg
         self.fluid_properties = fluid_properties
         self.engine = None
         self.propulsion = None
         self.dx: float = float(cfg["vehicle"]["dx"])
-        self.initial_conditions = initial_conditions(cfg)
+        self.initial_conditions = initial_states
+        self.wall_pressures = wall_pressures
         self.tanks = self._build_tanks()
         self.sections: list = []
         self.n: int = None
@@ -50,11 +48,6 @@ class Vehicle:
         self.engine = Engine(float(engine_cfg["mass"]), float(engine_cfg["length"]),
                              self.propulsion.exit_area)
         self.sections = self._build_sections()
-        self.geometry_constraints = geometry_constraints(self)
-        # A longer engine would extend outside the modeled OML and aero deck.
-        # Return its signed constraint instead of silently truncating its mass.
-        if any(value is not None and value < 0 for value in self.geometry_constraints.values()):
-            raise GeometryError(self.geometry_constraints)
         self._stack_sections()
         fins = [s for s in self.sections if isinstance(s, FinCan)]
         if len(fins) != 1:
@@ -65,9 +58,27 @@ class Vehicle:
         self.cell_widths = np.diff(self.cell_edges)
         self.engine_mass = self.engine.mass_on_grid(self.cell_edges, self.engine_start_station)
         self.dry_mass = np.concatenate([s.mass for s in self.sections]) + self.engine_mass
-        self._assemble_vectors()
+        self.station = np.concatenate([sec.station for sec in self.sections])
+        self.mass = self.dry_mass.copy()
+        self.EI = np.concatenate([sec.EI for sec in self.sections])
+        self.lat_area = np.concatenate([sec.lat_area for sec in self.sections])
+        self.surf_area = np.concatenate([sec.surf_area for sec in self.sections])
+        offsets = np.cumsum([0] + [sec.n for sec in self.sections])
+        slices = {id(sec): slice(start, stop) for sec, start, stop in
+                  zip(self.sections, offsets[:-1], offsets[1:])}
+        self.fluid_sections = tuple((key, self.tanks[node['tank_id']], slices[id(self.tanks[node['tank_id']])])
+                                    for key, node in propulsion.node_definitions.items() if 'tank_id' in node)
+        if (len(self.fluid_sections) != len(self.tanks)
+                or {id(sec) for _, sec, _ in self.fluid_sections} != {id(sec) for sec in self.tanks.values()}):
+            raise ValueError('Every vehicle tank requires exactly one fluid node')
+        self.dry_pitch_correction = 0.0
+        if 'Iyy' in self.cfg['vehicle']:
+            supplied = float(self.cfg['vehicle']['Iyy'])
+            if not np.isfinite(supplied) or supplied <= 0:
+                raise ValueError('vehicle.Iyy must be finite and positive (dry pitch inertia, kg m^2)')
+            dry_cg = np.sum(self.dry_mass * self.station) / np.sum(self.dry_mass)
+            self.dry_pitch_correction = supplied - np.sum(self.dry_mass * (self.station - dry_cg)**2)
         self.get_mass_properties()
-        return self.geometry_constraints
 
     def _build_tanks(self) -> dict:
         """Create each tank section once for structural and fluid use."""
@@ -93,7 +104,7 @@ class Vehicle:
                     liquid_density=liquid.rho,
                     material=MaterialProperties.from_name(definition["material"]),
                     wall_thickness=definition.get("wall_thickness"),
-                    max_pressure=self._max_tank_pressure(tank_id),
+                    max_pressure=self.wall_pressures[tank_id],
                     t_wall_min=float(self.cfg["advanced"]["t_wall_min"]),
                     passthrough_diameter=definition["passthrough_diameter"],
                     passthrough_wall_thickness=definition[
@@ -113,24 +124,6 @@ class Vehicle:
                     f"Unknown tank type {tank_type!r} for tank {tank_id!r}"
                 )
         return tanks
-
-    def _max_tank_pressure(self, tank_id: str) -> float:
-        """Return the absolute pressure used to size a propellant tank wall."""
-
-        initial_pressure = float(self.initial_conditions[tank_id]["P"])
-        design_pressure = tank_design_pressure(self.cfg, tank_id, fallback=initial_pressure)
-        nominal = max(design_pressure, initial_pressure)
-        prop_system = self.cfg["prop_system"]
-        controls = []
-        template = prop_system.get("template")
-        if isinstance(template, str) or (isinstance(template, dict) and any(
-                isinstance(node.get("P0"), dict) for node in template["nodes"].values())):
-            template = load_template(self.cfg)
-        if template is not None:
-            target_nodes = {key for key, node in template["nodes"].items() if node.get("tank_id") == tank_id}
-            controls = [branch for branch in template["branches"].values()
-                        if branch.get("component") == "bang_bang_valve" and branch["to"] in target_nodes]
-        return nominal + max(float(control["pressure_band"]) for control in controls) if controls else 1.1 * nominal
 
     def _resolve_section_masses(self):
         """Resolve calculated component masses without mutating the config."""
@@ -230,15 +223,6 @@ class Vehicle:
         self.length = x_current
         self.n = sum(sec.n for sec in self.sections)
 
-    def _assemble_vectors(self):
-        self.station = np.concatenate([sec.station for sec in self.sections])
-        self.mass = np.concatenate([sec.mass for sec in self.sections])
-        if hasattr(self, "engine_mass"):
-            self.mass = self.mass + self.engine_mass
-        self.EI = np.concatenate([sec.EI for sec in self.sections])
-        self.lat_area = np.concatenate([sec.lat_area for sec in self.sections])
-        self.surf_area = np.concatenate([sec.surf_area for sec in self.sections])
-
     def get_mass_properties(self):
         self.total_mass = np.sum(self.mass)
         self.cg = np.sum(self.mass * self.station) / self.total_mass
@@ -247,59 +231,22 @@ class Vehicle:
             sec.Iyy + np.sum(sec.mass) * (sec.cg - self.cg)**2
             for sec in self.sections
         )
-        if hasattr(self, "engine_mass"):
-            self.Iyy += np.sum(self.engine_mass * (self.station - self.cg)**2)
-            # Retain the existing shell-radius roll-inertia approximation.
-            self.Ixx += np.sum(self.engine_mass) * (self.cfg["vehicle"]["OMLD"] / 2)**2
-        if "Iyy" in self.cfg["vehicle"]:
-            supplied = float(self.cfg["vehicle"]["Iyy"])
-            if not np.isfinite(supplied) or supplied <= 0:
-                raise ValueError("vehicle.Iyy must be finite and positive (dry pitch inertia, kg m^2)")
-            # Replace the entire dry contribution, including the engine, while
-            # retaining fluid inertia and the shift to the current computed COM.
-            dry_cg = np.sum(self.dry_mass * self.station) / np.sum(self.dry_mass)
-            self.Iyy += supplied - np.sum(self.dry_mass * (self.station - dry_cg)**2)
+        self.Iyy += np.sum(self.engine_mass * (self.station - self.cg)**2)
+        # Retain the existing shell-radius roll-inertia approximation.
+        self.Ixx += np.sum(self.engine_mass) * (self.cfg["vehicle"]["OMLD"] / 2)**2
+        self.Iyy += self.dry_pitch_correction
 
     def update_mass_distribution(self, node_states: dict) -> None:
-        """Apply fluid-network axial mass vectors and refresh mass properties."""
-
-        tank_sections = {
-            section.tank_id: section
-            for section in self.sections
-            if hasattr(section, "tank_id")
-        }
-        if len(tank_sections) != sum(
-            hasattr(section, "tank_id") for section in self.sections
-        ):
-            raise ValueError("Vehicle tank IDs must be unique")
-
-        fluid_tanks = {}
-        for node_id, state in node_states.items():
-            if "axial_mass" not in state:
-                continue
-            tank_id = state.get("tank_id")
-            if tank_id is None:
-                raise ValueError(
-                    f"Fluid node '{node_id}' with axial mass requires a tank_id"
-                )
-            if tank_id in fluid_tanks:
-                raise ValueError(f"Multiple fluid nodes reference tank '{tank_id}'")
-            fluid_tanks[tank_id] = state["axial_mass"]
-
-        missing_sections = set(fluid_tanks) - set(tank_sections)
-        if missing_sections:
-            raise ValueError(
-                f"Fluid nodes reference unknown vehicle tanks: {sorted(missing_sections)}"
-            )
-        missing_states = set(tank_sections) - set(fluid_tanks)
-        if missing_states:
-            raise ValueError(
-                f"Vehicle tanks have no fluid-node state: {sorted(missing_states)}"
-            )
-
-        for tank_id, axial_mass in fluid_tanks.items():
-            tank_sections[tank_id].set_fluid_mass(axial_mass)
-        self._assemble_vectors()
+        """Apply changing inventories through the fixed node/section/grid mapping."""
+        for node_id, section, cells in self.fluid_sections:
+            axial_mass = np.asarray(node_states[node_id]['axial_mass'], dtype=float)
+            if axial_mass.shape != section.dry_mass.shape:
+                raise ValueError(f"Tank '{section.tank_id}' requires {section.n} axial mass values")
+            if np.any(~np.isfinite(axial_mass)) or np.any(axial_mass < 0):
+                raise ValueError(f"Tank '{section.tank_id}' fluid mass must be finite and nonnegative")
+            section.mass = section.dry_mass + axial_mass
+            section.get_MOI()
+            self.mass[cells] = section.mass + self.engine_mass[cells]
         self.get_mass_properties()
 
     def aero_candidate(self) -> dict:

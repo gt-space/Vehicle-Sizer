@@ -1,3 +1,4 @@
+from diagnostics.constraints import ConstraintRecord
 """Connected-network IDAS regression tests, including real discrete transitions."""
 from copy import deepcopy
 from dataclasses import dataclass
@@ -372,7 +373,7 @@ def test_failed_dryout_restart_restores_modes_and_event_history():
         np.testing.assert_array_equal(net.ydot, dy)
         assert net.nodes['ox'].mode == net.nodes['fuel'].mode == 'two_phase'
         assert net.nodes['chamber'].mode == 'combusting'
-        assert net.events == [] and net.remainders == [] and net.time == 0.
+        assert net.events == [] and not net.event_counts and net.time == 0.
         assert net.session is None
 
 
@@ -390,7 +391,6 @@ def test_residual_is_pure_and_outputs_are_detached():
         np.testing.assert_array_equal(net.y, original['y'])
         assert net.events == original['events']
         output['node']['ox']['P'] = -1
-        output['state'].nodes['ox'].trial_values['P'] = -1
         assert net.state.nodes['ox']['P'] > 0
 
 
@@ -399,12 +399,12 @@ def test_constraint_monitor_receives_network_state():
     def monitor(state):
         pressure = state.nodes['tank']['P']
         observed.append(pressure)
-        return {'pressure_margin': pressure - 1e5}
+        return {'pressure_margin': ConstraintRecord(pressure - 1e5, 'monitor', 'runtime', 'Pa')}
     with blowdown(constraint_monitor=monitor) as net:
         result = net.update(1.)
         assert observed
-        assert result['constraints']['pressure_margin'] == pytest.approx(result['node']['tank']['P'] - 1e5)
-        assert result['constraint_times']['pressure_margin'] == 1.
+        assert result['constraint_records']['pressure_margin'].margin == pytest.approx(result['node']['tank']['P'] - 1e5)
+        assert result['constraint_records']['pressure_margin'].time == 1.
 
 
 def test_full_regulated_pumpfed_network_events_and_refinement():
@@ -477,7 +477,7 @@ def test_stop_at_shutdown_freezes_at_event_and_preview_is_isolated():
         assert stopped['node']['fuel']['mass']>0
         assert net.session is None
         later=net.update(2.)
-        assert later['td_state']==stopped['td_state']
+        assert later['node']==stopped['node']
         assert later['time']==5.
 
 
@@ -487,7 +487,7 @@ def test_bound_monitor_preview_and_failed_update_restore_state():
         def monitor(self,state):
             if self.fail and state.nodes['tank']['P'] < 899000:
                 raise RuntimeError('monitor failure')
-            return {'pressure':state.nodes['tank']['P']-1e5}
+            return {'pressure': ConstraintRecord(state.nodes['tank']['P']-1e5, 'test', 'runtime', 'Pa')}
     owner=Owner()
     owner.network=blowdown(constraint_monitor=owner.monitor)
     with owner.network as net:
@@ -520,7 +520,7 @@ def test_triple_point_stops_at_temperature_and_warm_low_pressure_gas_does_not_st
         assert out['node']['tank']['T']==pytest.approx(200.,abs=.001)
         event=next(e for e in out['events'] if e['name'].startswith('triple_point:'))
         assert out['node']['tank']['U']==pytest.approx(first['node']['tank']['U']-event['time_s']*1e5,abs=.01)
-        assert net.update(1.)['td_state']==out['td_state']
+        assert net.update(1.)['node']==out['node']
     with FluidNetwork({'tank':gas_tank(5e4,.1)}, {}, fluid_properties=TripleProperties(),
                       stop_at_triple_point=True) as net:
         assert not net.update(.1)['frozen']
@@ -588,7 +588,7 @@ def test_accepted_residual_retry_restores_events_and_retains_tighter_integration
         if net.time > 0 and len(failures) < 2:
             failures.append((net.time, net.effective_rtol, net.effective_max_step))
             # These trial-only diagnostics must be rolled back too.
-            net.constraints['rejected_attempt'] = -100.
+            net.constraint_records['rejected_attempt'] = ConstraintRecord(-100., 'test', 'runtime', 'Pa')
             net.events.append(dict(time_s=net.time, kind='node', component='tank', name='rejected'))
             raise ResidualAcceptanceError('injected closure failure')
     with blowdown(tolerances={'rtol': 1e-4, 'max_step': 1.}) as net:
@@ -596,7 +596,7 @@ def test_accepted_residual_retry_restores_events_and_retains_tighter_integration
         monkeypatch.setattr(FluidNetwork, '_accept', accept)
         out = net.update(1.)
         assert net.time == 1. and len(failures) == 2
-        assert 'rejected_attempt' not in out['constraints'] and out['events'] == ()
+        assert 'rejected_attempt' not in out['constraint_records'] and out['events'] == ()
         assert net.options['rtol'] == 1e-4
         assert net.effective_rtol == pytest.approx(1e-6)
         assert net.effective_max_step == pytest.approx(.05)
@@ -699,3 +699,160 @@ def test_junction_reversal_reinitializes_energy_balance():
         assert result['mdot']['in'] < 0 and result['mdot']['out'] < 0
         assert result['node']['mix']['T'] == pytest.approx(500.)
         assert any(e['name']=='reverse' for e in result['events'])
+
+
+def test_checkpoint_shares_definitions_and_copies_custom_component_state(monkeypatch):
+    with propulsion() as net:
+        net.initialize()
+        net.nodes['ox'].extension = {'samples': [1.]}
+        checkpoint = net._checkpoint()
+        for key, node in net.nodes.items():
+            assert checkpoint['nodes'][key] is not node
+            assert checkpoint['nodes'][key].definition is net.node_definitions[key] is node.definition
+        for key, branch in net.branches.items():
+            assert checkpoint['branches'][key].parameters is net.branch_definitions[key] is branch.parameters
+        assert not {'session', 'options', 'connections', 'node_definitions'} & checkpoint.keys()
+        def forbid_copy(self, memo):
+            raise AssertionError('Fixed geometry copied during rollback or preview')
+        monkeypatch.setattr(Geometry, '__deepcopy__', forbid_copy, raising=False)
+        session, statistics = net.session, net.session.statistics()
+        y, pressure = net.y.copy(), deepcopy(net.pressure_tracking.records)
+        preview = net.update(.01, commit=False)
+        assert net.session is session and session.statistics() == statistics
+        assert net.pressure_tracking.records == pressure
+        np.testing.assert_array_equal(net.y, y)
+        preview['node']['ox']['P'] = -1
+        assert net.state.nodes['ox']['P'] > 0
+        for _ in range(2):
+            net.nodes['ox'].extension['samples'].append(2.)
+            net.update(.01)
+            net.restore(checkpoint)
+            assert net.nodes['ox'].extension == {'samples': [1.]}
+            assert checkpoint['nodes']['ox'].extension == {'samples': [1.]}
+            assert net.nodes['ox'].definition is net.node_definitions['ox']
+            np.testing.assert_array_equal(net.y, y)
+
+
+@pytest.mark.parametrize('commit', [False, True])
+def test_one_checkpoint_per_operation_including_initialization_and_shutdown(monkeypatch, commit):
+    original, checkpoints = FluidNetwork._checkpoint, []
+    def checkpoint(self):
+        checkpoints.append(self.time)
+        return original(self)
+    monkeypatch.setattr(FluidNetwork, '_checkpoint', checkpoint)
+    with propulsion(stop_at_shutdown=True) as net:
+        net.initialize()
+        assert len(checkpoints) == 1
+        output = net.update(3., commit=commit)
+        assert len(checkpoints) == 2
+        assert output['frozen'] and any(e['name'] == 'shutdown' for e in output['events'])
+        assert net.frozen is commit
+
+
+@pytest.mark.parametrize('commit', [False, True])
+@pytest.mark.parametrize('persistent', [False, True])
+def test_initialization_convergence_retry_uses_shared_rollback(monkeypatch, commit, persistent):
+    from diagnostics.errors import SolverConvergenceError
+    original, attempts = FluidNetwork._new_session, []
+    def restart(net, **kwargs):
+        attempts.append((net.time, net.effective_horizon))
+        assert not net.events and not net.event_counts
+        if persistent or len(attempts) < 3:
+            net._record_event('node', 'tank', 'discarded')
+            raise SolverConvergenceError('initialization', -4, net.time)
+        return original(net, **kwargs)
+    monkeypatch.setattr(FluidNetwork, '_new_session', restart)
+    with blowdown() as net:
+        checkpoint = net._checkpoint()
+        if persistent:
+            with pytest.raises(SolverConvergenceError):
+                net.update(initial_time=2., commit=commit)
+        else:
+            output = net.update(initial_time=2., commit=commit)
+            assert output['time'] == 2. and output['events'] == ()
+        assert attempts == [(2., .001), (2., .0005), (2., .00025)]
+        assert net.options['initialization_horizon'] == .001
+        if persistent or not commit:
+            assert net.y is None and net.time == 0 and net.session is None
+            assert net.effective_horizon == .001 and not net.retry_diagnostics
+        else:
+            assert len(net.retry_diagnostics) == 2
+            assert all(r['initialization_retry'] for r in net.retry_diagnostics)
+        assert not net.events and not net.event_counts
+        net.restore(checkpoint)
+        assert net.effective_horizon == .001
+
+
+def test_runtime_field_extension_uses_existing_checkpoint_contract():
+    class ExtendedNetwork(FluidNetwork):
+        _runtime_fields = (*FluidNetwork._runtime_fields, 'extension')
+    with ExtendedNetwork({'tank': gas_tank()}, {}, fluid_properties=Properties()) as net:
+        net.extension = {'samples': [1.]}
+        checkpoint = net._checkpoint()
+        net.extension['samples'].append(2.)
+        net.restore(checkpoint)
+        assert net.extension == {'samples': [1.]}
+        net.extension['samples'].append(3.)
+        net.restore(checkpoint)
+        assert net.extension == {'samples': [1.]}
+
+
+def test_boundary_restart_records_only_the_accepted_endpoint():
+    samples = []
+    def monitor(state):
+        samples.append(net.time)
+        return {}
+    with blowdown(constraint_monitor=monitor) as net:
+        net.initialize()
+        samples.clear()
+        net.update(.1, bcs={'ambient': {'P': 1.1e5}})
+        # Recording the restart at t=0 would replace the pressure-tracking
+        # integral's previous sample with newly consistent boundary values.
+        assert samples == [.1]
+        samples.clear()
+        net.update(0., bcs={'ambient': {'P': 1.2e5}})
+        assert samples == [.1]
+
+
+def test_assessment_records_restore_with_the_existing_checkpoint():
+    def monitor(state):
+        return {'custom.pressure': ConstraintRecord(state.nodes['tank']['P'] - 1e5,
+                'custom-monitor', 'runtime', 'Pa')}
+    with blowdown(constraint_monitor=monitor) as net:
+        initial = net.initialize()['constraint_records']
+        checkpoint = net._checkpoint()
+        preview = net.update(1., commit=False)['constraint_records']
+        assert preview['custom.pressure'].margin < initial['custom.pressure'].margin
+        assert preview['custom.pressure'].time == 1.
+        assert net.constraint_records == initial
+        for _ in range(2):
+            record = net.update(1.)['constraint_records']['custom.pressure']
+            assert record.margin == pytest.approx(preview['custom.pressure'].margin, rel=1e-12)
+            assert (record.source, record.phase, record.units, record.required, record.time) == (
+                'custom-monitor', 'runtime', 'Pa', True, 1.)
+            net.restore(checkpoint)
+            assert net.constraint_records == initial
+
+
+@pytest.mark.parametrize('ratio', [0., .2, .528, .8, 1., 1.2])
+def test_shared_gas_flow_equation_preserves_runtime_and_sizing(ratio):
+    from Fluids.FluidsDef import compressible_mass_flux
+    from Fluids.FluidBranch import _gas_flux
+    fluid = {'T': 300., 'R': 287., 'gamma': 1.4}
+    flux = compressible_mass_flux(1e5, ratio * 1e5, 300., 287., 1.4)
+    assert flux == _gas_flux(1e5, ratio * 1e5, fluid)
+    if ratio >= 1:
+        assert flux == 0.
+    elif ratio <= (2 / 2.4)**3.5:
+        assert flux == pytest.approx(1e5 * np.sqrt(1.4 / (287 * 300)) * (2 / 2.4)**3)
+
+
+def test_shared_gas_flow_rejects_invalid_sizing_and_classifies_runtime_trials():
+    from Fluids.FluidsDef import compressible_mass_flux
+    from Fluids.FluidBranch import _gas_flux
+    from diagnostics.errors import TrialDomainError
+    with pytest.raises(ValueError) as invalid:
+        compressible_mass_flux(1e5, -1., 300., 287., 1.4)
+    assert type(invalid.value) is ValueError
+    with pytest.raises(TrialDomainError):
+        _gas_flux(1e5, -1., {'T': 300., 'R': 287., 'gamma': 1.4})

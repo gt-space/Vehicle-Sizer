@@ -101,8 +101,6 @@ class PropTank(Section):
 
         allowable = float(self.cfg["advanced"]["weld_allowable"])
         fos = float(self.cfg["advanced"]["tank_pressure_fos"])
-        if not np.isfinite(allowable) or allowable <= 0 or not np.isfinite(fos) or fos < 1:
-            raise ValueError("weld_allowable must be positive and tank_pressure_fos >= 1")
         required = geo.pressure_wall_thickness(self.max_pressure, self.OMLD, fos, allowable)
         self.required_wall_thickness = required
         if supplied is None:
@@ -139,18 +137,6 @@ class PropTank(Section):
             resolution=self.n,
         )
 
-    def set_fluid_mass(self, axial_mass: np.ndarray) -> None:
-        """Add a network-supplied fluid vector to this tank's dry mass."""
-
-        axial_mass = np.asarray(axial_mass, dtype=float)
-        if axial_mass.shape != self.dry_mass.shape:
-            raise ValueError(
-                f"Tank '{self.tank_id}' requires {self.n} axial mass values"
-            )
-        if np.any(axial_mass < 0.0):
-            raise ValueError(f"Tank '{self.tank_id}' fluid mass cannot be negative")
-        self.mass = self.dry_mass + axial_mass
-        self.get_MOI()
 
     def _get_length(self):
         inner_diameter = self.OMLD - 2.0 * self.wall_thickness
@@ -163,14 +149,7 @@ class PropTank(Section):
         radius = 0.5 * inner_diameter
         pass_radius = 0.5 * self.passthrough_diameter
         head_depth = radius / self.ellipse_ratio
-        beta = np.sqrt(1.0 - (pass_radius / radius) ** 2)
-
-        # Usable volume in both ellipsoidal heads, excluding the axial
-        # passthrough tube. The remaining volume is carried by the cylinder.
-        head_volume = (
-            (4.0 / 3.0) * np.pi * radius**2 * head_depth * beta**3
-        )
-        cylinder_area = np.pi * (radius**2 - pass_radius**2)
+        head_volume, cylinder_area = geo.tank_capacity(radius, pass_radius, self.ellipse_ratio)
         self.cyl_length = ((self.volume - head_volume) / cylinder_area
                            if self.length_input is None else self.length_input - 2.0 * head_depth)
         if self.cyl_length <= 0.0:
@@ -183,22 +162,8 @@ class PropTank(Section):
         r_o = self.OMLD * 0.5
         r_i = r_o - self.wall_thickness
         E = self.material.require("elastic_modulus")
-        self.EI = dist.uniform_full(E * geo.annulus_second_moment(r_o, r_i), self.n)
+        self.EI = np.full(self.n, E * geo.annulus_second_moment(r_o, r_i))
 
-    def get_area(self):
-        r = self.OMLD * 0.5
-        self.lat_area = dist.uniform(geo.cylinder_lateral_area(r, self.length), self.n)
-        self.surf_area = dist.uniform(geo.cylinder_surface_area(r, self.length), self.n)
-
-    def get_MOI(self):
-        r = self.cfg["vehicle"]["OMLD"] * 0.5
-        self.cg = np.sum(self.mass * self.station) / np.sum(self.mass)
-        self.Ixx = np.sum(self.mass * r**2)
-        self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
-
-
-    def get_thermal_oml_area(self) -> np.ndarray:
-        return self.surf_area.copy()
 
     def get_thermal_shell_mass(self) -> np.ndarray:
         # Shell exists even where the passthrough removes fluid capacity.

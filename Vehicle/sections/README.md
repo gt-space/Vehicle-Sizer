@@ -17,3 +17,13 @@ Sections are built by `Vehicle`. Check from the project root:
 ```bash
 .venv/bin/python -m pytest tests/test_section_mass_inputs.py tests/test_section_stiffness.py -q
 ```
+
+`Section` supplies the common cell mass moments, cylindrical areas, and detached
+thermal area/shell-mass accessors. A section sets its fixed `radius` (scalar or
+cell array); it overrides only calculations whose physics differs. Nose and fin
+profiles are computed once and reused by mass, stiffness, area, and inertia.
+Fin and propellant-tank thermal mass distributions retain their specialized rules.
+
+Fluid inventory updates belong to `Vehicle.update_mass_distribution()`, through
+node/section/grid relationships established by `Vehicle.build()`. Tank-specific
+`set_fluid_mass()` methods and repeated full-array assembly have been removed.

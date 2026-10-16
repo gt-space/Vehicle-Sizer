@@ -38,7 +38,7 @@ soft_penalties:
   max_q:
     target_pa: 140000.0
     scale_pa: 10000.0
-    weight: 0.10
+    weight: 0.0
 conditional_geometry: true
 verification_dt_factor: 0.5
 failure_policy:

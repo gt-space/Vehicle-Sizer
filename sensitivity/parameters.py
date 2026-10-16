@@ -16,26 +16,11 @@ import re
 from typing import Any
 
 import yaml
+from Fluids.helpers.templates import read_template
 from Configs.loader import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Retained for old sweep files. New sweeps should use the full path as the key.
-PARAMETER_PATHS = {
-    'chamber_pressure': 'prop_system.Pc_target',
-    'ox_injector_stiffness': 'prop_system.ox_inj_stiffness',
-    'fuel_injector_stiffness': 'prop_system.fuel_inj_stiffness',
-    'ox_system_dp': 'prop_system.ox_tank_inj_dp',
-    'fuel_system_dp': 'prop_system.fuel_tank_inj_dp',
-    'copv_volume': 'tanks.{pressurant}.volume',
-    'copv_pressure': 'tanks.{pressurant}.design_pressure',
-    'throat_area': 'engine.throat_area',
-    'target_thrust': 'prop_system.thrust_target',
-    'cstar_efficiency': 'engine.cstar_efficiency',
-    'cf_efficiency': 'engine.cf_efficiency',
-    'thrust_tilt': 'engine.thrust_tilt_deg',
-    'weld_allowable': 'advanced.weld_allowable',
-}
 MAX_VALUES = 100_000
 _PATH_PART = re.compile(r'([^.\[\]]+)|\[(\d+)\]')
 
@@ -45,6 +30,8 @@ class SweepParameter:
     name: str
     path: str
     values: tuple[Any, ...]
+    linked_paths: tuple[str, ...] = ()
+    offset: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,14 +98,6 @@ def sweep_values(definition: dict, name: str) -> tuple[float, ...]:
     return output
 
 
-def resolve_pressurant_tank(cfg: dict) -> str:
-    matches = [name for name, tank in cfg.get('tanks', {}).items()
-               if isinstance(tank, dict) and tank.get('type') == 'pressurant']
-    if len(matches) != 1:
-        raise ValueError('COPV alias requires exactly one pressurant tank; use tanks.<id>.<field>')
-    return matches[0]
-
-
 def _parts(path: str) -> tuple[str | int, ...]:
     """Parse path segments, including numeric list selectors such as sections[2]."""
     if not isinstance(path, str) or not re.fullmatch(r'[A-Za-z_][\w-]*(?:\[\d+\])*(?:\.[A-Za-z_][\w-]*(?:\[\d+\])*)*', path):
@@ -165,19 +144,6 @@ def _path_string(parts: tuple[str | int, ...]) -> str:
     return path
 
 
-def _read_template(cfg: dict) -> dict:
-    selected = cfg.get('prop_system', {}).get('template')
-    if isinstance(selected, dict):
-        return deepcopy(selected)
-    if not isinstance(selected, str):
-        raise ValueError('Missing prop_system.template')
-    path = Path(selected)
-    if not path.is_absolute():
-        path = ROOT / path
-    with path.open() as stream:
-        return yaml.safe_load(stream)
-
-
 def _template_references(value: Any) -> set[str]:
     if isinstance(value, dict):
         found = {value['config']} if set(value) == {'config'} else set()
@@ -194,17 +160,15 @@ def _template_references(value: Any) -> set[str]:
 
 def _get_candidate(cfg: dict, path: str) -> Any:
     if path.startswith('prop_system.template.') and isinstance(cfg.get('prop_system', {}).get('template'), str):
-        template = _read_template(cfg)
+        template = read_template(cfg)
         return _get(template, path[len('prop_system.template.'):])
     return _get(cfg, path)
 
 
-def _resolve_path(cfg: dict, name: str, item: dict | None = None) -> str:
-    path = (item or {}).get('path', PARAMETER_PATHS.get(name, name))
+def _resolve_path(cfg: dict, name: str, item: dict) -> str:
+    path = item.get('path', name)
     if not isinstance(path, str):
         raise ValueError(f'{name}: path must be text')
-    if '{pressurant}' in path:
-        path = path.replace('{pressurant}', resolve_pressurant_tank(cfg))
     # Switching thrust design modes and adding a default zero tilt are safe
     # intentional exceptions to the existing-path-only rule.
     if path == 'engine.throat_area' and 'throat_area' not in cfg.get('engine', {}):
@@ -266,28 +230,41 @@ def parse_parameters(cfg: dict, sweep_cfg: dict) -> list[SweepParameter]:
             raise ValueError(f'{name}: enabled must be true or false')
         if not enabled:
             continue
+        linked = item.get('linked_paths', [])
+        if not isinstance(linked, list) or any(not isinstance(p, str) for p in linked):
+            raise ValueError(f'{name}: linked_paths must be a list of configuration paths')
+        offset = item.get('offset', False)
+        if type(offset) is not bool:
+            raise ValueError(f'{name}: offset must be true or false')
+        item = {key: value for key, value in item.items() if key not in ('linked_paths', 'offset')}
         path = _resolve_path(cfg, name, item)
-        values = _values_for(cfg, name, path, item)
-        # Explicit safety checks for preexisting aliases, not an attempt to
-        # encode every possible thermodynamic constraint here.
-        if (path in ('prop_system.Pc_target', 'engine.throat_area', 'prop_system.thrust_target')
-                or (path.startswith('tanks.') and path.endswith(('.volume', '.design_pressure')))) and any(v <= 0 for v in values):
-            raise ValueError(f'{name}: values must be positive')
-        if path in ('engine.cstar_efficiency', 'engine.cf_efficiency') and any(not 0 < v <= 1 for v in values):
-            raise ValueError(f'{name}: efficiencies must be in (0, 1]')
+        if offset:
+            original = _number(_get_candidate(cfg, path), f'{name} (baseline)')
+            values = sweep_values(item, name)
+            _values_for(cfg, name, path, {
+                'values': [original + v for v in values]})
+        else:
+            values = _values_for(cfg, name, path, item)
+        # Physical validity belongs to simulate, per case, so one invalid
+        # endpoint cannot prevent evaluation of the rest of a requested range.
         # A referenced template path is validated for the current wiring. No
         # hardcoded 'pressure-fed only' template dispatch is necessary.
         if path in ('prop_system.Pc_target', 'prop_system.ox_inj_stiffness',
                     'prop_system.fuel_inj_stiffness', 'prop_system.ox_tank_inj_dp',
                     'prop_system.fuel_tank_inj_dp'):
             if template_references is None:
-                template_references = _template_references(_read_template(cfg))
+                template_references = _template_references(read_template(cfg))
             if path not in template_references:
                 raise ValueError(f'{name}: {path} is not referenced by the selected propulsion template')
-        params.append(SweepParameter(name, path, values))
+        linked_parameters = [parse_parameters(cfg, {'sweep': {'parameters': {
+            target: {**item, 'path': target, 'offset': offset}}}})[0] for target in linked]
+        if any(p.values != values for p in linked_parameters):
+            raise ValueError(f'{name}: linked paths must accept the same values')
+        params.append(SweepParameter(name, path, values,
+                                     tuple(p.path for p in linked_parameters), offset))
     if not params:
         raise ValueError('Specify at least one enabled sweep parameter')
-    paths = [p.path for p in params]
+    paths = [path for p in params for path in (p.path, *p.linked_paths)]
     if len(set(paths)) != len(paths):
         raise ValueError('Multiple enabled parameters refer to the same configuration path')
     if {'engine.throat_area', 'prop_system.thrust_target'} <= set(paths):
@@ -326,12 +303,18 @@ def make_cases(cfg: dict, spec: dict) -> tuple[list[SweepParameter], list[SweepC
         seen.add(key)
         if mode == 'one_at_a_time':
             name, value = next(iter(overrides.items()))
+            if by_name[name].offset:
+                if value == 0:
+                    continue
+                cases.append(SweepCase(f'case_{len(cases):05d}', overrides))
+                continue
             path = by_name[name].path
             try:
                 baseline = _get_candidate(cfg, path)
             except ValueError:
                 baseline = 0.0  # virtual field
-            if baseline == value:
+            if baseline == value and all(_get_candidate(cfg, p) == value
+                                         for p in by_name[name].linked_paths):
                 continue
         cases.append(SweepCase(f'case_{len(cases):05d}', overrides))
     return parameters, cases
@@ -341,25 +324,28 @@ def apply_case(base_cfg: dict, case: SweepCase, parameters: list[SweepParameter]
     cfg = deepcopy(base_cfg)
     if case.is_baseline:
         return cfg
-    paths = {p.name: p.path for p in parameters}
-    for name, value in case.overrides.items():
-        path = paths[name]
-        if path == 'prop_system.thrust_target':
-            cfg['prop_system']['thrust_target'] = value
-            cfg['engine'].pop('throat_area', None)
-            cfg['prop_system'].pop('design_mdot_oxidizer', None)
-            cfg['prop_system'].pop('design_mdot_fuel', None)
-        elif path == 'engine.throat_area':
-            cfg['engine']['throat_area'] = value
-            cfg['prop_system'].pop('thrust_target', None)
-        elif path == 'engine.thrust_tilt_deg':
-            cfg['engine']['thrust_tilt_deg'] = value
-        elif path.startswith('prop_system.template.'):
-            if isinstance(cfg['prop_system']['template'], str):
-                cfg['prop_system']['template'] = _read_template(cfg)
-            _set(cfg, path, value)
-        else:
-            _set(cfg, path, value)
+    by_name = {p.name: p for p in parameters}
+    for name, coordinate in case.overrides.items():
+        parameter = by_name[name]
+        for path in (parameter.path, *parameter.linked_paths):
+            value = (_get_candidate(base_cfg, path) + coordinate
+                     if parameter.offset else coordinate)
+            if path == 'prop_system.thrust_target':
+                cfg['prop_system']['thrust_target'] = value
+                cfg['engine'].pop('throat_area', None)
+                cfg['prop_system'].pop('design_mdot_oxidizer', None)
+                cfg['prop_system'].pop('design_mdot_fuel', None)
+            elif path == 'engine.throat_area':
+                cfg['engine']['throat_area'] = value
+                cfg['prop_system'].pop('thrust_target', None)
+            elif path == 'engine.thrust_tilt_deg':
+                cfg['engine']['thrust_tilt_deg'] = value
+            elif path.startswith('prop_system.template.'):
+                if isinstance(cfg['prop_system']['template'], str):
+                    cfg['prop_system']['template'] = read_template(cfg)
+                _set(cfg, path, value)
+            else:
+                _set(cfg, path, value)
     return cfg
 
 

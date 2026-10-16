@@ -3,7 +3,8 @@ from copy import deepcopy
 
 import pytest
 
-from diagnostics.constraints import EvaluationFailure, finalize
+from diagnostics.constraints import finalize
+from diagnostics.errors import EvaluationFailure
 from diagnostics.errors import UnsupportedPhaseChangeError, ModelDomainExceeded, failure_details
 from Fluids.FluidNode import VolumeComponent, PropellantTankComponent
 from optimizer.core import FailureMonitor, candidate_class, candidate_score
@@ -41,7 +42,7 @@ def test_phase_errors_are_unresolved_and_do_not_trip_failure_monitor():
                       {'goal_apogee': 150000., 'max_burn_duration': 75.})
     assert result.feasible is None and not result.accepted
     assert candidate_class(result) == 'unresolved'
-    score, violations = candidate_score(result, dict(constraint_scales={}, unit_scales={'1': 1.}))
+    score, violations, penalties = candidate_score(result, dict(constraint_scales={}, unit_scales={'1': 1.}))
     assert score == 3.
     assert violations == {}
     assert not any('phase_change' in key for key in result.constraint_records)
@@ -87,10 +88,12 @@ def test_optimizer_records_phase_error_and_continues_without_constraint(tmp_path
     import json
     import time
     from optimizer.core import Evaluator
+    import optimizer.core as optimizer
 
     evaluator = Evaluator.__new__(Evaluator)
     evaluator.settings = dict(max_evaluations=2, constraint_scales={}, unit_scales={})
     evaluator.paths = {}
+    evaluator.pure = evaluator.combustion = evaluator.model = None
     evaluator.count = 0
     evaluator.best = None
     evaluator.population_size = None
@@ -99,7 +102,7 @@ def test_optimizer_records_phase_error_and_continues_without_constraint(tmp_path
     evaluator.failure_monitor = FailureMonitor(dict(consecutive_limit=1, window=1, rate_limit=.01))
     monkeypatch.setattr(evaluator, 'decode', lambda values: {})
 
-    def fail(cfg):
+    def fail(cfg, **kwargs):
         try:
             raise UnsupportedPhaseChangeError('arbitrary_volume', 'Nitrogen', 'gas',
                                               'saturated', 'condense', 48.)
@@ -108,7 +111,7 @@ def test_optimizer_records_phase_error_and_continues_without_constraint(tmp_path
                 raise
             raise EvaluationFailure(phase, cfg, SimResult(final_time=46.)) from error
 
-    monkeypatch.setattr(evaluator, 'evaluate', fail)
+    monkeypatch.setattr(optimizer, 'simulate', fail)
     assert evaluator([]) == 3.
     assert evaluator([]) == 3.
     rows = [json.loads(line) for line in (tmp_path/'evaluations.jsonl').read_text().splitlines()]

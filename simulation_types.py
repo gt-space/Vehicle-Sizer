@@ -78,13 +78,11 @@ class PropulsionOut:
 class FluidOut:
     node: Dict[str, Dict[str, Any]]
     branch: Dict[str, Dict[str, Any]]
-    td_state: Dict[str, Dict[str, Any]]
     mdot: Dict[str, float]
     propulsion: PropulsionOut
     events: tuple[Dict[str, Any], ...] = ()
     event_counts: Dict[str, int] = field(default_factory=dict)
-    constraints: Dict[str, float] = field(default_factory=dict)
-    constraint_times: Dict[str, float] = field(default_factory=dict)
+    constraint_records: Dict[str, ConstraintRecord] = field(default_factory=dict)
 
 
 @dataclass
@@ -128,17 +126,15 @@ class SimResult:
     final_pitch_rate: float = 0.0
     termination: str = "time_limit"
     warnings: list[dict] = field(default_factory=list)
+    fluid_retries: list[dict] = field(default_factory=list)
     pressure_tracking: Dict[str, Dict[str, float]] = field(default_factory=dict)
-    geometry_constraints: Dict[str, Optional[float]] = field(default_factory=dict)
-    constraints: Dict[str, Optional[float]] = field(default_factory=dict)
-    history: Optional[list] = None
+    history: Optional[list] = None  # Accepted endpoints; events include a before_event snapshot.
     initial_state: Optional[dict] = None
     design_summary: Dict[str, Any] = field(default_factory=dict)
     battery_sizing: Dict[str, Any] = field(default_factory=dict)
     pump_sizing: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     gg_sizing: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     constraint_records: Dict[str, ConstraintRecord] = field(default_factory=dict)
-    constraint_times: Dict[str, float] = field(default_factory=dict)
     min_rail_twr: Optional[float] = None
     min_rail_twr_time: Optional[float] = None
     rail_exit_time: Optional[float] = None
@@ -154,10 +150,8 @@ class SimResult:
     def accepted(self) -> bool:
         if not self.completed or not self.burn_complete:
             return False
-        if not {"goal_apogee", "max_burn_duration"} <= self.constraints.keys():
+        if not {"goal_apogee", "max_burn_duration"} <= self.constraint_records.keys():
             return False
-        if self.constraint_records:
-            return feasibility({k: r.margin for k, r in self.constraint_records.items() if r.required}) is True
         return self.feasible is True
 
     @property
@@ -166,5 +160,20 @@ class SimResult:
 
     @property
     def feasible(self) -> Optional[bool]:
-        """False for any violation; None when any requested check is unassessed."""
-        return feasibility({**self.geometry_constraints, **self.constraints})
+        """Assess required records only; None means absent or incomplete assessment."""
+        return feasibility(self.constraint_records)
+
+
+def history_samples(result):
+    """Yield launch, pre-event, and accepted endpoint snapshots in time order.
+
+    Endpoint history keeps one row per accepted step; pre-event snapshots
+    preserve discontinuities without a second, application-specific history.
+    """
+    initial = getattr(result, 'initial_state', None)
+    if initial is not None:
+        yield initial
+    for state in getattr(result, 'history', None) or ():
+        if 'before_event' in state:
+            yield state['before_event']
+        yield state

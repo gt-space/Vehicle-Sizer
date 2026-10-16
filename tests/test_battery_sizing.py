@@ -3,11 +3,14 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
+from Fluids.design import prepare_design_inputs
 from Configs.loader import load_config
 from Fluids.helpers.battery import size_battery
 from Fluids.PropSystem import PropSystem
 from Vehicle.Vehicle import Vehicle
-from simulation import property_sources, simulate
+from simulation import simulate
+from FluidTables.PropertyModels import property_sources
+from reporting.history import capture_history
 from reporting.run_report import build_run_tables
 
 
@@ -17,16 +20,19 @@ def design():
     # Exercise assembly with a design inside the 15 kW pump limits at 46% efficiency.
     cfg['prop_system']['thrust_target'] = 10000.
     pure, combustion = property_sources(cfg)
-    vehicle = Vehicle(cfg, pure)
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    vehicle = Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures)
     propulsion = PropSystem(cfg, vehicle.tanks, fluid_properties=pure,
-                            combustion_properties=combustion)
+                            combustion_properties=combustion, initial_states=states, template=template)
     yield cfg, pure, combustion, propulsion
     propulsion.close()
 
 
 def build(design, cfg=None):
     original, pure, _, propulsion = design
-    vehicle = Vehicle(deepcopy(original if cfg is None else cfg), pure)
+    cfg = deepcopy(original if cfg is None else cfg)
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    vehicle = Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures)
     vehicle.build(propulsion)
     return vehicle
 
@@ -92,7 +98,8 @@ def test_placement_validation_and_tank_placement(design):
     vehicle = build(design, cfg)
     tank = vehicle.tanks[target['tank_id']]
     dry = tank.dry_mass.copy()
-    tank.set_fluid_mass(np.ones(tank.n))
+    vehicle.update_mass_distribution({node: {'axial_mass': np.ones(section.n)}
+                                      for node, section, _ in vehicle.fluid_sections})
     np.testing.assert_allclose(tank.mass, dry + 1.)
     source['masses']['battery'] = 'auto'
     with pytest.raises(ValueError, match='exactly one'):
@@ -108,8 +115,30 @@ def test_simulation_and_report(design):
     cfg, pure, combustion, propulsion = design
     cfg = deepcopy(cfg)
     cfg['simulation']['t_end'] = .1
-    result = simulate(cfg, pure_properties=pure, combustion_properties=combustion,
-                      record_history=True)
+    from diagnostics.errors import EvaluationFailure
+    with pytest.raises(EvaluationFailure) as failure:
+        simulate(cfg, pure_properties=pure, combustion_properties=combustion,
+                 record_history=True)
+    assert failure.value.diagnostic['kind'] == 'incomplete_flight'
+    result = failure.value.partial_result
     assert result.battery_sizing['used_mass_kg'] == propulsion.battery_sizing['calculated_mass_kg']
-    assert result.design_summary['battery_sizing'] == result.battery_sizing
-    assert any('Electric pump battery' in table for table in build_run_tables(cfg, result))
+    assert any('Electric pump battery' in table for table in build_run_tables(cfg, result, capture_history(result)[1]))
+
+
+def test_mass_updates_reuse_fixed_layout_and_preserve_engine_overlay(design):
+    vehicle = build(design)
+    fixed = {name: getattr(vehicle, name) for name in ('station', 'EI', 'lat_area', 'surf_area', 'mass')}
+    baseline = vehicle.dry_mass.copy()
+    nodes = {node: {'axial_mass': np.ones(section.n)} for node, section, _ in vehicle.fluid_sections}
+    vehicle.update_mass_distribution(nodes)
+    assert vehicle.total_mass == pytest.approx(baseline.sum() + sum(section.n for _, section, _ in vehicle.fluid_sections))
+    for state in nodes.values():
+        state['axial_mass'] *= 0.
+    vehicle.update_mass_distribution(nodes)
+    np.testing.assert_array_equal(vehicle.mass, baseline)
+    assert all(getattr(vehicle, name) is value for name, value in fixed.items())
+    node, section, _ = vehicle.fluid_sections[0]
+    for invalid in (np.full(section.n, -1.), np.full(section.n, np.nan), np.ones(section.n + 1)):
+        nodes[node]['axial_mass'] = invalid
+        with pytest.raises(ValueError):
+            vehicle.update_mass_distribution(nodes)

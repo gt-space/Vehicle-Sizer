@@ -11,8 +11,9 @@ sys.path.insert(0, str(ROOT))
 
 import yaml
 from Fluids.PropSystem import PropSystem
+from Fluids.design import prepare_design_inputs
 from Vehicle.Vehicle import Vehicle
-from FluidTables.PropertyModels import TablePureFluidPropertySource, TableCombustionPropertySource
+from FluidTables.PropertyModels import property_sources
 from Thermals.heat_sources import thermal_model
 
 
@@ -31,12 +32,11 @@ def main():
         cfg = yaml.safe_load(stream)
     if any(cfg['property_models'][name]['source'] != 'table' for name in ('pure_fluid', 'combustion')):
         parser.error('This example expects table-backed pure-fluid and combustion properties')
-    pure_cfg = cfg['property_models']['pure_fluid']['table']
-    combustion_cfg = cfg['property_models']['combustion']['table']
-    pure = TablePureFluidPropertySource(ROOT / pure_cfg['lookup_file'], pure_cfg['fluids'])
-    combustion = TableCombustionPropertySource(ROOT / combustion_cfg['lookup_file'], combustion_cfg['nfz'])
-    vehicle = Vehicle(cfg, pure)
-    with PropSystem(cfg, vehicle.tanks, pure, combustion) as propulsion:
+    pure, combustion = property_sources(cfg)
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    vehicle = Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures)
+    with PropSystem(cfg, vehicle.tanks, pure, combustion,
+                    template=template, initial_states=states) as propulsion:
         if any(thermal_model(node.get('thermal')) == 'Aeroheating'
                for node in propulsion.node_definitions.values()):
             parser.error('Aeroheating requires the flight/wall solver; use None or DensityPowerLaw here')
@@ -46,7 +46,7 @@ def main():
             out = propulsion.update(min(args.dt, args.duration - propulsion.network.time), atm, {})
             print(json.dumps(dict(time_s=propulsion.network.time, **asdict(out.propulsion),
                                   events=[{k: v for k, v in event.items() if k != "before"}
-                                          for event in out.events], constraints=out.constraints)), flush=True)
+                                          for event in out.events], constraints={key: record.margin for key, record in out.constraint_records.items()})), flush=True)
 
 
 if __name__ == '__main__':

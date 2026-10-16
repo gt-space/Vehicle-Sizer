@@ -1,3 +1,4 @@
+from diagnostics.constraints import ConstraintRecord
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -6,8 +7,8 @@ import pytest
 import numpy as np
 
 import simulation
-from diagnostics.constraints import (DesignInfeasible, EvaluationFailure, GeometryError, OperatingInfeasible,
-                         configured_limits, finalize, merge_margins)
+from diagnostics.constraints import configured_limits, finalize, merge_records
+from diagnostics.errors import EvaluationFailure, GeometryError
 from simulation_types import KinematicsState, SimResult
 from test_flight import FakePropSystem
 from test_simulation_api import make_flight
@@ -21,7 +22,7 @@ def test_acceptance_requires_completed_mission_and_only_max_burn_limit():
     assert not finalize(SimResult(apogee=99, burn_complete=True), limits).accepted
     assert not finalize(SimResult(max_altitude=200, burn_complete=True), limits).accepted
     result = finalize(SimResult(apogee=100, burn_duration=3, burn_complete=True), limits)
-    assert result.constraints["max_burn_duration"] == -1
+    assert result.constraint_records["max_burn_duration"].margin == -1
     assert not result.accepted
     assert not finalize(SimResult(apogee=100, burn_duration=1), limits).accepted
     assert not SimResult(apogee=100, burn_complete=True).accepted
@@ -31,85 +32,75 @@ def test_acceptance_requires_completed_mission_and_only_max_burn_limit():
 
 def test_optional_geometry_does_not_block_acceptance():
     result = finalize(SimResult(apogee=100, burn_complete=True,
-                                geometry_constraints={"feedline.routing": None}),
+                                constraint_records={"feedline.routing": ConstraintRecord(None, "Vehicle.geometry_constraints", "sizing", "m", required=False)}),
                       {"goal_apogee": 100, "max_burn_duration": 2})
     assert result.accepted
     assert not result.constraint_records["feedline.routing"].required
 
 
-@pytest.mark.parametrize("error", [DesignInfeasible({"pump.p.max_power": -2}),
-                                        GeometryError({"engine.length": -0.2})])
-def test_preflight_reject_returns_without_flight(error):
-    cfg = {"launch": {"altitude": 0, "velocity": 0},
-           "constraints": {"goal_apogee": 100, "max_burn_duration": 2}}
-    with patch.object(simulation, "Vehicle", side_effect=error), \
-         patch.object(simulation, "FlightSim") as flight:
-        result = simulation.simulate(cfg, pure_properties=object(), combustion_properties=object())
+@pytest.mark.parametrize("error", [GeometryError({"engine.length": -0.2}), RuntimeError("solver failed")])
+def test_all_preflight_failures_use_one_typed_error_contract(error):
+    cfg = {"constraints": {"ignored_unknown_limit": -1},
+           "prop_system": {"template": dict(circuits={}, nodes={}, branches={})}}
+    with patch.object(simulation, "Vehicle", side_effect=error), patch.object(simulation, "FlightSim") as flight:
+        with pytest.raises(EvaluationFailure) as caught:
+            simulation.simulate(cfg, pure_properties=object(), combustion_properties=object())
     flight.assert_not_called()
-    assert result.termination == "infeasible_initial_design"
-    assert result.feasible is False
-    assert not result.completed and not result.accepted
-    assert result.initial_mass is None
-    assert result.constraints["goal_apogee"] is None
-    record = result.constraint_records[next(iter(error.constraints))]
-    assert record.phase == "sizing" and record.margin < 0
+    assert caught.value.__cause__ is error
+    assert caught.value.phase == 'sizing'
+    assert caught.value.partial_result is None
+    assert caught.value.diagnostic['exception'] == type(error).__name__
 
 
-def test_geometry_build_rejection_and_runtime_failure_are_distinct():
+@pytest.mark.parametrize('assess', [False, True])
+def test_single_build_shared_physics_and_opt_in_assessment(assess):
     cfg = {"launch": {"altitude": 0, "velocity": 0}, "engine": {"mass": 1, "length": 1},
+           "vehicle": {"OMLD": .25},
+           "prop_system": {"template": dict(circuits={}, nodes={}, branches={})},
+           "constraints": {"max_length_to_diameter": 1, "goal_apogee": 1000, "max_burn_duration": 1},
            "environment": {"max_altitude": 1000, "altitude_step": 100}, "aero": {}}
-    vehicle = SimpleNamespace(tanks={}, battery_sizing={}, aero_candidate=lambda: {})
-    propulsion = SimpleNamespace(exit_area=1, pump_sizing={}, sizing_constraints={},
-                                 node_definitions={}, close=lambda: None,
-                                 network=SimpleNamespace(pressure_tracking=SimpleNamespace(records={})))
-    vehicle.build = lambda propulsion: None
-    partial = SimResult(final_time=1)
-    flight = SimpleNamespace(result=partial)
-    with patch.object(simulation, "Vehicle", return_value=vehicle), \
-         patch.object(simulation, "PropSystem", return_value=propulsion), \
-         patch.object(simulation, "Aero"), \
-         patch.object(simulation, "FlightSim", return_value=flight) as factory:
-        with patch.object(vehicle, "build", side_effect=GeometryError({"engine.length": -1})):
-            result = simulation.simulate(cfg, pure_properties=object(), combustion_properties=object(), aero_model=object())
-            assert result.geometry_constraints["engine.length"] == -1
-            factory.assert_not_called()
-        failure = RuntimeError("solver diverged")
-        with patch.object(flight, "run", side_effect=failure, create=True):
-            with pytest.raises(EvaluationFailure) as caught:
-                simulation.simulate(cfg, pure_properties=object(), combustion_properties=object(), aero_model=object())
-        assert caught.value.__cause__ is failure
-        assert caught.value.phase == "runtime"
-        assert caught.value.partial_result is partial
-        assert caught.value.config == cfg and caught.value.config is not cfg
-        operating = OperatingInfeasible({"node.fuel_pump_in.Pmin": -3239.}, time=2.)
-        with patch.object(flight, "run", side_effect=operating, create=True):
-            result = simulation.simulate(cfg, pure_properties=object(),
-                                         combustion_properties=object(), aero_model=object())
-        assert result is partial and result.final_time == 1
-        assert result.termination == "infeasible_operating_state"
-        assert not result.completed and not result.accepted
-        record = result.constraint_records["node.fuel_pump_in.Pmin"]
-        assert (record.margin, record.phase, record.units, record.time) == (-3239., "runtime", "Pa", 2.)
-        cfg['constraints'] = {'max_aoa_deg': 15.}
-        operating = OperatingInfeasible({'max_aoa_deg': -1.}, time=3.)
-        with patch.object(flight, 'run', side_effect=operating, create=True):
-            result = simulation.simulate(cfg, pure_properties=object(),
-                                         combustion_properties=object(), aero_model=object())
-        assert result.termination == 'infeasible_operating_state'
-        assert result.max_aoa_deg == 16.
-        assert result.constraints['max_aoa_deg'] == -1.
-        assert not result.accepted
+    vehicle = SimpleNamespace(tanks={}, sections=[], cfg=cfg, length=2., battery_sizing={}, aero_candidate=lambda: {})
+    propulsion = SimpleNamespace(exit_area=1, pump_sizing={}, gg_sizing={}, sizing_constraints={},
+                                 aero_nodes=frozenset(), node_definitions={}, branch_definitions={}, tank_definitions={}, close=lambda: None,
+                                 network=SimpleNamespace(constraint_records={}, pressure_tracking=SimpleNamespace(records={}), retry_diagnostics=[]))
+    result = SimResult(apogee=100, burn_complete=True, burn_duration=2, termination='apogee')
+    flight = SimpleNamespace(result=result, run=lambda **kwargs: result.constraint_records.update(propulsion.network.constraint_records))
+    with patch.object(simulation, 'Vehicle', return_value=vehicle) as build_vehicle, \
+         patch.object(simulation, 'PropSystem', return_value=propulsion) as build_propulsion, \
+         patch.object(vehicle, 'build', create=True), patch.object(simulation, 'Aero'), \
+         patch.object(simulation, 'FlightSim', return_value=flight):
+        output = simulation.simulate(cfg, pure_properties=object(), combustion_properties=object(),
+                                     aero_model=object(), assess_constraints=assess)
+    build_vehicle.assert_called_once()
+    build_propulsion.assert_called_once()
+    assert output is result and output.completed
+    if assess:
+        assert output.constraint_records['goal_apogee'].margin == -900
+        assert output.constraint_records['max_length_to_diameter'].margin == -7
+        assert output.feasible is False
+    else:
+        assert output.constraint_records == {} and output.constraint_records == {}
+        assert output.feasible is None
 
+
+@pytest.mark.parametrize('termination', ['time_limit', 'no_ascent'])
+def test_incomplete_flight_is_a_failure_with_partial_state(monkeypatch, termination):
+    result = SimResult(termination=termination, final_time=3)
+    monkeypatch.setattr(simulation, '_simulate', lambda *a, **k: result)
+    with pytest.raises(EvaluationFailure) as caught:
+        simulation.simulate({})
+    assert caught.value.partial_result is result
+    assert caught.value.diagnostic['kind'] == 'incomplete_flight'
+    assert caught.value.diagnostic['details']['termination'] == termination
 
 
 def test_nonfinite_constraint_is_fatal_not_an_infeasible_margin():
     with pytest.raises(ValueError, match="Nonfinite"):
-        merge_margins({}, {"tank.x.Tmin": float("nan")})
-    margins, times = {}, {}
-    merge_margins(margins, {"x": 2}, times=times, time=0)
-    merge_margins(margins, {"x": -1}, times=times, time=1)
-    merge_margins(margins, {"x": 1}, times=times, time=2)
-    assert margins == {"x": -1} and times == {"x": 1}
+        ConstraintRecord(float('nan'), 'test', 'runtime', 'K')
+    records = {}
+    for time, value in enumerate((2, -1, 1)):
+        merge_records(records, {'x': ConstraintRecord(value, 'test', 'runtime', 'K')}, time=time)
+    assert records['x'].margin == -1 and records['x'].time == 1
 
 
 def test_headless_loads_match_history_and_twr_is_tracked():
@@ -162,5 +153,32 @@ def test_exceeded_burn_limit_does_not_stop_flight():
     result = finalize(flight.result, limits)
     assert result.completed and result.burn_complete
     assert result.final_time > result.burn_duration > .05
-    assert result.constraints["max_burn_duration"] < 0
+    assert result.constraint_records["max_burn_duration"].margin < 0
+    assert not result.accepted
+
+
+def test_canonical_records_preserve_policy_time_and_snapshot_isolation():
+    from dataclasses import FrozenInstanceError
+    from diagnostics.constraints import feasibility
+    required = ConstraintRecord(None, 'custom-component', 'runtime', 'Pa')
+    optional = ConstraintRecord(-100., 'optional-check', 'sizing', 'm', required=False)
+    records = {'optional': optional}
+    merge_records(records, {'required': required}, time=10.)
+    assert records['required'].time is None
+    assert feasibility(records) is None
+    merge_records(records, {'required': replace(required, margin=2.)}, time=1.)
+    snapshot = dict(records)
+    assert feasibility(records) is True
+    merge_records(records, {'required': replace(required, margin=-1.)}, time=2.)
+    merge_records(records, {'required': replace(required, margin=3.)}, time=3.)
+    assert feasibility(records) is False
+    assert records['required'] == replace(required, margin=-1., time=2.)
+    assert snapshot['required'] == replace(required, margin=2., time=1.)
+    with pytest.raises(FrozenInstanceError):
+        records['required'].margin = 0.
+    result = finalize(SimResult(apogee=100., burn_complete=True),
+                      {'goal_apogee': 100., 'max_burn_duration': 2.})
+    result.constraint_records.update(snapshot)
+    assert result.accepted
+    result.constraint_records['required'] = required
     assert not result.accepted

@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 import optimizer.core as opt
+from Fluids.design import prepare_design_inputs
 from Configs.loader import load_config
 from Vehicle.Vehicle import Vehicle
 
@@ -27,13 +28,15 @@ def test_optimizer_pressurant_geometry_matches_built_vessel(setup, construction,
     if construction == 'metal':
         tank.update(material='aluminum_6061', pressure_fos=1.7, weld_allowable=160e6)
     assert 'wall_thickness' not in tank
-    vessel = Vehicle(cfg, pure).tanks['press_tank']
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    vessel = Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures).tanks['press_tank']
     assert opt.pressurant_inner_radius(cfg, tank) == pytest.approx(vessel.inner_diameter / 2)
     records = opt.primitive_records(cfg, settings['tank_ids'])
     assert records['geometry.pressurant_cylinder'].margin == pytest.approx(vessel.cylinder_length - 1e-9)
     if construction == 'copv':
         tank['length'] = vessel.length + .2
-        vessel = Vehicle(cfg, pure).tanks['press_tank']
+        template, states, wall_pressures = prepare_design_inputs(cfg)
+        vessel = Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures).tanks['press_tank']
         records = opt.primitive_records(cfg, settings['tank_ids'])
         assert records['geometry.pressurant_cylinder'].margin == pytest.approx(vessel.cylinder_length - 1e-9)
 
@@ -67,7 +70,8 @@ def test_conditioned_propellant_minimum_matches_current_wall_sizing(setup, tmp_p
     for role in ('oxidizer', 'fuel'):
         values[evaluator.names.index(f'{role}_mass')] = 0.
     candidate = evaluator.decode(values)
-    vehicle = Vehicle(candidate, pure)
+    template, states, wall_pressures = prepare_design_inputs(candidate)
+    vehicle = Vehicle(candidate, pure, initial_states=states, wall_pressures=wall_pressures)
     # The lower conditioned mass leaves exactly the requested tiny cylinder
     # with the actual tank wall equation, rather than the old yield formula.
     for key in ('ox_tank', 'fuel_tank'):

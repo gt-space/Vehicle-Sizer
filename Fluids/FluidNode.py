@@ -453,10 +453,6 @@ class PropellantTankComponent(VolumeComponent):
     @staticmethod
     def _thermodynamic_response(m_l, m_g, liquid, gas, dl, dg):
         """Return liquid-volume and pressure gradients along the EOS closures.
-
-        Eliminate T_liq/T_ull from dU_i=d(m_i*u_i), then impose dV_l+dV_g=0.
-        No inner matrix solve or algebraic ydot is needed. Invalid elimination
-        is a recoverable trial-domain error, never a fallback to another solve.
         """
         inputs = (m_l, m_g, liquid.rho, gas.rho, liquid.u, gas.u,
                   dl['drho_dP'], dl['drho_dT'], dl['du_dP'], dl['du_dT'],
@@ -484,10 +480,6 @@ class PropellantTankComponent(VolumeComponent):
         if not np.isfinite(gradient).all() or not np.isfinite(pressure).all():
             raise TrialDomainError('Non-finite liquid/ullage thermodynamic response')
         return gradient, pressure
-
-    @staticmethod
-    def _volume_gradient(m_l, m_g, liquid, gas, dl, dg):
-        return PropellantTankComponent._thermodynamic_response(m_l, m_g, liquid, gas, dl, dg)[0]
 
     def evaluate(self, trial_values, adjacent=(), node_states_by_id=None, *,
                  axial_specific_force=0.0, boundary_values=None):

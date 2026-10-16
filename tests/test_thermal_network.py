@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from simulation_types import AeroOut, AtmosState, KinematicsState
+from simulation_types import AtmosState, KinematicsState
 from Thermals import ThermalNetwork
 from Thermals.ThermalCircuit import solve_lumped_wall
 from Thermals.ThermalNode import natural_convection_htc
@@ -70,15 +70,14 @@ def test_natural_convection_htc_increases_with_grashof_number():
 def fluid_output():
     return SimpleNamespace(
         node={
-            "tank": {
-                "tank_id": "tank",
+            "fluid_inventory": {
                 "fill_height": 1.6,
-                "fluids": {
-                    "propellant": {
+                "phase_states": {
+                    "liquid": {
                         "phase": "liquid", "T": 290.0, "rho": 800.0,
                         "mu": 1.0e-3, "k": 0.12, "cp": 2000.0, "beta": 8.0e-4,
                     },
-                    "ullage": {
+                    "gas": {
                         "phase": "gas", "T": 280.0, "rho": 2.0,
                         "mu": 1.8e-5, "k": 0.026, "cp": 1000.0,
                         "beta": 1.0 / 280.0,
@@ -92,7 +91,7 @@ def fluid_output():
 def inputs():
     kin = KinematicsState(t=0.0, dt=1.0, x=0., h=0.0, vx=0., vz=0.0, theta=np.pi/2, q=0.0, alpha=0.0, m=1.0, Iyy=1.0)
     atm = AtmosState(300.0, 101325.0, 1.2, 1.8e-5, 340.0, 0.0, 0.0)
-    return kin, atm, AeroOut(0.0, 0.0)
+    return kin, atm
 
 
 @patch("Thermals.ThermalNode.heating.get_recovery_temperature", return_value=300.0)
@@ -111,11 +110,15 @@ def test_wet_node_rounds_fill_to_cells_and_commits_once(*_):
             },
         }
     }
-    network = ThermalNetwork(cfg, SimpleNamespace(sections=[WetSection()]))
+    section = WetSection()
+    network = ThermalNetwork(cfg, SimpleNamespace(
+        sections=[section], fluid_sections=(("fluid_inventory", section, slice(0, 4)),)))
     thermal_out = network.trial(
         *inputs(), fluid_output(), axial_specific_force=9.81
     )
     output = thermal_out.node["tank"]
+    assert output["fluid_node_id"] == "fluid_inventory"
+    assert set(thermal_out.heat_rates()) == {"fluid_inventory"}
 
     np.testing.assert_array_equal(
         output["cells"]["phase"], ["gas", "gas", "liquid", "liquid"]
@@ -149,7 +152,7 @@ def test_omitted_model_builds_no_wall_nodes(*_):
         }
     }
     output = ThermalNetwork(
-        cfg, SimpleNamespace(sections=[WetSection()])
+        cfg, SimpleNamespace(sections=[WetSection()], fluid_sections=())
     ).trial(*inputs(), fluid_output())
 
     assert output.heat_rates() == {}

@@ -11,7 +11,7 @@ from diagnostics.errors import TrialDomainError
 from .flight_forces import gravity
 from .loads import Loads
 from simulation_types import SimResult
-from diagnostics.constraints import OperatingInfeasible, merge_margins
+from diagnostics.constraints import merge_records
 from simulation_types import (
     AeroOut,
     AtmosState,
@@ -34,9 +34,7 @@ class FlightSim:
         prop_system: PropSystem,
         vehicle: Any,
         thermal: Optional[Any] = None,
-        *, ignore_feasibility: bool = False,
     ) -> None:
-        self.ignore_feasibility = bool(ignore_feasibility)
         self.cfg = cfg
         self.env = env
         self.aero = aero
@@ -50,6 +48,16 @@ class FlightSim:
         self.aero_q_cutoff = float(cfg.get("aero", {}).get("q_cutoff_Pa", 0.0))
         if not math.isfinite(self.aero_q_cutoff) or self.aero_q_cutoff < 0:
             raise ValueError("aero.q_cutoff_Pa must be finite and nonnegative")
+
+        settings = cfg.get("advanced", {}).get("heating", {})
+        self.heat_tolerance = float(settings.get("convergence_tolerance", 1.0e-3))
+        self.temperature_tolerance = float(settings.get("temperature_tolerance", 1.0e-2))
+        self.heat_iterations = int(settings.get("max_iterations", 5))
+        if (not all(math.isfinite(v) for v in (self.heat_tolerance, self.temperature_tolerance))
+                or min(self.heat_tolerance, self.temperature_tolerance) < 0.0):
+            raise ValueError("Heating convergence tolerances must be nonnegative")
+        if self.heat_iterations < 1:
+            raise ValueError("Heating convergence iterations must be positive")
 
     def trial_aero(
         self,
@@ -93,67 +101,33 @@ class FlightSim:
             return crossing
         if kin.vz < 0:
             return {"event": "no_ascent", "time_s": kin.t}
-        limit = self.cfg.get("constraints", {}).get("max_aoa_deg")
-        if limit is not None:
-            margin = float(limit) - abs(math.degrees(kin.alpha))
-            if margin < 0 and not self.ignore_feasibility:
-                raise OperatingInfeasible({"max_aoa_deg": margin}, time=kin.t)
-        self.check_trial(kin, self._atmosphere(kin))
+        atmosphere = self._atmosphere(kin)
+        self.check_trial(kin, atmosphere)
+        if atmosphere.q >= self.aero_q_cutoff:
+            limit = min(15., float(getattr(self.aero, "alpha_deg", [15.])[-1]))
+            if abs(math.degrees(kin.alpha)) > limit:
+                from diagnostics.errors import ModelDomainExceeded
+                raise ModelDomainExceeded(
+                    f"Flight AoA {math.degrees(kin.alpha):g} deg exceeds aero domain ({limit:g} deg)",
+                    time=kin.t)
         return None
 
-    def trial_thermal(
-        self,
-        kin: KinematicsState,
-        atm: AtmosState,
-        aero_out: AeroOut,
-        fluids: FluidOut,
-        previous: Optional[ThermalOut] = None,
-        axial_specific_force: float = 0.0,
-    ) -> Optional[ThermalOut]:
-        """Evaluate wall temperatures without committing thermal state."""
-
-        if self.thermal is None:
-            return None
-        return self.thermal.trial(
-            kin,
-            atm,
-            aero_out,
-            fluids,
-            previous,
-            axial_specific_force=axial_specific_force,
-        )
-
-    def trial_fluid(
+    def update_fluid(
         self,
         dt: Optional[float],
         atm: AtmosState,
         thermal_out: Optional[ThermalOut] = None,
         axial_specific_force: float = 0.0,
+        *,
+        commit: bool,
     ) -> FluidOut:
-        """Evaluate fluid state without committing it."""
+        """Pass thermal boundaries to a preview or committed fluid update."""
 
         return self.prop_system.update(
             dt=dt,
             atm=atm,
             heat_rate=thermal_out.heat_rates() if thermal_out is not None else {},
-            commit=False,
-            axial_specific_force=axial_specific_force,
-        )
-
-    def commit_fluid(
-        self,
-        dt: Optional[float],
-        atm: AtmosState,
-        thermal_out: Optional[ThermalOut] = None,
-        axial_specific_force: float = 0.0,
-    ) -> FluidOut:
-        """Advance and commit the fluid network with converged heat rates."""
-
-        return self.prop_system.update(
-            dt=dt,
-            atm=atm,
-            heat_rate=thermal_out.heat_rates() if thermal_out is not None else {},
-            commit=True,
+            commit=commit,
             axial_specific_force=axial_specific_force,
         )
 
@@ -194,7 +168,6 @@ class FlightSim:
         self,
         kin: KinematicsState,
         atm: AtmosState,
-        aero_out: AeroOut,
         fluids: FluidOut,
         axial_specific_force: float,
         *, commit_thermal: bool = True,
@@ -203,53 +176,40 @@ class FlightSim:
 
         if self.thermal is None:
             return (
-                self.commit_fluid(
+                self.update_fluid(
                     kin.dt,
                     atm,
+                    commit=True,
                     axial_specific_force=axial_specific_force,
                 ),
                 None,
             )
 
-        settings = self.cfg.get("advanced", {}).get("heating", {})
-        tolerance = float(settings.get("convergence_tolerance", 1.0e-3))
-        temperature_tolerance = float(settings.get("temperature_tolerance", 1.0e-2))
-        max_iterations = int(settings.get("max_iterations", 5))
-        if min(tolerance, temperature_tolerance) < 0.0:
-            raise ValueError("Heating convergence tolerances must be nonnegative")
-        if max_iterations < 1:
-            raise ValueError("Heating convergence iterations must be positive")
-
-        thermal_out = self.trial_thermal(
+        thermal_out = self.thermal.trial(
             kin,
             atm,
-            aero_out,
             fluids,
             axial_specific_force=axial_specific_force,
         )
-        if thermal_out is None:
-            raise RuntimeError("Thermal model did not return boundary conditions")
-        for _ in range(max_iterations):
-            trial_fluids = self.trial_fluid(
+        for _ in range(self.heat_iterations):
+            trial_fluids = self.update_fluid(
                 kin.dt,
                 atm,
+                commit=False,
                 thermal_out=thermal_out,
                 axial_specific_force=axial_specific_force,
             )
-            next_thermal = self.trial_thermal(
+            next_thermal = self.thermal.trial(
                 kin,
                 atm,
-                aero_out,
                 trial_fluids,
                 previous=thermal_out,
                 axial_specific_force=axial_specific_force,
             )
-            if next_thermal is None:
-                raise RuntimeError("Thermal model did not return boundary conditions")
             if (
-                self.heat_rate_error(thermal_out, next_thermal) <= tolerance
+                self.heat_rate_error(thermal_out, next_thermal) <= self.heat_tolerance
                 and self.wall_temperature_error(thermal_out, next_thermal)
-                <= temperature_tolerance
+                <= self.temperature_tolerance
             ):
                 thermal_out = next_thermal
                 break
@@ -257,9 +217,10 @@ class FlightSim:
         else:
             raise RuntimeError("Fluid/thermal coupling failed to converge")
 
-        fluids = self.commit_fluid(
+        fluids = self.update_fluid(
             kin.dt,
             atm,
+            commit=True,
             thermal_out=thermal_out,
             axial_specific_force=axial_specific_force,
         )
@@ -267,16 +228,10 @@ class FlightSim:
             self.thermal.commit(thermal_out)
         return fluids, thermal_out
 
-    def predict_kinematics(
-        self,
-        kin: KinematicsState,
-        plant: PlantOut,
-        mass: float,
-    ) -> KinematicsState:
-        """Explicitly predict the endpoint from beginning-of-step acceleration."""
-
+    @staticmethod
+    def predict_kinematics(kin: KinematicsState, forces: Dict[str, float]) -> KinematicsState:
+        """Explicitly predict the endpoint using already evaluated start forces."""
         dt = kin.dt
-        forces = self.forces(kin, plant, mass)
 
         ax = forces["ax"]
         az = forces["az"]
@@ -301,7 +256,7 @@ class FlightSim:
             theta=theta,
             q=q,
             alpha=kin.alpha,
-            m=mass,
+            m=kin.m,
             Iyy=kin.Iyy,
         )
 
@@ -522,57 +477,38 @@ class FlightSim:
                     start.vz / (start.vz - trial.vz)}
         return None
 
-    def _attempt_segment(self, kin, fluid_state, on_rail, event_tolerance):
-        """Tentatively advance one fixed-mode segment, without publishing results."""
-        settings = self.cfg.get("advanced", {}).get("flight", self.cfg["simulation"])
-        corrector_tolerance = float(settings.get("corrector_tolerance", 1e-8))
-        corrector_max_iterations = int(settings.get("corrector_max_iterations", 10))
-        fluid_solve_post_shutdown = self.cfg["simulation"].get("fluid_solve_post_shutdown", True)
-        # Evaluate every force used for propagation at the beginning of the
-        # interval, using the fluid and vehicle state at the same time.
+    def evaluate_state(self, kin, fluids, thermal=None, *, atmosphere=None):
+        """Evaluate a synchronized state without changing any model or recording data."""
+        if atmosphere is None:
+            atmosphere = self._atmosphere(kin)
+        plant = PlantOut(self.trial_aero(kin, atmosphere, self.engine_on(fluids.propulsion)),
+                         thermal, fluids)
+        return atmosphere, plant, self.forces(kin, plant, kin.m)
+
+    def _attempt_segment(self, kin, fluid_state, on_rail, event_tolerance, start_forces):
+        """Advance a fixed-mode segment and return its evaluated endpoint for reuse."""
         thermal_out = None
-        mass = float(self.vehicle.total_mass)
-        inertia = float(self.vehicle.Iyy)
-        kin = replace(
-            kin,
-            dt=kin.dt,
-            m=mass,
-            Iyy=inertia,
-        )
-        kin = self._kinematic_boundary(kin, on_rail)
-        atmosphere = self._atmosphere(kin)
+        predicted_kin = self.predict_kinematics(kin, start_forces)
         engine_on = self.engine_on(fluid_state.propulsion)
-        aero_out = self.trial_aero(kin, atmosphere, engine_on)
-        start_plant = PlantOut(
-            aero=aero_out,
-            thermal=None,
-            fluids=fluid_state,
-        )
-        start_forces = self.forces(kin, start_plant, mass)
-        predicted_kin = self.predict_kinematics(
-            kin,
-            start_plant,
-            mass,
-        )
 
         # Use the explicit predictor to supply endpoint boundary conditions
         # for the single implicit fluid-network propagation.
         predicted_kin = self._kinematic_boundary(predicted_kin, on_rail)
         crossing = self._apogee_crossing(kin, predicted_kin)
         if crossing is not None:
-            return None, fluid_state, None, start_forces, crossing
+            return None, fluid_state, None, crossing
         predicted_atmosphere = self._atmosphere(predicted_kin)
-        predicted_aero = self.trial_aero(
+        # Validate the aerodynamic boundary before advancing the fluid state.
+        self.trial_aero(
             predicted_kin,
             predicted_atmosphere,
             engine_on,
         )
-        if fluid_solve_post_shutdown or fluid_state.propulsion.mode != "shutdown":
+        if self.fluid_solve_post_shutdown or fluid_state.propulsion.mode != "shutdown":
             try:
                 fluid_state, thermal_out = self.step_coupled(
                     predicted_kin,
                     predicted_atmosphere,
-                    predicted_aero,
                     fluid_state,
                     axial_specific_force=start_forces["axial_specific_force"],
                     commit_thermal=False,
@@ -583,7 +519,7 @@ class FlightSim:
                     f"t={predicted_kin.t:.6g} s"
                 ) from error
             if (
-                not fluid_solve_post_shutdown
+                not self.fluid_solve_post_shutdown
                 and fluid_state.propulsion.mode == "shutdown"
             ):
                 fluid_state = self.stop_fluids(fluid_state)
@@ -592,7 +528,7 @@ class FlightSim:
         shutdown = next((event for event in fluid_state.events
                          if event.get("event") == "shutdown" and "before" in event), None)
         if shutdown is not None and shutdown["time_s"] < predicted_kin.t - event_tolerance:
-            return None, fluid_state, thermal_out, start_forces, shutdown
+            return None, fluid_state, None, shutdown
         # Integrate the powered segment with its left-hand thrust at cutoff.
         # The accepted output still carries the post-event mode and inventories.
         endpoint_fluid = shutdown["before"] if shutdown is not None else fluid_state
@@ -603,29 +539,13 @@ class FlightSim:
         # Iterate the implicit trapezoidal corrector. Propulsion and mass
         # are fixed at their solved endpoint values; atmosphere and drag
         # are updated with each corrected kinematic state.
-        end_engine_on = self.engine_on(endpoint_fluid.propulsion)
         next_kin = replace(
             predicted_kin,
             m=mass,
             Iyy=inertia,
         )
-        for _ in range(corrector_max_iterations):
-            trial_atmosphere = self._atmosphere(next_kin)
-            trial_aero = self.trial_aero(
-                next_kin,
-                trial_atmosphere,
-                end_engine_on,
-            )
-            trial_plant = PlantOut(
-                aero=trial_aero,
-                thermal=None,
-                fluids=endpoint_fluid,
-            )
-            end_forces = self.forces(
-                next_kin,
-                trial_plant,
-                mass,
-            )
+        for _ in range(self.corrector_max_iterations):
+            _, _, end_forces = self.evaluate_state(next_kin, endpoint_fluid, thermal_out)
             corrected_kin = self.correct_kinematics(
                 kin,
                 start_forces,
@@ -636,14 +556,14 @@ class FlightSim:
             corrected_kin = self._kinematic_boundary(corrected_kin, on_rail)
             crossing = self._apogee_crossing(kin, corrected_kin)
             if crossing is not None:
-                return None, fluid_state, thermal_out, start_forces, crossing
+                return None, fluid_state, None, crossing
             error = max(
                 abs(getattr(corrected_kin, name) - getattr(next_kin, name))
                 / (1.0 + abs(getattr(corrected_kin, name)))
                 for name in ("x", "h", "vx", "vz", "theta", "q")
             )
             next_kin = corrected_kin
-            if error <= corrector_tolerance:
+            if error <= self.corrector_tolerance:
                 break
         else:
             raise TrialDomainError(
@@ -652,30 +572,36 @@ class FlightSim:
 
         stopping = self.check_commit(kin, next_kin)
         if stopping is not None:
-            return None, fluid_state, thermal_out, start_forces, stopping
+            return None, fluid_state, None, stopping
         # Validate the final correction inside the retry boundary as well.
-        self.trial_aero(next_kin, self._atmosphere(next_kin), end_engine_on)
-        return next_kin, fluid_state, thermal_out, start_forces, shutdown
+        endpoint = self.evaluate_state(next_kin, endpoint_fluid, thermal_out)
+        return next_kin, fluid_state, endpoint, shutdown
 
     def run(self, h0: float = 0.0, v0: float = 0.0, *, progress=None,
             record_history: bool = True, compute_loads: bool = True) -> List[Dict[str, Any]]:
-        """Run the planar 3DOF trajectory with an explicit-implicit predictor-corrector."""
+        """Run the planar 3DOF trajectory with predictor-corrector timestepping."""
 
         if self.vehicle.total_mass is None:
             raise RuntimeError("Vehicle must be built before starting FlightSim")
         mass = float(self.vehicle.total_mass)
 
+        # Simulation Configuration
         simulation = self.cfg["simulation"]
         dt = float(simulation["dt"])
         t_end = float(simulation["t_end"])
         if not math.isfinite(dt) or dt <= 0 or not math.isfinite(t_end) or t_end < 0:
             raise ValueError("Simulation requires finite dt > 0 and t_end >= 0")
-        fluid_solve_post_shutdown = simulation.get(
-            "fluid_solve_post_shutdown", True
-        )
+        fluid_solve_post_shutdown = simulation.get("fluid_solve_post_shutdown", True)
         if not isinstance(fluid_solve_post_shutdown, bool):
             raise ValueError("simulation.fluid_solve_post_shutdown must be boolean")
         advanced = self.cfg.get("advanced", {}).get("flight", simulation)
+        self.fluid_solve_post_shutdown = fluid_solve_post_shutdown
+        self.corrector_tolerance = float(advanced.get("corrector_tolerance", 1e-8))
+        self.corrector_max_iterations = advanced.get("corrector_max_iterations", 10)
+        if (not math.isfinite(self.corrector_tolerance) or self.corrector_tolerance < 0
+                or isinstance(self.corrector_max_iterations, bool)
+                or not isinstance(self.corrector_max_iterations, int) or self.corrector_max_iterations < 1):
+            raise ValueError("Flight corrector requires finite tolerance >= 0 and integer iterations >= 1")
         event_tolerance = float(advanced.get("event_time_tolerance", 1e-6))
         event_max_iterations = advanced.get("event_max_iterations", 50)
         trial_max_retries = advanced.get("trial_max_retries", 10)
@@ -689,7 +615,7 @@ class FlightSim:
                 or event_max_iterations < 1):
             raise ValueError("Flight event_max_iterations must be a positive integer")
 
-        inertia = float(self.vehicle.Iyy)
+        inertia = float(self.vehicle.Iyy) # MOI around pitch axis
         rail_mode = self.on_rail(h0)
         kin = KinematicsState(
             t=0.0,
@@ -707,7 +633,8 @@ class FlightSim:
         kin = self._kinematic_boundary(kin, rail_mode)
         atmosphere = self._atmosphere(kin)
 
-        fluid_state = self.commit_fluid(
+        fluid_state = self.update_fluid(
+            commit=True,
             dt=None,
             atm=atmosphere,
             axial_specific_force=gravity(mass, h0) / mass,
@@ -722,10 +649,8 @@ class FlightSim:
             dry_mass=float(np.sum(getattr(self.vehicle, "dry_mass", self.vehicle.mass))),
             final_altitude=h0, final_velocity=v0,
             final_vz=v0, final_speed=abs(v0), final_pitch_angle=math.pi / 2,
-            geometry_constraints=dict(getattr(self.vehicle, "geometry_constraints", {})),
             history=history if record_history else None,
-            constraints=dict(fluid_state.constraints),
-            constraint_times=dict(fluid_state.constraint_times),
+            constraint_records=dict(fluid_state.constraint_records),
         )
         thermal_out = None
         result.burn_complete = fluid_state.propulsion.mode == "shutdown"
@@ -733,21 +658,9 @@ class FlightSim:
         if self.check_commit(kin, kin) is not None:
             result.termination = "no_ascent"
             return history
-        initial_aero = self.trial_aero(kin, atmosphere, self.engine_on(fluid_state.propulsion))
-        initial_forces = self.forces(kin, PlantOut(initial_aero, None, fluid_state), mass)
-        if record_history:
-            result.initial_state = {
-                "kinematics": kin,
-                "atmosphere": atmosphere,
-                "plant": PlantOut(initial_aero, None, fluid_state),
-                "forces": initial_forces,
-                "mass_properties": self.mass_properties(),
-                "engine_on": self.engine_on(fluid_state.propulsion),
-            }
-        self._record_twr(result, kin, initial_forces["twr"])
-        if compute_loads:
-            self._evaluate_loads(result, kin, atmosphere, initial_aero, initial_forces,
-                                 self.engine_on(fluid_state.propulsion))
+        evaluation = self.evaluate_state(kin, fluid_state, atmosphere=atmosphere)
+        result.initial_state = self._collect_sample(result, kin, *evaluation, rail_mode, compute_loads)
+        self._record_twr(result, kin, evaluation[2]["twr"])
         if progress is not None:
             progress(kin)
 
@@ -756,10 +669,8 @@ class FlightSim:
         while kin.t < t_end and not result.apogee_reached and (kin.t == 0.0 or kin.vz >= 0.0):
             macro_end = min((macro_index + 1) * dt, t_end)
             start_kin, start_fluid = kin, fluid_state
-            start_atmosphere = self._atmosphere(kin)
-            start_sample = self._kinematic_boundary(kin, rail_mode)
-            self._record_extrema(result, start_atmosphere, self.trial_aero(
-                start_sample, start_atmosphere, self.engine_on(start_fluid.propulsion)), start_sample)
+            start_atmosphere, start_plant, start_forces = evaluation
+            self._record_extrema(result, start_atmosphere, start_plant.aero, kin)
             checkpoint = (self.prop_system.checkpoint() if fluid_solve_post_shutdown
                           or start_fluid.propulsion.mode != "shutdown" else None)
             duration = macro_end - kin.t
@@ -774,8 +685,8 @@ class FlightSim:
                         self.vehicle.update_mass_distribution(start_fluid.node)
                     kin = self._kinematic_boundary(replace(start_kin, dt=duration), rail_mode)
                     try:
-                        next_kin, fluid_state, thermal_out, start_forces, shutdown = self._attempt_segment(
-                            kin, start_fluid, rail_mode, event_tolerance)
+                        next_kin, fluid_state, endpoint, shutdown = self._attempt_segment(
+                            kin, start_fluid, rail_mode, event_tolerance, start_forces)
                     except TrialDomainError as error:
                         if trial_retries >= trial_max_retries or duration / 2 < trial_min_dt:
                             raise RuntimeError(f"Flight trial recovery exhausted at t={start_kin.t:g} s "
@@ -826,46 +737,32 @@ class FlightSim:
                 self.vehicle.update_mass_distribution(start_fluid.node)
                 raise
 
-            # Only accepted segments may alter thermal state or flight results.
+            # The evaluated endpoint is the left side of a shutdown or rail event.
+            # Reuse it for ordinary recording and recompute only when a mode changes.
+            end_atmosphere, end_plant, end_forces = endpoint
+            thermal_out = end_plant.thermal
             if thermal_out is not None:
                 self.thermal.commit(thermal_out)
             engine_on = self.engine_on(start_fluid.propulsion)
             end_engine_on = self.engine_on(fluid_state.propulsion)
-            self.vehicle.update_mass_distribution(fluid_state.node)
-            mass = float(self.vehicle.total_mass)
-            next_kin = replace(next_kin, m=mass, Iyy=float(self.vehicle.Iyy))
-            # Sample the left side of either discontinuity before switching the
-            # flight mode; the history record below describes the right side.
+            before_event = None
             if rail_crossing or shutdown is not None:
-                left_fluid = shutdown["before"] if shutdown is not None else fluid_state
-                self.vehicle.update_mass_distribution(left_fluid.node)
-                left_mass = float(self.vehicle.total_mass)
-                left_atmosphere = self._atmosphere(next_kin)
-                left_aero = self.trial_aero(next_kin, left_atmosphere,
-                                            self.engine_on(left_fluid.propulsion))
-                left_forces = self.forces(next_kin, PlantOut(left_aero, thermal_out, left_fluid), left_mass)
-                self._record_twr(result, next_kin, left_forces["twr"], kin, start_forces["twr"])
-                self._record_extrema(result, left_atmosphere, left_aero, next_kin)
-                if compute_loads:
-                    self._evaluate_loads(result, next_kin, left_atmosphere, left_aero,
-                                         left_forces, self.engine_on(left_fluid.propulsion))
-                self.vehicle.update_mass_distribution(fluid_state.node)
-            if rail_crossing:
-                rail_mode = False
-                result.rail_exit_time = next_kin.t
-                next_kin = self._kinematic_boundary(next_kin, False)
-
-            # Re-evaluate the complete corrected endpoint for history.
-            end_atmosphere = self._atmosphere(next_kin)
-            end_aero = self.trial_aero(next_kin, end_atmosphere, end_engine_on)
-            end_plant = PlantOut(
-                aero=end_aero,
-                thermal=thermal_out,
-                fluids=fluid_state,
-            )
-            end_forces = self.forces(next_kin, end_plant, mass)
+                self._record_twr(result, next_kin, end_forces["twr"], kin, start_forces["twr"])
+                self._record_extrema(result, end_atmosphere, end_plant.aero, next_kin)
+                before_event = self._collect_sample(result, next_kin, *endpoint, rail_mode, compute_loads)
+                if shutdown is not None:
+                    self.vehicle.update_mass_distribution(fluid_state.node)
+                    next_kin = replace(next_kin, m=float(self.vehicle.total_mass), Iyy=float(self.vehicle.Iyy))
+                if rail_crossing:
+                    rail_mode = False
+                    result.rail_exit_time = next_kin.t
+                    next_kin = self._kinematic_boundary(next_kin, False)
+                endpoint = self.evaluate_state(next_kin, fluid_state, thermal_out)
+                end_atmosphere, end_plant, end_forces = endpoint
+            mass = next_kin.m
+            evaluation = endpoint
             self._record_twr(result, next_kin, end_forces["twr"], kin, start_forces["twr"])
-            self._record_extrema(result, end_atmosphere, end_aero, next_kin)
+            self._record_extrema(result, end_atmosphere, end_plant.aero, next_kin)
             result.max_altitude = max(result.max_altitude, next_kin.h)
             if (kin.vz > 0.0 and end_forces["az"] < 0.0
                     and 0.0 <= next_kin.vz <= -end_forces["az"] * event_tolerance):
@@ -891,37 +788,12 @@ class FlightSim:
             result.final_pitch_rate = next_kin.q
             result.final_mass = mass
             result.shutdown_reason = fluid_state.propulsion.shutdown_reason
-            merge_margins(result.constraints, fluid_state.constraints,
-                          times=result.constraint_times, sample_times=fluid_state.constraint_times,
-                          time=next_kin.t)
-            loads = None
-            if compute_loads:
-                loads = self._evaluate_loads(result, next_kin, end_atmosphere, end_aero,
-                                             end_forces, end_engine_on)
-            if record_history:
-                wind_x, wind_z = self._wind(next_kin.h)
-                _, _, airspeed, gamma_air, _ = self.flight_kinematics(
-                    next_kin,
-                    wind_x=wind_x,
-                    wind_z=wind_z,
-                )
-                state = {
-                    "kinematics": next_kin,
-                    "atmosphere": end_atmosphere,
-                    "plant": end_plant,
-                    "forces": end_forces,
-                    "mass_properties": self.mass_properties(),
-                    "wind": {
-                        "wind_x": float(wind_x),
-                        "wind_z": float(wind_z),
-                        "airspeed": float(airspeed),
-                        "gamma_air": float(gamma_air),
-                    },
-                    "engine_on": end_engine_on,
-                    "on_rail": rail_mode,
-                }
-                if loads is not None:
-                    state["loads"] = loads
+            merge_records(result.constraint_records, fluid_state.constraint_records)
+            state = self._collect_sample(result, next_kin, end_atmosphere, end_plant,
+                                         end_forces, rail_mode, compute_loads)
+            if state is not None:
+                if before_event is not None:
+                    state["before_event"] = before_event
                 history.append(state)
             kin = next_kin
             if kin.t >= macro_end:
@@ -932,17 +804,31 @@ class FlightSim:
         result.termination = "apogee" if result.apogee_reached else ("no_ascent" if kin.vz < 0 else "time_limit")
         return history
 
-    def _evaluate_loads(self, result, kin, atmosphere, aero, forces, engine_on):
-        loads = self.loads.evaluate(atmosphere.q, atmosphere.Ma, kin.alpha,
-                                    aero.A, forces["thrust_axial"], engine_on=engine_on,
-                                    thrust_normal=forces["thrust_normal"],
-                                    aerodynamic=not aero.ballistic_coast)
-        for name in ("axial", "normal", "shear", "bending"):
-            values = np.asarray(loads[name])
-            if not np.all(np.isfinite(values)):
-                raise ValueError(f"Nonfinite {name} loads at t={kin.t}")
-            result.load_peaks[name] = max(result.load_peaks.get(name, 0.0), float(np.max(np.abs(values))))
-        return loads
+    def _collect_sample(self, result, kin, atmosphere, plant, forces, on_rail, compute_loads):
+        """Collect an accepted state, including either side of a flight event."""
+        engine_on = self.engine_on(plant.fluids.propulsion)
+        loads = None
+        if compute_loads:
+            loads = self.loads.evaluate(
+                atmosphere.q, atmosphere.Ma, kin.alpha, plant.aero.A,
+                forces["thrust_axial"], engine_on=engine_on,
+                thrust_normal=forces["thrust_normal"], aerodynamic=not plant.aero.ballistic_coast)
+            for name in ("axial", "normal", "shear", "bending"):
+                values = np.asarray(loads[name])
+                if not np.all(np.isfinite(values)):
+                    raise ValueError(f"Nonfinite {name} loads at t={kin.t}")
+                result.load_peaks[name] = max(result.load_peaks.get(name, 0.0), float(np.max(np.abs(values))))
+        if result.history is None:
+            return None
+        wind_x, wind_z = self._wind(kin.h)
+        _, _, airspeed, gamma_air, _ = self.flight_kinematics(kin, wind_x=wind_x, wind_z=wind_z)
+        state = dict(kinematics=kin, atmosphere=atmosphere, plant=plant, forces=forces,
+                     mass_properties=self.mass_properties(), engine_on=engine_on, on_rail=on_rail,
+                     wind=dict(wind_x=float(wind_x), wind_z=float(wind_z),
+                               airspeed=float(airspeed), gamma_air=float(gamma_air)))
+        if loads is not None:
+            state["loads"] = loads
+        return state
 
     def _record_twr(self, result, kin, twr, previous=None, previous_twr=None):
         result.max_twr = max(result.max_twr, twr)
@@ -964,10 +850,6 @@ class FlightSim:
 
     def _record_extrema(self, result, atmosphere, aero, kin):
         result.max_aoa_deg = max(result.max_aoa_deg, abs(math.degrees(kin.alpha)))
-        limit = self.cfg.get("constraints", {}).get("max_aoa_deg")
-        if limit is not None:
-            merge_margins(result.constraints, {"max_aoa_deg": float(limit) - result.max_aoa_deg},
-                          times=result.constraint_times, time=kin.t)
         result.max_q = max(result.max_q, float(atmosphere.q))
         diameter = self.cfg.get("vehicle", {}).get("OMLD")
         if diameter is not None and math.isfinite(aero.cp):
@@ -984,11 +866,6 @@ class FlightSim:
         launch = self.cfg["launch"]
         rail_end = float(launch["altitude"]) + float(launch["rail_height"])
         return altitude < rail_end
-
-    def angle_of_attack(self, time: float, altitude: float) -> float:
-        """Legacy schedule helper; propagation derives AoA from the 3DOF state."""
-
-        return 0.0 if self.on_rail(altitude) else self.aero.aoa(time)
 
     @staticmethod
     def engine_on(propulsion: PropulsionOut) -> bool:

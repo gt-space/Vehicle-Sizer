@@ -3,6 +3,12 @@
 Two files: `dragmodel.h5` (the model) and `dragmodel.py` (the reader). Needs
 Python with numpy, scipy and h5py. Nothing else.
 
+The reader requires fixed-area scaling (`cd_scaling: fixed_area`, positive `d0`),
+fin `delta` tables, normal-force parts (`bodyparts`, `finparts`), axial splits
+(`casplit`), and short-tube corrections (`shorttube`). These are loaded once;
+incomplete decks fail during loading. Tubes shorter than the correction's
+coverage still produce a warning.
+
 It gives, for any vehicle in the team's design range, at any Mach from 0.1
 to 10 and any angle of attack from 0 to 15 degrees, for three nose shapes and
 three surface finishes:
@@ -82,16 +88,15 @@ them. Finish enters drag only; nose shape enters both drag and normal force.
 ## How it works
 
 RASAero II's drag is a sum of body terms and fin terms, and the only variable
-both read is the diameter. So drag is two smaller models joined by a
-reference curve:
+both read is the diameter. The file stores the body and fin increment on a
+fixed reference area:
 
-    CD = body(D, length, fineness, boattail_aft, boattail_length)
-       + fins(D, span, root, tip, sweep, thickness)
-       - ref(D)
+    CD = (body(D, length, fineness, boattail_aft, boattail_length)
+        + fin_delta(D, span, root, tip, sweep, thickness)) / (D / D0)^2
 
 * `body` is a degree-5 polynomial (252 coefficients per Mach and alpha point)
   fitted to 4,096 RASAero II runs, one per nose shape and finish.
-* `fins` is a grid of RASAero II runs, one per finish, read by linear
+* `fin_delta` is a grid of RASAero II increments, one per finish, read by linear
   interpolation. A polynomial does not work here because RASAero II's fin drag
   charts have discontinuities near Mach 1.1 to 1.4; the grid follows them. The
   levels are not equal across the axes, because the axes do not deserve equal
@@ -102,7 +107,7 @@ reference curve:
   nothing at all for thickness, which the fin response is linear in. This grid
   reaches 0.46% median where 5 levels everywhere (15,625 runs) reads 0.75% and
   7 levels everywhere (117,649 runs) reads 0.40%.
-* `ref` is RASAero II at the reference vehicle as a function of diameter.
+* The reference curve is subtracted when building `fin_delta`; the reader does not load it.
 * Every coefficient RASAero II returns is on the vehicle's own area,
   pi D^2 / 4, so it carries a 1/D^2 that has nothing to do with shape. Over
   8 to 16 in that 1/D^2 would dominate the fits: read linearly off a 5-level

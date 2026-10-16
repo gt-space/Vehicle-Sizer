@@ -3,8 +3,50 @@ from dataclasses import dataclass
 from functools import cached_property
 import numpy as np
 
+def ellipsoidal_profile(length, inner_diameter, cylinder_length, ellipse_ratio, resolution,
+                        passthrough_diameter=0., *, volume, internal_area=None):
+    """Integrate the fixed internal wall and usable cross-section on one grid."""
+    radius, tube = inner_diameter / 2, passthrough_diameter / 2
+    head = radius / ellipse_ratio
+    dx = length / resolution
+    x = (np.arange(resolution) + .5) * dx
+    wall_radius, slope = np.full_like(x, radius), np.zeros_like(x)
+    for mask, center in ((x < head, head), (x > head + cylinder_length, head + cylinder_length)):
+        axial = (x[mask] - center) / head
+        root = np.sqrt(np.maximum(1 - axial**2, 0.))
+        wall_radius[mask] = radius * root
+        slope[mask] = -radius * axial / (head * root)
+    cross_area = np.where(wall_radius > tube, np.pi * (wall_radius**2 - tube**2), 0.)
+    wall_area = np.where(wall_radius > tube,
+                         (2 * np.pi * wall_radius * np.sqrt(1 + slope**2) + 2 * np.pi * tube) * dx, 0.)
+    volumes = np.concatenate(([0.], np.cumsum(cross_area * dx)))
+    areas = np.concatenate(([0.], np.cumsum(wall_area)))
+    if volumes[-1] <= 0.:
+        raise ValueError("Tank geometry has no usable internal volume")
+    volumes *= volume / volumes[-1]
+    volumes[-1] = volume
+    if internal_area is not None:
+        areas *= internal_area / areas[-1]
+        areas[-1] = internal_area
+    return dict(length=length, height=np.linspace(0., length, resolution + 1),
+                volume=volumes, area=areas)
+
+
+class TankGeometry:
+    """Shared fill interpolation on a cached physical-volume/contact-area profile."""
+
+    def fill_state(self, liquid_volume: float):
+        if not 0.0 <= liquid_volume <= self.volume:
+            raise ValueError("Liquid volume must remain within the tank volume")
+        profile = self._profile
+        liquid_area = float(np.interp(liquid_volume, profile["volume"], profile["area"]))
+        return dict(fill_height=float(np.interp(liquid_volume, profile["volume"], profile["height"])),
+                    liquid_contact_area=liquid_area,
+                    ullage_contact_area=float(profile["area"][-1]) - liquid_area)
+
+
 @dataclass(frozen=True)
-class PropTankGeometry:
+class PropTankGeometry(TankGeometry):
     """Immutable internal geometry used to derive fill-dependent properties."""
 
     volume: float
@@ -30,67 +72,10 @@ class PropTankGeometry:
 
     @cached_property
     def _profile(self):
-        radius = 0.5 * self.inner_diameter
-        passthrough_radius = 0.5 * self.passthrough_diameter
-        head_depth = radius / self.ellipse_ratio
-        length = self.cylinder_length + 2.0 * head_depth
-        dx = length / self.resolution
-        x = (np.arange(self.resolution) + 0.5) * dx
-
-        wall_radius = np.full_like(x, radius)
-        slope = np.zeros_like(x)
-        lower = x < head_depth
-        upper = x > head_depth + self.cylinder_length
-        for mask, center in (
-            (lower, head_depth),
-            (upper, head_depth + self.cylinder_length),
-        ):
-            axial = (x[mask] - center) / head_depth
-            root = np.sqrt(np.maximum(1.0 - axial**2, 0.0))
-            wall_radius[mask] = radius * root
-            slope[mask] = -radius * axial / (head_depth * root)
-
-        open_section = wall_radius > passthrough_radius
-        cross_area = np.where(
-            open_section,
-            np.pi * (wall_radius**2 - passthrough_radius**2),
-            0.0,
-        )
-        wall_area = np.where(
-            open_section,
-            (
-                2.0 * np.pi * wall_radius * np.sqrt(1.0 + slope**2)
-                + 2.0 * np.pi * passthrough_radius
-            )
-            * dx,
-            0.0,
-        )
-        cell_volume = cross_area * dx
-        return {
-            "length": length,
-            "volume": np.concatenate(([0.0], np.cumsum(cell_volume))),
-            "area": np.concatenate(([0.0], np.cumsum(wall_area))),
-            "height": np.linspace(0.0, length, self.resolution + 1),
-        }
-
-    def fill_state(self, liquid_volume: float):
-        """Return fill height and liquid/ullage wall contact areas."""
-
-        if not 0.0 <= liquid_volume <= self.volume:
-            raise ValueError("Liquid volume must remain within the tank volume")
-        profile = self._profile
-        geometric_volume = profile["volume"][-1]
-        if geometric_volume <= 0.0:
-            raise ValueError("Tank geometry has no usable internal volume")
-        target = liquid_volume / self.volume * geometric_volume
-        height = float(np.interp(target, profile["volume"], profile["height"]))
-        liquid_area = float(np.interp(target, profile["volume"], profile["area"]))
-        total_area = float(profile["area"][-1])
-        return {
-            "fill_height": height,
-            "liquid_contact_area": liquid_area,
-            "ullage_contact_area": total_area - liquid_area,
-        }
+        length = self.cylinder_length + self.inner_diameter / self.ellipse_ratio
+        return ellipsoidal_profile(length, self.inner_diameter, self.cylinder_length,
+                                   self.ellipse_ratio, self.resolution, self.passthrough_diameter,
+                                   volume=self.volume)
 
     @property
     def internal_area(self) -> float:
@@ -118,7 +103,6 @@ class PropTankGeometry:
             raise ValueError("Tank phase masses cannot be negative")
 
         cell_volume = np.diff(self._profile["volume"])
-        cell_volume *= self.volume / np.sum(cell_volume)
         aft_volume = cell_volume[::-1]
         volume_before = np.concatenate(([0.0], np.cumsum(aft_volume)[:-1]))
         liquid_cell_volume = np.clip(
@@ -141,7 +125,7 @@ class PropTankGeometry:
         ) + distribute(ullage_mass, ullage_cell_volume, "ullage")
 
 @dataclass(frozen=True)
-class PressTankGeometry:
+class PressTankGeometry(TankGeometry):
     """Immutable pressurant tank geometry used by the fluid network."""
 
     volume: float
@@ -177,45 +161,6 @@ class PressTankGeometry:
 
     @cached_property
     def _profile(self):
-        radius = 0.5 * self.inner_diameter
-        head_depth = radius / self.ellipse_ratio
-        resolution = max(512, self.resolution)
-        dx = self.length / resolution
-        x = (np.arange(resolution) + 0.5) * dx
-        wall_radius = np.full_like(x, radius)
-        slope = np.zeros_like(x)
-        lower = x < head_depth
-        upper = x > head_depth + self.cylinder_length
-        for mask, center in (
-            (lower, head_depth),
-            (upper, head_depth + self.cylinder_length),
-        ):
-            axial = (x[mask] - center) / head_depth
-            root = np.sqrt(np.maximum(1.0 - axial**2, 0.0))
-            wall_radius[mask] = radius * root
-            slope[mask] = -radius * axial / (head_depth * root)
-        cross_area = np.pi * wall_radius**2
-        wall_area = 2.0 * np.pi * wall_radius * np.sqrt(1.0 + slope**2) * dx
-        return {
-            "height": np.linspace(0.0, self.length, resolution + 1),
-            "volume": np.concatenate(([0.0], np.cumsum(cross_area * dx))),
-            "area": np.concatenate(([0.0], np.cumsum(wall_area))),
-        }
-
-    def fill_state(self, liquid_volume: float):
-        """Return bottom-up liquid height and phase contact areas."""
-
-        if not 0.0 <= liquid_volume <= self.volume:
-            raise ValueError("Liquid volume must remain within the pressure tank")
-        profile = self._profile
-        target = liquid_volume / self.volume * profile["volume"][-1]
-        fill_height = float(
-            np.interp(target, profile["volume"], profile["height"])
-        )
-        profile_area = float(np.interp(target, profile["volume"], profile["area"]))
-        liquid_area = self.internal_area * profile_area / profile["area"][-1]
-        return {
-            "fill_height": fill_height,
-            "liquid_contact_area": liquid_area,
-            "ullage_contact_area": self.internal_area - liquid_area,
-        }
+        return ellipsoidal_profile(self.length, self.inner_diameter, self.cylinder_length,
+                                   self.ellipse_ratio, max(512, self.resolution),
+                                   volume=self.volume, internal_area=self.internal_area)

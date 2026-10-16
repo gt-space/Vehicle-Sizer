@@ -41,7 +41,8 @@ class FinCan(Section):
             raise ValueError("The aerodynamic model requires exactly four fins")
         if self.wall_thickness <= 0 or 2 * self.wall_thickness >= min(self.boattail_aft_diameter, float(cfg["vehicle"]["OMLD"])):
             raise ValueError("Boattail wall must leave a positive internal diameter")
-        # Nozzle interference is returned as a signed construction constraint.
+        self.radius = self.radius + self.local_centers / self.length * (self.boattail_aft_diameter / 2 - self.radius)
+        self.inner_radius = self.radius - self.wall_thickness
 
     def get_mass(self):
         self.fin_shell_mass = self._get_fin_mass()
@@ -59,65 +60,26 @@ class FinCan(Section):
         m = rho * V
         return m
 
-    def _get_boattail_mass(self) -> float:
-        r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
-        t = self.cfg["fin_can"]["boattail_wall_thickness"]
-        r_s_i = r_s_o - t
-        
-        r_f_o = 0.5 * self.boattail_aft_diameter
-        r_f_i = r_f_o - t
-
-        V_o = (1/3) * np.pi * self.length * (r_s_o**2 + r_s_o * r_f_o + r_f_o**2)
-        V_i = (1/3) * np.pi * self.length * (r_s_i**2 + r_s_i * r_f_i + r_f_i**2)
-
-        V = V_o - V_i
-        mat = mp.get_material(self.cfg["fin_can"]["material"])
-        rho = mat.get("density")
-        return rho * V
 
     def _get_boattail_mass_vector(self) -> np.ndarray:
-        r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
-        t = self.cfg["fin_can"]["boattail_wall_thickness"]
-        
-        r_f_o = 0.5 * self.boattail_aft_diameter
-
-        mat = mp.get_material(self.cfg["fin_can"]["material"])
-        rho = mat.get("density")
-
-        x_local = self.local_centers
-        r_o = r_s_o + (x_local / self.length) * (r_f_o - r_s_o)
-        r_i = r_o - t
-        dV = geo.annulus_volume(r_o, r_i, self.dx)
-        return rho * dV
+        rho = mp.get_material(self.wall_material).get("density")
+        return rho * geo.annulus_volume(self.radius, self.inner_radius, self.dx)
 
     def get_EI(self):
-        r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
-        t = self.cfg["fin_can"]["boattail_wall_thickness"]
-
-        r_f_o = 0.5 * self.boattail_aft_diameter
-
-        x_local = self.local_centers
-        r_o = r_s_o + (x_local / self.length) * (r_f_o - r_s_o)
-        r_i = r_o - t
-
-        mat = mp.get_material(self.cfg["fin_can"]["material"])
-        E = mat.get("elastic_modulus", T=300.0)
-        self.EI = E * geo.annulus_second_moment(r_o, r_i)
+        E = mp.get_material(self.wall_material).get("elastic_modulus", T=300.0)
+        self.EI = E * geo.annulus_second_moment(self.radius, self.inner_radius)
 
     def get_area(self):
         r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
         r_f_o = 0.5 * self.boattail_aft_diameter
 
-        x_local = np.minimum((np.arange(self.n) + 0.5) * self.dx, self.length)
-        r_o = r_s_o + (x_local / self.length) * (r_f_o - r_s_o)
-
         dr_dx = (r_f_o - r_s_o) / self.length
         ds = np.sqrt(self.dx**2 + (dr_dx * self.dx)**2)
 
-        lat_body = 2.0 * r_o * self.dx
-        surf_body = 2.0 * np.pi * r_o * ds
+        lat_body = 2.0 * self.radius * self.dx
+        surf_body = 2.0 * np.pi * self.radius * ds
 
-        fin_strip_area = self._fin_strip_area(x_local)
+        fin_strip_area = self._fin_strip_area(self.local_centers)
         lat_fins = 2.0 * fin_strip_area
         surf_fins = 2.0 * self.fin_count * fin_strip_area
 
@@ -150,19 +112,6 @@ class FinCan(Section):
         area = height * self.dx
         return area * (self.fin_area / np.sum(area))
 
-    def get_MOI(self):
-        r_s_o = self.cfg["vehicle"]["OMLD"] * 0.5
-        t = self.cfg["fin_can"]["boattail_wall_thickness"]
-        r_f_o = 0.5 * self.boattail_aft_diameter
-        x_local = self.local_centers
-        r = r_s_o + (x_local / self.length) * (r_f_o - r_s_o)
-        self.cg = np.sum(self.mass * self.station) / np.sum(self.mass)
-        self.Ixx = np.sum(self.mass * r**2)
-        self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
-
-
-    def get_thermal_oml_area(self) -> np.ndarray:
-        return self.surf_area.copy()
 
     def get_thermal_shell_mass(self) -> np.ndarray:
         fin_weights = self.surf_area_fins

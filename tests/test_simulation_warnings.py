@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import simulation
-from diagnostics.constraints import EvaluationFailure
+from diagnostics.errors import EvaluationFailure
 from diagnostics.errors import LookupBoundsError
 from FluidTables.PropertyModels import TableCombustionPropertySource
 from simulation_types import SimResult
@@ -59,28 +59,45 @@ def test_nonfinite_pressure_is_not_clamped(combustion, ambient):
     assert records == []
 
 
-@pytest.mark.parametrize("fail", [False, True])
-def test_simulation_reports_cautions_on_success_and_failure(monkeypatch, caplog, fail):
-    result = SimResult()
+@pytest.mark.parametrize("phase", [None, "runtime", "constraint assessment", "incomplete"])
+def test_simulation_finalizes_metadata_and_cautions_for_every_result(monkeypatch, caplog, phase):
+    result = SimResult(apogee=100, termination="apogee")
     closed = []
+    pump, gg = {"pump": {"power": 10.}}, {"mass_flow": .1}
+    tracking = {"tank": {"duration_s": 2.}}
 
     def run(*args, context, **kwargs):
-        context.update(phase="runtime", flight=SimpleNamespace(result=result),
-                       propulsion=SimpleNamespace(close=lambda: closed.append(True)))
+        context.update(phase=phase or "runtime", flight=SimpleNamespace(result=result),
+                       battery_sizing={"used_mass_kg": 1.}, design_summary={"length": 3.},
+                       propulsion=SimpleNamespace(close=lambda: closed.append(True),
+                           pump_sizing=pump, gg_sizing=gg,
+                           network=SimpleNamespace(retry_diagnostics=[dict(rtol=1e-6)],
+                                                   pressure_tracking=SimpleNamespace(records=tracking))))
         caution("test", "A nonfatal caution")
         assert not caplog.records
-        if fail:
+        if phase == "incomplete":
+            result.apogee = None
+            result.termination = "time_limit"
+        elif phase:
             raise RuntimeError("solver failed")
         return result
 
     monkeypatch.setattr(simulation, "_simulate", run)
-    if fail:
+    if phase:
         with pytest.raises(EvaluationFailure) as exc:
             simulation.simulate({})
         assert exc.value.partial_result is result
+        assert exc.value.phase == ("runtime" if phase == "incomplete" else phase)
     else:
         assert simulation.simulate({}) is result
     assert closed == [True]
+    assert result.battery_sizing == {"used_mass_kg": 1.}
+    assert result.design_summary == {"length": 3.}
+    pump["pump"]["power"] = gg["mass_flow"] = tracking["tank"]["duration_s"] = -1
+    assert result.pump_sizing == {"pump": {"power": 10.}}
+    assert result.gg_sizing == {"mass_flow": .1}
+    assert result.pressure_tracking == {"tank": {"duration_s": 2.}}
+    assert result.fluid_retries == [dict(rtol=1e-6)]
     assert result.warnings == [dict(code="test", message="A nonfatal caution", count=1)]
     assert len(caplog.records) == 1
 
@@ -93,3 +110,20 @@ def test_nested_scopes_are_isolated():
         caution("outer", "outer")
     assert outer[0]["count"] == 2
     assert inner == [dict(code="inner", message="inner", count=1)]
+
+
+def test_finalization_failure_still_closes_propulsion(monkeypatch):
+    class UncopyableSizing:
+        def __deepcopy__(self, memo):
+            raise RuntimeError('metadata failure')
+
+    closed = []
+    def run(*args, context, **kwargs):
+        context['propulsion'] = SimpleNamespace(pump_sizing=UncopyableSizing(),
+                                               close=lambda: closed.append(True))
+        return SimResult(apogee=100., termination='apogee')
+
+    monkeypatch.setattr(simulation, '_simulate', run)
+    with pytest.raises(RuntimeError, match='metadata failure'):
+        simulation.simulate({})
+    assert closed == [True]

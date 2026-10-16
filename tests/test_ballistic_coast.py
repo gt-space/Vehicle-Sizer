@@ -5,8 +5,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from diagnostics.constraints import OperatingInfeasible
-from diagnostics.errors import TrialDomainError
+from diagnostics.errors import TrialDomainError, ModelDomainExceeded
 from Flight.Flight import FlightSim
 from simulation_types import KinematicsState, PlantOut, SimResult
 from test_flight import FakeAero, FakeEnvironment, FakePropSystem, FakeVehicle
@@ -48,13 +47,14 @@ def test_low_pressure_bypasses_all_tables_and_preserves_kinematics():
     next_kin = sim.correct_kinematics(kin, forces, forces, kin.m, kin.Iyy)
     assert next_kin.q == kin.q
     assert next_kin.theta == pytest.approx(kin.theta + kin.q * kin.dt)
-    result = SimResult()
-    loads = sim._evaluate_loads(result, kin, atm, out, forces, False)
+    result = SimResult(history=[])
+    sample = sim._collect_sample(result, kin, atm, PlantOut(out, None, fluids), forces, False, True)
+    loads = sample['loads']
     for key in ("axial", "axial_aero", "normal", "shear", "bending"):
         np.testing.assert_array_equal(loads[key], 0)
     sim._record_extrema(result, atm, out, kin)
     assert result.max_aoa_deg == pytest.approx(30)
-    assert "max_aoa_deg" not in result.constraints
+    assert "max_aoa_deg" not in result.constraint_records
     assert result.min_stability_calibers is None
 
 
@@ -85,7 +85,7 @@ def test_nonfinite_state_and_explicit_constraint_still_rejected():
     with pytest.raises(TrialDomainError):
         sim.trial_aero(kin, replace(atm, q=-1), False)
     sim.cfg["constraints"] = {"max_aoa_deg": 15.}
-    with pytest.raises(OperatingInfeasible):
+    with pytest.raises(ModelDomainExceeded):
         sim.check_commit(kin, kin)
 
 

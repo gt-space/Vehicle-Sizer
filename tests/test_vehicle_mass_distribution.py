@@ -10,6 +10,7 @@ class FakeTankSection:
         self.station = np.asarray(station, dtype=float)
         self.dry_mass = np.asarray(dry_mass, dtype=float)
         self.mass = self.dry_mass.copy()
+        self.n = len(self.mass)
         self.EI = np.ones_like(self.mass)
         self.lat_area = np.ones_like(self.mass)
         self.surf_area = np.ones_like(self.mass)
@@ -17,8 +18,7 @@ class FakeTankSection:
         self.Iyy = 0.0
         self.cg = float(np.mean(self.station))
 
-    def set_fluid_mass(self, axial_mass):
-        self.mass = self.dry_mass + np.asarray(axial_mass, dtype=float)
+    def get_MOI(self):
         self.cg = float(np.sum(self.mass * self.station) / np.sum(self.mass))
 
 
@@ -28,13 +28,18 @@ class VehicleMassDistributionTests(unittest.TestCase):
         aft_tank = FakeTankSection("fuel_tank", [2.0, 3.0], [1.0, 1.0])
         vehicle = Vehicle(
             cfg={
-                "vehicle": {"dx": 1.0},
+                "vehicle": {"dx": 1.0, "OMLD": .25},
                 "prop_system": {"initial_conditions": {}},
                 "tanks": {},
-            }
+            },
+            initial_states={}, wall_pressures={},
         )
         vehicle.sections = [forward_tank, aft_tank]
-        vehicle._assemble_vectors()
+        vehicle.station, vehicle.mass = np.arange(4.), np.ones(4)
+        vehicle.engine_mass = np.zeros(4)
+        vehicle.dry_pitch_correction = 0.
+        vehicle.fluid_sections = [('oxidizer_node', forward_tank, slice(0, 2)),
+                                  ('fuel_node', aft_tank, slice(2, 4))]
         vehicle.get_mass_properties()
         dry_cg = vehicle.cg
 

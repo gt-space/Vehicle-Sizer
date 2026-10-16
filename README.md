@@ -17,13 +17,28 @@ To simulate a flight:
 .venv/bin/python main.py Configs/flight_pressure_fed_regulator.yaml
 ```
 
-Outputs are a terminal summary, flight/event/load CSVs, and PNG plots at the config's `simulation.output` and `simulation.plot` paths. Use `--dt` or `--t-end` to change the run; `--enforce-constraints` applies the saved flight limits.
+Outputs are a terminal summary, flight/event/load CSVs, and PNG plots at the config's `simulation.output` and `simulation.plot` paths. Use `--dt` or `--t-end` to change the run. Single runs and sweeps do not assess design constraints. The optimizer uses the same `simulate` entry point with `assess_constraints=True` and ranks the resulting margins separately from execution failures.
+
+All simulation callers use the same model-domain and solver checks. A run that
+cannot reach apogee raises `EvaluationFailure`, with a typed cause, phase and
+collected warnings. The single-run CLI prints the reason and writes
+`<output>.failure.json`. Warnings are nonfatal; design-limit violations only
+affect optimizer assessment. The former `--enforce-constraints` option is removed.
+
+For direct model assembly, call `Fluids.design.prepare_design_inputs(cfg)` after
+applying candidate overrides. It returns `(template, states, wall_pressures)`.
+Pass `initial_states=states, wall_pressures=wall_pressures` to `Vehicle` and
+`template=template, initial_states=states` to `PropSystem`. These constructors
+consume prepared inputs; `simulate` handles this preparation automatically.
+Construct property sources with `FluidTables.PropertyModels.property_sources(cfg)`
+and supply both to `PropSystem`. Source selection uses `property_models` exclusively;
+PropSystem no longer creates defaults or reads `engine.property_source`.
 
 Run a sensitivity sweep using copies of your existing vehicle configuration:
 
 ```bash
-.venv/bin/python -m sensitivity Configs/sweeps/copv_volume.yaml --dry-run
-.venv/bin/python -m sensitivity Configs/sweeps/copv_volume.yaml
+.venv/bin/python main.py --sweep Configs/sweeps/copv_volume.yaml --dry-run
+.venv/bin/python main.py --sweep Configs/sweeps/copv_volume.yaml
 ```
 
 See [sensitivity/README.md](sensitivity/README.md) for sweep inputs, parallel
@@ -50,6 +65,11 @@ Run tests:
 ```bash
 .venv/bin/python -m pytest -q
 ```
+
+Simulation finalization attaches design, battery, pump, gas-generator, pressure
+tracking and retry data through one path for completed and partial results.
+Failure diagnostics retain their execution phase and cause; propulsion resources
+close even if metadata finalization fails.
 
 | Folder | Purpose |
 | --- | --- |

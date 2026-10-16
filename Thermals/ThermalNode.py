@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 import numpy as np
 
-from simulation_types import AeroOut, AtmosState, FluidOut, KinematicsState
+from simulation_types import AtmosState, FluidOut, KinematicsState
 from . import heating
 from .ThermalCircuit import solve_lumped_wall
 
@@ -70,26 +70,20 @@ def natural_convection_htc(
 class WetNodeModel(DryNodeModel):
     """Wall coupled to one bulk fluid temperature per contacting phase."""
 
-    def _phases(self, node, fluid_out: FluidOut):
-        matches = [
-            (fluid_node_id, output)
-            for fluid_node_id, output in fluid_out.node.items()
-            if output.get("tank_id") == node.id
-        ]
-        if len(matches) != 1:
-            raise ValueError(
-                f"Thermal tank {node.id!r} requires exactly one fluid-node output"
-            )
-        fluid_node_id, fluid_node = matches[0]
+    def __init__(self, fluid_node_id: str):
+        self.fluid_node_id = fluid_node_id
 
-        phase_states = fluid_node.get("phase_states")
-        fluids = phase_states if phase_states else fluid_node.get("fluids", {})
-        phases = {}
-        for name, fluid in fluids.items():
-            phase = str(name if phase_states else fluid["phase"])
-            phases[phase] = fluid
+    def fluid_boundary(
+        self,
+        node,
+        fluid_out: FluidOut,
+        wall_T: np.ndarray,
+        axial_specific_force: float,
+    ):
+        fluid_node = fluid_out.node[self.fluid_node_id]
+        phases = fluid_node["phase_states"]
         if not phases:
-            raise ValueError(f"Fluid node {node.id!r} exposes no phase temperatures")
+            raise ValueError(f"Fluid node {self.fluid_node_id!r} exposes no phase temperatures")
 
         labels = np.full(node.n, next(iter(phases)), dtype=object)
         if "liquid" in phases and "gas" in phases and "fill_height" in fluid_node:
@@ -102,16 +96,6 @@ class WetNodeModel(DryNodeModel):
             raise ValueError(
                 f"Two-phase thermal node {node.id!r} requires fill_height"
             )
-        return fluid_node_id, phases, labels
-
-    def fluid_boundary(
-        self,
-        node,
-        fluid_out: FluidOut,
-        wall_T: np.ndarray,
-        axial_specific_force: float,
-    ):
-        fluid_node_id, phases, labels = self._phases(node, fluid_out)
         fluid_T = np.asarray([phases[phase]["T"] for phase in labels], dtype=float)
         required = ("rho", "mu", "k", "cp", "beta")
         for phase, fluid in phases.items():
@@ -156,7 +140,7 @@ class WetNodeModel(DryNodeModel):
             grashof,
             labels,
             phase_data,
-            fluid_node_id,
+            self.fluid_node_id,
         )
 
 
@@ -223,12 +207,10 @@ class ThermalNode:
         self,
         kin: KinematicsState,
         atm: AtmosState,
-        aero_out: AeroOut,
         fluid_out: FluidOut,
         wall_T_guess: np.ndarray | None = None,
         axial_specific_force: float = 0.0,
     ) -> Dict[str, Any]:
-        del aero_out  # Reserved for future local aerodynamic boundary data.
         guess = self.wall_T if wall_T_guess is None else np.asarray(wall_T_guess, dtype=float)
         if guess.shape != (self.n,):
             raise ValueError(f"Thermal node {self.id!r} received the wrong wall-temperature shape")

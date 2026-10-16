@@ -17,13 +17,13 @@ def test_zero_ei_preserves_loads_without_dividing():
 
 def test_zero_contact_area_has_zero_conductance(monkeypatch):
     import Thermals.ThermalNode as module
-    model = WetNodeModel()
+    model = WetNodeModel("fuel")
     phase = {'T': 290., 'rho': 1000., 'mu': .001, 'k': .1, 'cp': 1000., 'beta': .001}
-    monkeypatch.setattr(model, '_phases', lambda *args: ('fuel', {'liquid': phase}, np.array(['liquid']*2)))
+    fluids = SimpleNamespace(node={'fuel': {'phase_states': {'liquid': phase}}})
     monkeypatch.setattr(module, 'natural_convection_htc', lambda *args: (np.array([10.,10.]), np.ones(2)))
     node = SimpleNamespace(n=2, id='fuel', cell_edges=np.arange(3.),
                            internal_area=np.array([0., 1.]), thickness=.003, conductivity=100.)
     with np.errstate(all='raise'):
-        result = model.fluid_boundary(node, None, np.array([300.,300.]), 9.81)
+        result = model.fluid_boundary(node, fluids, np.array([300.,300.]), 9.81)
     assert result[0][0] == 0
     assert result[0][1] > 0

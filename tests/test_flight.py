@@ -27,10 +27,6 @@ class FakeAero:
     reference_area = 1.0
 
     @staticmethod
-    def aoa(time):
-        return 0.1 + 0.01 * time
-
-    @staticmethod
     def evaluate(kinematics, atmosphere, engine_on):
         return AeroOut(Cd=0.0, D=0.0, cp=1.5)
 
@@ -83,7 +79,6 @@ class FakePropSystem:
                 "junction": {"P": 2.0e6},
             },
             branch={},
-            td_state={"tank": {}, "copv": {}},
             mdot={},
             propulsion=PropulsionOut(
                 mode="combusting",
@@ -197,17 +192,6 @@ class FlightSkeletonTests(unittest.TestCase):
         self.assertTrue(result["on_rail"])
         self.assertEqual(kin.alpha, 0.0)
 
-    def test_scheduled_aoa_begins_at_rail_exit(self):
-        launch_altitude = self.flight.cfg["launch"]["altitude"]
-        rail_height = self.flight.cfg["launch"]["rail_height"]
-        rail_end = launch_altitude + rail_height
-
-        self.assertEqual(self.flight.angle_of_attack(5.0, rail_end - 0.01), 0.0)
-        self.assertAlmostEqual(
-            self.flight.angle_of_attack(5.0, rail_end),
-            FakeAero.aoa(5.0),
-        )
-
     def test_endpoint_derives_aoa_after_crossing_rail_end(self):
         self.flight.cfg["launch"]["rail_height"] = 0.001
 
@@ -277,7 +261,7 @@ class FlightSkeletonTests(unittest.TestCase):
         self.assertAlmostEqual(forces["gravity"], gravity(kin.m, kin.h))
         self.assertAlmostEqual(forces["acceleration"], forces["net"] / kin.m)
 
-    def test_trial_fluid_passes_node_heat_rate(self):
+    def test_fluid_update_passes_node_heat_rate_and_commit_policy(self):
         atmosphere = FakeEnvironment.atmosphere(0.0, 0.0)
         thermal = ThermalOut(
             node={
@@ -288,18 +272,20 @@ class FlightSkeletonTests(unittest.TestCase):
             }
         )
 
-        self.flight.trial_fluid(
-            0.1,
-            atmosphere,
-            thermal_out=thermal,
-            axial_specific_force=12.0,
-        )
-
-        self.assertEqual(
-            self.prop_system.calls[-1]["heat_rate"], {"tank": {"gas": 25.0}}
-        )
-        self.assertFalse(self.prop_system.calls[-1]["commit"])
-        self.assertEqual(self.prop_system.calls[-1]["axial_specific_force"], 12.0)
+        for commit in (False, True):
+            with self.subTest(commit=commit):
+                self.flight.update_fluid(
+                    0.1,
+                    atmosphere,
+                    thermal_out=thermal,
+                    axial_specific_force=12.0,
+                    commit=commit,
+                )
+                self.assertEqual(
+                    self.prop_system.calls[-1]["heat_rate"], {"tank": {"gas": 25.0}}
+                )
+                self.assertIs(self.prop_system.calls[-1]["commit"], commit)
+                self.assertEqual(self.prop_system.calls[-1]["axial_specific_force"], 12.0)
 
 
     def test_rail_constraint_locks_lateral_and_pitch_states(self):
@@ -404,7 +390,7 @@ class FlightSkeletonTests(unittest.TestCase):
             aero=AeroOut(Cd=0.1, D=12.0, Ca=0.1, A=10.0, Cn=0.2, N=20.0, cp=2.0),
             thermal=None,
             fluids=FluidOut(
-                node={}, branch={}, td_state={}, mdot={},
+                node={}, branch={}, mdot={},
                 propulsion=PropulsionOut(
                     mode="combusting", shutdown_reason=None, thrust=100.0,
                     Pc=1.0, MR=1.0, Cf=1.0, cstar=1.0,

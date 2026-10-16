@@ -24,7 +24,7 @@ def field_category(name: str) -> str:
         return 'Controls'
     if any(token in low for token in ('loads.', 'bending', 'shear', 'axial_load', 'load_peaks', 'stress')):
         return 'Structural'
-    if any(token in low for token in ('aero.', 'mach', 'dynamic_pressure', 'drag_', 'cd', 'angle_of_attack', 'aoa')):
+    if any(token in low for token in ('aero.', 'state.atmosphere.', 'kinematics.alpha', 'mach', 'dynamic_pressure', 'drag_', 'cd', 'angle_of_attack', 'aoa')):
         return 'Aerodynamics'
     if any(token in low for token in ('cg_', '.cg', 'inertia', 'iyy', 'ixx')):
         return 'Mass properties'
@@ -32,6 +32,6 @@ def field_category(name: str) -> str:
         return 'Vehicle sizing'
     if any(token in low for token in ('thrust', 'chamber_pressure', 'mixture_ratio', 'mdot', 'propulsion.', 'impulse')):
         return 'Propulsion'
-    if any(token in low for token in ('flight.', 'apogee', 'velocity', 'altitude', 'final_x', 'final_v', 'burn_duration')):
+    if any(token in low for token in ('flight.', 'kinematics.', 'state.wind.', 'derived.speed_', 'apogee', 'velocity', 'altitude', 'final_x', 'final_v', 'burn_duration')):
         return 'Flight performance'
     return 'Other'

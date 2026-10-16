@@ -1,61 +1,34 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional
 from math import isfinite
+from diagnostics.constraints import ConstraintRecord
 from copy import deepcopy
-from diagnostics.constraints import DesignInfeasible
 from Fluids.helpers.battery import size_battery
 from Fluids.helpers.pump_curve import scaled_pump_curve
-from Fluids.design import initial_conditions, pump_definition, size_pump, size_gas_generator
-from Fluids.helpers.templates import load_template
+from Fluids.design import pump_definition, size_pump, size_gas_generator
 from Thermals.heat_sources import thermal_model
 
 from .FluidNetwork import FluidNetwork
 from Fluids import FluidsDef
-from FluidTables.PropertyModels import (
-    CEAPropertySource,
-    CombustionPropertySource,
-    CoolPropPropertySource,
-    PureFluidProperties,
-    PureFluidPropertySource,
-    TableCombustionPropertySource,
-)
+from FluidTables.PropertyModels import PureFluidProperties
 from simulation_types import FluidOut, PropulsionOut
-
-
-def _make_cea(engine_cfg: Dict[str, Any]):
-    """Construct RocketCEA only when the CEA source is selected."""
-
-    from rocketcea.cea_obj_w_units import CEA_Obj
-
-    return CEA_Obj(
-        oxName=engine_cfg["oxidizer"],
-        fuelName=engine_cfg["fuel"],
-        pressure_units="Pa",
-        cstar_units="m/s",
-        temperature_units="K",
-        enthalpy_units="J/kg",
-        density_units="kg/m^3",
-        specific_heat_units="J/kg-K",
-    )
 
 
 class PropSystem:
     """Size and bind one declarative template, then expose the IDAS network to flight."""
 
-    def __init__(self, cfg, tanks, fluid_properties=None, combustion_properties=None,
-                 *, ignore_feasibility=False):
-        self.ignore_feasibility = bool(ignore_feasibility)
+    def __init__(self, cfg, tanks, fluid_properties, combustion_properties, *,
+                 template, initial_states):
         self.design_config = deepcopy(cfg)
         if {'external_heating', 'nodes'} & self.design_config.get('thermal', {}).keys():
             raise ValueError('Select thermal.model per dynamic model instead of legacy global heating flags')
         self.cfg = self.design_config["prop_system"]
-        self.template = load_template(self.design_config)
-        self.cfg["template"] = self.template
+        self.template = template
         self.tank_definitions = self.design_config.get("tanks", {})
-        self.initial_states = initial_conditions(self.design_config)
+        self.initial_states = deepcopy(initial_states)
         self.engine_cfg = self.design_config["engine"]
-        self.fluid_properties = fluid_properties if fluid_properties is not None else CoolPropPropertySource()
+        self.fluid_properties = fluid_properties
         self.combustion_properties = combustion_properties
         geometries = {key: tank.get_fluid_geometry() for key, tank in tanks.items()}
         self._initialize_tank_states(tanks, geometries)
@@ -72,13 +45,11 @@ class PropSystem:
         elif "throat_area" not in self.engine_cfg:
             raise ValueError("Specify engine.throat_area or prop_system.thrust_target")
         self._size_engine()
-        circuits, nodes, branches = self._bind_template(geometries)
+        circuits, nodes, branches = self._build_network_definitions(geometries)
         self.pump_sizing, self.gg_sizing, self.sizing_constraints = {}, {}, {}
         self._size_branches(circuits, nodes, branches)
         if set(self.pump_sizing) != set(self.cfg.get("pumps", {})):
             raise ValueError("Every configured pump must be referenced by exactly one template branch")
-        if not self.ignore_feasibility and any(value < 0 for value in self.sizing_constraints.values()):
-            raise DesignInfeasible(self.sizing_constraints, self.pump_sizing)
         self.battery_sizing = {}
         if "battery" in self.cfg:
             electric_pumps = [p for p in self.pump_sizing.values() if p["drive"] == "electric"]
@@ -88,8 +59,12 @@ class PropSystem:
                 self.cfg["battery"],
                 1000 * sum(pump["required_power_kw"] for pump in electric_pumps))
         self.circuits, self.node_definitions, self.branch_definitions = circuits, nodes, branches
+        self.aero_nodes = frozenset(key for key, node in nodes.items()
+                                    if thermal_model(node.get('thermal')) == 'Aeroheating')
+        self.pump_curves = tuple((key, branch['head_model']) for key, branch in branches.items()
+                                 if branch.get('head_model') is not None)
         self._bind_outputs()
-        self._configure_constraints()
+        self.constraint_monitor = None
         simulation = self.design_config.get("simulation", {})
         post_shutdown = simulation.get("fluid_solve_post_shutdown", True)
         triple = simulation.get("fluid_stop_at_triple_point", False)
@@ -98,10 +73,10 @@ class PropSystem:
         self.network = FluidNetwork(nodes, branches, fluid_properties=self.fluid_properties,
                                     combustion_properties=self.combustion_properties,
                                     tolerances=self.design_config.get("advanced", {}).get("fluid_network"),
-                                    constraint_monitor=self._constraint_margins,
+                                    constraint_monitor=self._monitor_state,
                                     stop_at_shutdown=not post_shutdown, stop_at_triple_point=triple)
 
-    def _bind_template(self, geometries):
+    def _build_network_definitions(self, geometries):
         template = deepcopy(self.template)
         circuits, nodes, branches = (template[k] for k in ("circuits", "nodes", "branches"))
         used = []
@@ -114,9 +89,7 @@ class PropSystem:
                 circuit.setdefault("fluid", "combustion_gas")
                 circuit.setdefault("state0", {"P": self.Pc_target, "T": self.combustion_gas["T"]})
         for key, node in nodes.items():
-            kind = FluidNetwork._kind(node)
-            node.pop("model", None)
-            node["component"] = kind
+            kind = node["component"]
             if kind in ("propellant_tank", "pressurant_tank"):
                 tank_id = node["tank_id"]
                 used.append(tank_id)
@@ -145,9 +118,7 @@ class PropSystem:
         if len(used) != len(set(used)) or set(used) != set(geometries):
             raise ValueError("Template must reference every configured tank exactly once")
         for key, branch in branches.items():
-            kind = FluidNetwork._kind(branch)
-            branch.pop("model", None)
-            branch["component"] = kind
+            kind = branch["component"]
             if kind == "nozzle":
                 branch.setdefault("At", self.throat_area)
                 branch.setdefault("Cd", self.nozzle_cd)
@@ -235,19 +206,6 @@ class PropSystem:
         self.cf_efficiency = float(self.engine_cfg["cf_efficiency"])
         if self.cstar_efficiency <= 0.0 or self.cf_efficiency <= 0.0:
             raise ValueError("Engine efficiencies must be positive")
-
-        if self.combustion_properties is None:
-            source = self.engine_cfg["property_source"]
-            if source == "cea":
-                self.cea = _make_cea(self.engine_cfg)
-                self.combustion_properties = CEAPropertySource(self.cea)
-            elif source == "table":
-                self.combustion_properties = TableCombustionPropertySource(
-                    lookup_file=self.engine_cfg["lookup_file"],
-                    nfz=int(self.engine_cfg["nfz"]),
-                )
-            else:
-                raise ValueError(f"Unknown engine.property_source={source!r}")
 
         exit_pressure = self.engine_cfg.get("exit_pressure")
         if exit_pressure is not None and not 0.0 < float(exit_pressure) < self.Pc_target:
@@ -385,7 +343,7 @@ class PropSystem:
 
     def _size_pumps(self, circuits, nodes, branches, design_flow):
         for branch_id, branch in branches.items():
-            branch_type = branch.get("component", branch.get("model"))
+            branch_type = branch["component"]
             circuit_id = branch["circuit"]
             circuit = circuits[circuit_id]
             if branch_type == "pump":
@@ -405,7 +363,8 @@ class PropSystem:
                 sizing.update(inlet_pressure_pa=inlet_pressure, inlet_temperature_k=inlet_temperature)
                 self.pump_sizing[pump_id] = sizing
                 if sizing["drive"] == "electric":
-                    self.sizing_constraints[f"pump.{pump_id}.max_power"] = sizing["power_margin_kw"]
+                    self.sizing_constraints[f"pump.{pump_id}.max_power"] = ConstraintRecord(
+                        sizing["power_margin_kw"], "Fluids.PropSystem", "sizing", "kW", time=0.)
                 branch.update(dP=sizing["pressure_rise_pa"], gas_CdA=float(definition["gas_CdA"]))
                 if "curve" in definition:
                     curve = scaled_pump_curve(sizing["design_mdot"], sizing["pressure_rise_pa"], **definition["curve"])
@@ -417,7 +376,7 @@ class PropSystem:
 
     def _size_restrictions(self, circuits, nodes, branches, design_flow, circuit_properties):
         for branch_id, branch in branches.items():
-            branch_type = branch.get("component", branch.get("model"))
+            branch_type = branch["component"]
             circuit_id = branch["circuit"]
             circuit = circuits[circuit_id]
             if branch_type in ("loss", "incompressible_loss"):
@@ -454,7 +413,7 @@ class PropSystem:
 
     def _size_pressurant_feeds(self, circuits, nodes, branches, design_flow):
         for branch_id, branch in branches.items():
-            branch_type = branch.get("component", branch.get("model"))
+            branch_type = branch["component"]
             circuit_id = branch["circuit"]
             circuit = circuits[circuit_id]
             if branch_type in ("bang_bang_valve", "regulator"):
@@ -482,7 +441,7 @@ class PropSystem:
                     )
                 liquid_mdot = sum(design_flow(outlet) for outlet in liquid_branches)
                 supply_branches = [b for b in branches.values() if b["to"] == branch["to"]
-                                   and b.get("component", b.get("model")) in ("bang_bang_valve", "regulator")]
+                                   and b["component"] in ("bang_bang_valve", "regulator")]
                 shares = [float(b.get("demand_fraction", 1.0 if len(supply_branches) == 1 else float("nan"))) for b in supply_branches]
                 if any(not isfinite(s) or s <= 0 for s in shares) or abs(sum(shares)-1) > 1e-9:
                     raise ValueError("Pressurant feeds to one tank require positive demand_fraction values summing to one")
@@ -643,59 +602,12 @@ class PropSystem:
             raise ValueError("Combustor requires fuel/oxidizer feeds and one nozzle")
         self.nozzle_id = nozzles[0]
 
-    def _configure_constraints(self):
-        """Attach owner-defined temperature and absolute pressure floors to tanks."""
-        self.tank_limits = {}
-        initial = dict(self.sizing_constraints)
-        for node_id, node in self.node_definitions.items():
-            tank_id = node.get("tank_id")
-            if tank_id is None:
-                continue
-            definition = self.tank_definitions.get(tank_id, {})
-            limits = {name: float(definition[name]) for name in ("min_temperature", "min_pressure") if name in definition}
-            if node.get("component") == "pressurant_tank" and "min_temperature" not in limits:
-                branch_limits = [float(b["min_temperature"]) for b in self.branch_definitions.values()
-                          if b["from"] == node_id and "min_temperature" in b]
-                if branch_limits:
-                    limits["min_temperature"] = max(branch_limits)
-                else:
-                    raise ValueError(f"Pressurant tank {tank_id!r} requires min_temperature")
-            if any(not isfinite(v) or v <= 0 for v in limits.values()):
-                raise ValueError(f"Tank {tank_id!r} limits must be finite and positive")
-            self.tank_limits[node_id] = (tank_id, limits)
-            state = node["state0"]
-            if "min_temperature" in limits:
-                initial[f"tank.{tank_id}.Tmin"] = min(float(state[key]) for key in ("T", "gas_T") if key in state) - limits["min_temperature"]
-            if "min_pressure" in limits:
-                initial[f"tank.{tank_id}.Pmin"] = float(state["P"]) - limits["min_pressure"]
-        self.initial_constraints = initial
-        if not self.ignore_feasibility and any(value < 0 for value in initial.values()):
-            raise DesignInfeasible(initial, self.pump_sizing)
-
-    def _constraint_margins(self, state):
-        """Evaluate owner-defined hard floors on accepted fluid states."""
-        for branch_id, definition in self.branch_definitions.items():
-            curve = definition.get("head_model")
-            if curve is None:
-                continue
-            branch_state = state.branches[branch_id]
-            if branch_state.get("pump_active", False):
-                curve.validate_flow(float(branch_state["mdot"]))
-        margins = {}
-        for node_id, (tank_id, limits) in self.tank_limits.items():
-            node = state.nodes[node_id]
-            if "min_temperature" in limits:
-                temperatures = [float(fluid["T"]) for fluid in node.get("fluids", {}).values() if "T" in fluid]
-                if "T" in node:
-                    temperatures.append(float(node["T"]))
-                if not temperatures:
-                    raise ValueError(f"Tank {tank_id!r} has no temperature to monitor")
-                margins[f"tank.{tank_id}.Tmin"] = min(temperatures) - limits["min_temperature"]
-            if "min_pressure" in limits:
-                margins[f"tank.{tank_id}.Pmin"] = float(node["P"]) - limits["min_pressure"]
-        if any(not isfinite(v) for v in margins.values()):
-            raise ValueError("Propulsion constraint margins must be finite")
-        return margins
+    def _monitor_state(self, state):
+        """Enforce pump model coverage; optional assessments never reject states."""
+        for branch_id, curve in self.pump_curves:
+            if state.branches[branch_id].get("pump_active", False):
+                curve.validate_flow(float(state.branches[branch_id]["mdot"]))
+        return self.constraint_monitor(state) if self.constraint_monitor is not None else {}
 
     def _propulsion_output(
         self,
@@ -739,13 +651,10 @@ class PropSystem:
         boundaries = dict(bcs or {})
         boundaries[self.ambient_id] = {"P": float(atm.p)}
 
-        event_start = len(self.network.events)
         heat_rate = dict(heat_rate or {})
-        aero_nodes = {key for key, node in self.node_definitions.items()
-                      if thermal_model(node.get('thermal')) == 'Aeroheating'}
-        if set(heat_rate) - aero_nodes:
+        if set(heat_rate) - self.aero_nodes:
             raise ValueError('External heat rates require Aeroheating on the receiving node')
-        for key in aero_nodes - heat_rate.keys():
+        for key in self.aero_nodes - heat_rate.keys():
             if dt is None or dt == 0:
                 heat_rate[key] = {}  # Initial fluid snapshot precedes the first wall trial.
             else:
@@ -757,37 +666,21 @@ class PropSystem:
             commit=commit,
             axial_specific_force=axial_specific_force,
         )
-        margins, times = dict(result["constraints"]), dict(result["constraint_times"])
-        for key, value in self.initial_constraints.items():
-            if value < margins.get(key, float("inf")):
-                margins[key], times[key] = value, 0.0
-        counts = {}
-        events = []
-        # Count the full returned history so previews and restored steps agree.
-        for event in result["events"][:event_start]:
-            key = f"{event['kind']}:{event['component']}:{event['name']}"
-            counts[key] = counts.get(key, 0) + 1
-        for event in result["events"][event_start:]:
-            key = f"{event['kind']}:{event['component']}:{event['name']}"
-            counts[key] = counts.get(key, 0) + 1
-            event = {**event, "event": event["name"], "count": counts[key]}
+        events = result["events"]
+        for event in events:
             if "before" in event:
                 before = event["before"]
                 event["before"] = FluidOut(
                     node=before["node"], branch=before["branch"], mdot=before["mdot"],
-                    td_state={k: before["node"][k] for k in result["td_state"]},
                     propulsion=self._propulsion_output(before))
-            events.append(event)
         return FluidOut(
             node=result["node"],
             branch=result["branch"],
-            td_state=result["td_state"],
             mdot=result["mdot"],
             propulsion=self._propulsion_output(result),
-            events=tuple(events),
+            events=events,
             event_counts=result["event_counts"],
-            constraints=margins,
-            constraint_times=times,
+            constraint_records=result["constraint_records"],
         )
 
     def checkpoint(self):

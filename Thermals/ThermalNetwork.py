@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from simulation_types import AeroOut, AtmosState, FluidOut, KinematicsState, ThermalOut
+from simulation_types import AtmosState, FluidOut, KinematicsState, ThermalOut
 from Vehicle.Material import MaterialProperties
 from .ThermalNode import DryNodeModel, ThermalNode, WetNodeModel
 from Thermals.heat_sources import thermal_model
@@ -32,6 +32,7 @@ class ThermalNetwork:
         if not np.isfinite([initial_T, sink_T]).all() or min(initial_T, sink_T) <= 0:
             raise ValueError("Thermal temperatures must be finite and positive")
         overrides = thermal_cfg.get("material_overrides", {})
+        fluid_nodes = {id(section): key for key, section, _ in vehicle.fluid_sections}
         counts = defaultdict(int)
         self.nodes: Dict[str, ThermalNode] = {}
 
@@ -55,7 +56,7 @@ class ThermalNetwork:
                 return float(value)
 
             if hasattr(section, "tank_id"):
-                model = WetNodeModel()
+                model = WetNodeModel(fluid_nodes[id(section)])
             else:
                 model = DryNodeModel()
             wall_temperature = float(selected[node_id].get('initial_wall_temperature', initial_T))
@@ -78,7 +79,6 @@ class ThermalNetwork:
         self,
         kin: KinematicsState,
         atm: AtmosState,
-        aero_out: AeroOut,
         fluid_out: FluidOut,
         previous: Optional[ThermalOut] = None,
         axial_specific_force: float = 0.0,
@@ -91,7 +91,6 @@ class ThermalNetwork:
             output[node_id] = node.trial(
                 kin,
                 atm,
-                aero_out,
                 fluid_out,
                 guess,
                 axial_specific_force=axial_specific_force,

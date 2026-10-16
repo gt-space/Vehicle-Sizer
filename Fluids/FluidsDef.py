@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from math import isfinite, sqrt
 import numpy as np
 
 
@@ -45,23 +46,19 @@ def compressible_mass_flux(
 ) -> float:
     """Ideal-gas isentropic mass flux, including choking."""
 
-    pressure_ratio = np.clip(P_downstream / P_upstream, 0.0, 1.0)
-    critical_ratio = (2.0 / (gamma + 1.0)) ** (gamma / (gamma - 1.0))
-    if pressure_ratio <= critical_ratio:
-        flow_function = np.sqrt(gamma) * (2.0 / (gamma + 1.0)) ** (
-            (gamma + 1.0) / (2.0 * (gamma - 1.0))
-        )
+    if (not all(isfinite(v) for v in (P_upstream, P_downstream, T_upstream, gas_constant, gamma))
+            or P_upstream <= 0 or P_downstream < 0 or T_upstream <= 0 or gas_constant <= 0 or gamma <= 1):
+        raise ValueError("Gas flow requires finite physical absolute pressures, T, R and gamma")
+    if P_downstream >= P_upstream:
+        return 0.0
+    ratio = P_downstream / P_upstream
+    critical = (2 / (gamma + 1)) ** (gamma / (gamma - 1))
+    if ratio <= critical:
+        factor = sqrt(gamma) * (2 / (gamma + 1)) ** ((gamma + 1) / (2 * (gamma - 1)))
     else:
-        flow_function = np.sqrt(
-            2.0
-            * gamma
-            / (gamma - 1.0)
-            * (
-                pressure_ratio ** (2.0 / gamma)
-                - pressure_ratio ** ((gamma + 1.0) / gamma)
-            )
-        )
-    return float(P_upstream * flow_function / np.sqrt(gas_constant * T_upstream))
+        factor = sqrt(max(0.0, 2 * gamma / (gamma - 1)
+                          * (ratio ** (2 / gamma) - ratio ** ((gamma + 1) / gamma))))
+    return P_upstream * factor / sqrt(gas_constant * T_upstream)
 
 
 def incompressible_cda(

@@ -17,7 +17,7 @@ class PressTank(Section):
         self.tank_id = tank_id
         definition = cfg["tanks"][tank_id]
         self.construction = definition.get("construction", "metal")
-        self.volume = self.configured_volume(definition)
+        self.volume = float(definition["volume"])
         self.diameter = float(definition["outer_diameter"])
         self.ellipse_ratio = float(definition["ellipse_ratio"])
         self.length_input = definition.get("length")
@@ -58,13 +58,6 @@ class PressTank(Section):
         self.length = self.cylinder_length + 2 * self.head_depth
         self.set_grid()
         self.emissivity = 0.85
-
-    @staticmethod
-    def configured_volume(definition):
-        if "volume" in definition and "volume_liters" in definition:
-            raise ValueError("Specify pressurant volume (m^3) or volume_liters, not both")
-        return (float(definition["volume"]) if "volume" in definition
-                else float(definition["volume_liters"]) * 1e-3)
 
     @staticmethod
     def wall_sizing(cfg, definition):
@@ -137,36 +130,10 @@ class PressTank(Section):
             cylinder_length=self.cylinder_length, ellipse_ratio=self.ellipse_ratio,
             internal_area=self.internal_area, resolution=self.n)
 
-    def set_fluid_mass(self, axial_mass: np.ndarray) -> None:
-        """Add a network-supplied gas vector to this tank's dry mass."""
-        axial_mass = np.asarray(axial_mass, dtype=float)
-        if axial_mass.shape != self.dry_mass.shape:
-            raise ValueError(f"Tank '{self.tank_id}' requires {self.n} axial mass values")
-        if np.any(axial_mass < 0.0):
-            raise ValueError(f"Tank '{self.tank_id}' fluid mass cannot be negative")
-        self.mass = self.dry_mass + axial_mass
-        self.get_MOI()
 
     def get_EI(self):
         self.EI = np.zeros(self.n)
 
-    def get_area(self):
-        r = self.cfg["vehicle"]["OMLD"] * 0.5
-        self.lat_area = dist.uniform(geo.cylinder_lateral_area(r, self.length), self.n)
-        self.surf_area = dist.uniform(geo.cylinder_surface_area(r, self.length), self.n)
-
-    def get_MOI(self):
-        r = self.cfg["vehicle"]["OMLD"] * 0.5
-        self.cg = (np.sum(self.mass * self.station) / np.sum(self.mass)
-                   if np.sum(self.mass) > 0 else np.mean(self.station))
-        self.Ixx = np.sum(self.mass * r**2)
-        self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
-
-    def get_thermal_oml_area(self):
-        return self.surf_area.copy()
-
-    def get_thermal_shell_mass(self):
-        return self.shell_mass.copy()
 
     def get_thermal_internal_area(self):
         return np.full(self.n, self.internal_area / self.n)

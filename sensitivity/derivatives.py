@@ -28,9 +28,9 @@ def history_gradient(samples: list[tuple[float, dict]], output: str):
     starts = []
     ends = []
     for history in histories:
-        if 'time_s' not in history or output not in history:
-            raise KeyError(f'History is missing time_s or {output!r}')
-        t = history['time_s']
+        if 'state.kinematics.t' not in history or output not in history:
+            raise KeyError(f'History is missing state.kinematics.t or {output!r}')
+        t = history['state.kinematics.t']
         if len(t) < 2 or not np.all(np.isfinite(t)) or np.any(np.diff(t) <= 0):
             raise ValueError('Flight times must be strictly increasing, finite and have >=2 samples')
         starts.append(t[0])
@@ -39,10 +39,10 @@ def history_gradient(samples: list[tuple[float, dict]], output: str):
     if hi <= lo:
         raise ValueError('Sweep histories have no overlapping time interval')
     # Build a common time axis from the highest-resolution history (no extrapolation).
-    selected = max(histories, key=lambda h: np.count_nonzero((h['time_s'] >= lo) & (h['time_s'] <= hi)))
-    times = np.unique(np.concatenate(([lo], selected['time_s'][(selected['time_s'] > lo) &
-                                                             (selected['time_s'] < hi)], [hi])))
-    values = np.stack([np.interp(times, history['time_s'], history[output])
+    selected = max(histories, key=lambda h: np.count_nonzero((h['state.kinematics.t'] >= lo) & (h['state.kinematics.t'] <= hi)))
+    times = np.unique(np.concatenate(([lo], selected['state.kinematics.t'][(selected['state.kinematics.t'] > lo) &
+                                                             (selected['state.kinematics.t'] < hi)], [hi])))
+    values = np.stack([np.interp(times, history['state.kinematics.t'], history[output])
                        for history in histories])
     if not np.all(np.isfinite(values)):
         raise ValueError(f'{output} contains missing/nonfinite values in the common time range')

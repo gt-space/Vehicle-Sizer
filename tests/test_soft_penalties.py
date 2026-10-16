@@ -98,4 +98,8 @@ def test_invalid_length_fraction_policy(field, value):
     spec = dict(lower_target=.1, upper_target=.2, scale=.05, weight=.15)
     spec[field] = value
     with pytest.raises(ValueError, match='Invalid stability'):
-        soft_penalties(result(), {'soft_penalties': {'stability_length_fraction': spec}})
+        from optimizer.core import prepare
+        from Configs.loader import load_config
+        policy = load_config('Configs/optimizer_epump.yaml')
+        policy['soft_penalties'] = {'stability_length_fraction': spec}
+        prepare(policy, None)

@@ -42,7 +42,7 @@ def saved_sweep(tmp_path):
     with h5py.File(tmp_path / 'histories.h5', 'w') as store:
         for case_id, pressure, _, _ in cases:
             group = store.create_group(case_id)
-            group.attrs['columns'] = json.dumps(['time_s', 'altitude_m', 'thrust_N'])
+            group.attrs['columns'] = json.dumps(['state.kinematics.t', 'state.kinematics.h', 'state.plant.fluids.propulsion.thrust'])
             group.create_dataset('data', data=np.column_stack([
                 times, pressure ** 2 * times, np.full(3, pressure * 100)]))
     return tmp_path
@@ -54,7 +54,7 @@ def test_missing_mode_loads_and_isolates_oat_parameter(saved_sweep):
     assert results.scalar_points('pressure', 'apogee') == [
         (1.0, 1.0, 'low'), (2.0, 4.0, 'baseline'), (4.0, 16.0, 'high')]
     assert results.field_catalog(contains='apogee')[0]['category'] == 'Flight performance'
-    assert results.history_fields() == ['altitude_m', 'thrust_N', 'time_s']
+    assert results.history_fields() == ['state.kinematics.h', 'state.kinematics.t', 'state.plant.fluids.propulsion.thrust']
 
 
 def test_full_grid_requires_filters(saved_sweep):
@@ -82,16 +82,16 @@ def test_derivatives_on_nonuniform_sweep(saved_sweep):
     results = SweepResults.load(saved_sweep)
     x, derivative = results.scalar_derivative('apogee', 'pressure')
     np.testing.assert_allclose(derivative, 2 * x)
-    x, time, derivative = results.history_derivative('altitude_m', 'pressure')
+    x, time, derivative = results.history_derivative('state.kinematics.h', 'pressure')
     np.testing.assert_allclose(derivative, 2 * x[:, None] * time[None, :])
 
 
 @pytest.mark.parametrize('method,arguments,options', [
     ('plot', ('pressure', 'apogee'), {'y2': 'dry_mass'}),
-    ('plot_history', ('thrust_N',), {'group_by': 'pressure'}),
-    ('plot_case_history', (), {'y': 'thrust_N', 'y2': 'altitude_m'}),
+    ('plot_history', ('state.plant.fluids.propulsion.thrust',), {'group_by': 'pressure'}),
+    ('plot_case_history', (), {'y': 'state.plant.fluids.propulsion.thrust', 'y2': 'state.kinematics.h'}),
     ('plot_derivative', ('pressure', 'apogee'), {'wrt': 'pressure'}),
-    ('plot_history_derivative', ('altitude_m',), {'wrt': 'pressure'}),
+    ('plot_history_derivative', ('state.kinematics.h',), {'wrt': 'pressure'}),
 ])
 def test_plot_saved_results(saved_sweep, method, arguments, options):
     results = SweepResults.load(saved_sweep)
@@ -109,7 +109,7 @@ def test_plot_saved_results(saved_sweep, method, arguments, options):
 def test_cli_lists_fields_and_writes_svg(saved_sweep, capsys):
     from reporting.plot_sensitivities import main
     main([str(saved_sweep), '--list-fields'])
-    assert 'altitude_m' in capsys.readouterr().out
+    assert 'state.kinematics.h' in capsys.readouterr().out
     output = saved_sweep / 'cli.svg'
     main([str(saved_sweep), '--x', 'pressure', '--y', 'apogee',
           '--y2', 'dry_mass', '--output', str(output)])

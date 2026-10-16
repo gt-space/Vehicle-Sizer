@@ -283,7 +283,7 @@ def plot_scalar(results, x: str, y=None, *, y2=None, y2label=None,
         raise
 
 
-def plot_case_history(results, y=None, *, x='time_s', y2=None, case_id='baseline',
+def plot_case_history(results, y=None, *, x='state.kinematics.t', y2=None, case_id='baseline',
                       labels=None, title=None, xlabel=None, ylabel=None,
                       y2label=None, figsize=(9, 5), grid=True, legend=None,
                       legend_title=None, xlim=None, ylim=None, y2lim=None,
@@ -292,7 +292,7 @@ def plot_case_history(results, y=None, *, x='time_s', y2=None, case_id='baseline
                       dpi=160, ax=None, **style):
     """Plot multiple history variables for one flight case, with a right y-axis.
 
-    y/y2 can be a field, [fields], or {field: label}. x defaults to time_s.
+    y/y2 can be a field, [fields], or {field: label}. x defaults to state.kinematics.t.
     Historical data is read only from saved histories.h5; no rerun required.
     """
     left = _field_spec(y, 'y')
@@ -404,7 +404,7 @@ def plot_history(results, y: str, group_by: str, *, filters=None,
             data = results.history(row['case_id'])
         except KeyError:
             continue
-        if y in data and 'time_s' in data:
+        if y in data and 'state.kinematics.t' in data:
             curves.append((row, data))
     if not curves:
         raise ValueError(f'No histories with output {y!r}; available: {results.history_fields()}')
@@ -456,7 +456,7 @@ def plot_history(results, y: str, group_by: str, *, filters=None,
         else:
             if len(curves) == 1:
                 line_style.setdefault('color', 'black')
-        times = np.asarray(data['time_s'], dtype=float) / x_divisor
+        times = np.asarray(data['state.kinematics.t'], dtype=float) / x_divisor
         values = np.asarray(data[y], dtype=float) / y_divisor
         axes.plot(times, values, **line_style)
 
@@ -486,7 +486,7 @@ def plot_history(results, y: str, group_by: str, *, filters=None,
         if legend is None:
             legend = 'baseline'
 
-    return _finish(results, fig, axes, default_xlabel='time_s', default_ylabel=y,
+    return _finish(results, fig, axes, default_xlabel='state.kinematics.t', default_ylabel=y,
                    default_name=_filename('history', y, 'by', group_by),
                    title=title, xlabel=xlabel, ylabel=ylabel,
                    grid=grid, legend=legend, legend_title=legend_title,
@@ -577,7 +577,7 @@ def plot_history_derivative(results, y: str, wrt: str, *, filters=None,
                       colorbar_label if colorbar_label is not None else wrt)
         if legend is None:
             legend = False
-    return _finish(results, fig, axes, default_xlabel='time_s',
+    return _finish(results, fig, axes, default_xlabel='state.kinematics.t',
                    default_ylabel=f'd({y})/d({wrt})',
                    default_name=_filename('history_derivative', y, 'wrt', wrt),
                    title=title, xlabel=xlabel, ylabel=ylabel,

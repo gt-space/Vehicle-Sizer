@@ -233,10 +233,10 @@ class SweepResults:
         from .plotting import plot_scalar
         return plot_scalar(self, x, y, **kwargs)
 
-    def plot_case_history(self, y=None, *, x='time_s', y2=None, case_id='baseline', **kwargs):
+    def plot_case_history(self, y=None, *, x='state.kinematics.t', y2=None, case_id='baseline', **kwargs):
         """Plot one saved flight's history using multiple lines and/or two y-axes.
 
-        Example: plot_case_history(y='thrust_N', y2='altitude_m',
+        Example: plot_case_history(y='state.plant.fluids.propulsion.thrust', y2='state.kinematics.h',
         y2scale=1e3, ylabel='Thrust (N)', y2label='Altitude (km)').
         y/y2 can be strings, lists, or {field: legend_label} dictionaries.
         Existing plot_history(y, group_by) is for comparing a sweep of cases.

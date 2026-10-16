@@ -1,9 +1,10 @@
 from copy import deepcopy
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
 from diagnostics.errors import TrialDomainError
+from Fluids.design import prepare_design_inputs
 from Fluids.FluidState import FluidState, NodeState
 from Thermals.heat_sources import build_heat_source, evaluate_heat, thermal_model
 
@@ -31,8 +32,14 @@ def test_adiabatic_default(config):
 
 def test_external_thermal_rates_and_time_callback_share_interface():
     trial = state(2.)
-    assert evaluate_heat({'gas': 12.}, trial, 0.) == {'gas': 12.}
+    prescribed = MappingProxyType({'gas': 12.})
+    output = evaluate_heat(prescribed, trial, 0.)
+    assert output == {'gas': 12.}
+    output['gas'] = -1.
+    assert prescribed['gas'] == 12.
     assert evaluate_heat(lambda t: {'gas': t * 3}, trial, 4.) == {'gas': 12.}
+    with pytest.raises(ValueError, match='absent phase'):
+        evaluate_heat({'liquid': 1.}, trial, 0.)
     with pytest.raises(ValueError, match='wall thermal solve'):
         evaluate_heat(build_heat_source({'model': 'Aeroheating'}), trial, 0.)
 
@@ -74,19 +81,21 @@ def test_mixed_wall_selection():
            'tanks': {'fuel': {'thermal': {'model': 'Aeroheating'}},
                      'ox': {'thermal': {'model': 'Aeroheating'}},
                      'copv': {'thermal': {'model': 'DensityPowerLaw', 'reference_area': 1.}}}}
-    network = ThermalNetwork(cfg, SimpleNamespace(sections=[fuel, ox, copv]))
+    network = ThermalNetwork(cfg, SimpleNamespace(sections=[fuel, ox, copv],
+        fluid_sections=tuple((s.tank_id, s, None) for s in (fuel, ox, copv))))
     assert set(network.nodes) == {'fuel', 'ox'}
 
 
 def test_real_config_binds_area_and_defaults():
     from Configs.loader import load_config
-    from simulation import property_sources
+    from FluidTables.PropertyModels import property_sources
     from Vehicle.Vehicle import Vehicle
     from Fluids.PropSystem import PropSystem
     cfg = load_config('Configs/flight_pressure_fed_regulator.yaml')
     pure, combustion = property_sources(cfg)
-    vehicle = Vehicle(cfg, pure)
-    with PropSystem(cfg, vehicle.tanks, pure, combustion) as prop:
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    vehicle = Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures)
+    with PropSystem(cfg, vehicle.tanks, pure, combustion, initial_states=states, template=template) as prop:
         nodes = {definition['tank_id']: key for key, definition in prop.node_definitions.items()
                  if 'tank_id' in definition}
         source = prop.network.heat_sources[nodes['press_tank']]

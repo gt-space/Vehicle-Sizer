@@ -165,7 +165,7 @@ class CoolPropPropertySource:
 
 
 class TablePureFluidPropertySource:
-    """Pure-fluid properties directly interpolated from pressure-temperature maps."""
+    """Pure-fluid PT properties with Hermite density and internal-energy slopes."""
 
     outputs = (
         "density",
@@ -206,14 +206,14 @@ class TablePureFluidPropertySource:
             missing = set(self.outputs).difference(table.outputs)
             if missing:
                 raise ValueError(f"Fluid table '{table.name}' is missing outputs {sorted(missing)}")
+            if not {"density", "internal_energy"} <= table.hermite_outputs.keys():
+                raise ValueError(f"Fluid table '{table.name}' requires Hermite density and internal_energy data")
             if "specific_gas_constant" not in table.constants:
                 raise ValueError(f"Fluid table '{table.name}' requires specific_gas_constant")
             self._prepared_pt[fluid] = (table, float(table.constants["specific_gas_constant"]))
         # Loaded tables are read-only. Cache exact coordinates, never rounded
         # solver trials. Each provider owns bounded caches and frozen PT records.
         self._cached_pt = lru_cache(maxsize=8192)(self._combined_pt)
-        self._cached_state_pt = lru_cache(maxsize=8192)(self._state_pt)
-        self._cached_derivatives_pt = lru_cache(maxsize=8192)(self._derivatives_pt)
 
     def _table(self, fluid: str):
         try:
@@ -226,14 +226,10 @@ class TablePureFluidPropertySource:
     def state_pt(
         self, fluid: str, pressure: float, temperature: float
     ) -> PureFluidProperties:
-        return self._cached_state_pt(fluid, float(pressure), float(temperature))
-
-    def _state_pt(self, fluid: str, pressure: float, temperature: float) -> PureFluidProperties:
-        return self._cached_pt(fluid, pressure, temperature)[0]
+        return self._cached_pt(fluid, float(pressure), float(temperature))[0]
 
     def _combined_pt(self, fluid: str, pressure: float, temperature: float):
-        # Share the interpolant's values and slopes between state and derivative
-        # queries. Ordinary tables retain their existing derivative path.
+        # State and derivative queries share the same interpolant and cache.
         try:
             table, gas_constant = self._prepared_pt[fluid]
         except KeyError as error:
@@ -245,17 +241,13 @@ class TablePureFluidPropertySource:
         )
         if values["density"] <= 0.0 or values["specific_heat_ratio"] <= 0.0:
             raise ValueError(f"Fluid table '{table.name}' returned an invalid state")
-        slopes = None
-        if {"density", "internal_energy"} <= table.hermite_outputs.keys():
-            smooth = table._hermite((pressure, temperature))
-            rho, u = table.hermite_outputs["density"], table.hermite_outputs["internal_energy"]
-            beta = -smooth[rho[1]] / values["density"]
-            if not np.isfinite(beta):
-                raise ValueError(f"Fluid table '{table.name}' returned invalid thermal expansion")
-            slopes = (("drho_dP", smooth[rho[0]]), ("du_dP", smooth[u[0]]),
-                      ("drho_dT", smooth[rho[1]]), ("du_dT", smooth[u[1]]))
-        else:
-            beta = self._thermal_expansion(table, pressure, temperature, values["density"])
+        smooth = table._hermite((pressure, temperature))
+        rho, u = table.hermite_outputs["density"], table.hermite_outputs["internal_energy"]
+        beta = -smooth[rho[1]] / values["density"]
+        if not np.isfinite(beta):
+            raise ValueError(f"Fluid table '{table.name}' returned invalid thermal expansion")
+        slopes = (("drho_dP", smooth[rho[0]]), ("du_dP", smooth[u[0]]),
+                  ("drho_dT", smooth[rho[1]]), ("du_dT", smooth[u[1]]))
         state = PureFluidProperties(
             P=float(pressure),
             T=float(temperature),
@@ -283,51 +275,7 @@ class TablePureFluidPropertySource:
     def derivatives_pt(self, fluid: str, pressure: float,
                        temperature: float) -> Dict[str, float]:
         # Preserve the public method's independently owned mutable dictionary.
-        return dict(self._cached_derivatives_pt(fluid, float(pressure), float(temperature)))
-
-    def _derivatives_pt(self, fluid: str, pressure: float, temperature: float):
-        table = self._table(fluid)
-        if {"density", "internal_energy"} <= table.hermite_outputs.keys():
-            return self._cached_pt(fluid, pressure, temperature)[1]
-        result = {}
-        for axis, suffix in (("pressure", "P"), ("temperature", "T")):
-            slopes = table.derivative(("density", "internal_energy"), wrt=axis,
-                                      pressure=float(pressure), temperature=float(temperature))
-            result[f"drho_d{suffix}"] = slopes["density"]
-            result[f"du_d{suffix}"] = slopes["internal_energy"]
-        return tuple(result.items())
-
-    @staticmethod
-    def _thermal_expansion(
-        table, pressure: float, temperature: float, rho: float
-    ) -> float:
-        """Estimate beta = -(1/rho)(drho/dT)_P from the existing PT map."""
-
-        if "density" in table.hermite_outputs:
-            slope = table.derivative(("density",), wrt="temperature",
-                                     pressure=pressure, temperature=temperature)["density"]
-            beta = -slope / rho
-            if not np.isfinite(beta):
-                raise ValueError(f"Fluid table '{table.name}' returned invalid thermal expansion")
-            return float(beta)
-
-        axis = table.axes["temperature"]
-        step = max(float(np.min(np.diff(axis))) * 0.25, 1.0e-3)
-        low = max(float(axis[0]), float(temperature) - step)
-        high = min(float(axis[-1]), float(temperature) + step)
-        if high <= low:
-            raise ValueError(f"Fluid table '{table.name}' cannot evaluate thermal expansion")
-        densities = table.evaluate(
-            ("density",), pressure=float(pressure), temperature=low
-        ), table.evaluate(
-            ("density",), pressure=float(pressure), temperature=high
-        )
-        beta = -(densities[1]["density"] - densities[0]["density"]) / (
-            (high - low) * float(rho)
-        )
-        if not np.isfinite(beta) or beta == 0.0:
-            raise ValueError(f"Fluid table '{table.name}' returned invalid thermal expansion")
-        return abs(float(beta))
+        return dict(self._cached_pt(fluid, float(pressure), float(temperature))[1])
 
     def _saturation_table(self, fluid: str):
         try:
@@ -465,11 +413,6 @@ class TableCombustionPropertySource:
         if missing:
             raise ValueError(f"Engine table is missing outputs {sorted(missing)}")
 
-    @property
-    def chamber_pressure_bounds(self) -> tuple[float, float]:
-        pressure = self.table.axes["chamber_pressure"]
-        return float(pressure[0]), float(pressure[-1])
-
     def design_exit_pressure_bounds(self, chamber_bounds, mixture_bounds):
         """Common sizing interval over a rectangular Pc/MR search domain."""
         def knots(name, bounds):
@@ -592,3 +535,48 @@ class TableCombustionPropertySource:
             gamma=values["chamber_gamma"],
             T=values["chamber_temperature"],
         )
+
+
+def property_sources(cfg: dict):
+    """Construct the two property interfaces selected by the config."""
+
+    root = Path(__file__).resolve().parents[1]
+    pure_cfg = cfg["property_models"]["pure_fluid"]
+    if pure_cfg["source"] == "coolprop":
+        pure = CoolPropPropertySource()
+    elif pure_cfg["source"] == "table":
+        table_cfg = pure_cfg["table"]
+        pure = TablePureFluidPropertySource(
+            root / Path(table_cfg["lookup_file"]).expanduser(),
+            table_cfg["fluids"],
+        )
+    else:
+        raise ValueError(f"Unknown pure-fluid source {pure_cfg['source']!r}")
+
+    combustion_cfg = cfg["property_models"]["combustion"]
+    if combustion_cfg["source"] == "cea":
+        from rocketcea.cea_obj_w_units import CEA_Obj
+
+        engine = cfg["engine"]
+        cea = CEA_Obj(
+            oxName=engine["oxidizer"],
+            fuelName=engine["fuel"],
+            pressure_units="Pa",
+            cstar_units="m/s",
+            temperature_units="K",
+            enthalpy_units="J/kg",
+            density_units="kg/m^3",
+            specific_heat_units="J/kg-K",
+        )
+        combustion = CEAPropertySource(cea)
+    elif combustion_cfg["source"] == "table":
+        table_cfg = combustion_cfg["table"]
+        combustion = TableCombustionPropertySource(
+            root / Path(table_cfg["lookup_file"]).expanduser(),
+            int(table_cfg["nfz"]),
+        )
+    else:
+        raise ValueError(
+            f"Unknown combustion source {combustion_cfg['source']!r}"
+        )
+    return pure, combustion

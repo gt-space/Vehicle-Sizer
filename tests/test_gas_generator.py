@@ -3,8 +3,9 @@ from copy import deepcopy
 
 import pytest
 
+from FluidTables.PropertyModels import CoolPropPropertySource, CEAPropertySource
+from Fluids.design import prepare_design_inputs
 from Fluids.design import size_gas_generator
-from Fluids.helpers.templates import load_template
 from test_electric_pump import config, build
 from test_fluid_network import wet_tank, Properties
 from Fluids import FluidNetwork
@@ -35,7 +36,7 @@ def test_invalid_turbine_inputs(key, value):
 
 def gg_config():
     cfg = config()
-    template = load_template(cfg)
+    template = prepare_design_inputs(cfg)[0]
     cfg['prop_system']['template'] = template
     for pump in cfg['prop_system']['pumps'].values():
         pump['drive'] = 'gas_generator'
@@ -110,7 +111,8 @@ def test_gg_sizing_uses_existing_table_source_and_rejects_out_of_bounds_mr():
     cfg = gg_config()
     ox, fuel, _ = support.tanks()
     tanks = {'ox_tank': ox, 'fuel_tank': fuel}
-    with PropSystem(cfg, tanks, combustion_properties=source) as system:
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    with PropSystem(cfg, tanks, combustion_properties=source, initial_states=states, template=template, fluid_properties=CoolPropPropertySource()) as system:
         sizing = system.gg_sizing['main']
         properties = source.evaluate(sizing['inlet_pressure_pa'], .5,
                                      system.design_ambient_pressure, system.expansion_ratio)
@@ -119,32 +121,33 @@ def test_gg_sizing_uses_existing_table_source_and_rejects_out_of_bounds_mr():
         assert sizing['R'] == pytest.approx(properties.R)
     cfg['prop_system']['gas_generators']['main']['mixture_ratio'] = .01
     with pytest.raises(ValueError):
-        PropSystem(cfg, tanks, combustion_properties=source)
+        template, states, wall_pressures = prepare_design_inputs(cfg)
+        PropSystem(cfg, tanks, combustion_properties=source, initial_states=states, template=template, fluid_properties=CoolPropPropertySource())
 
 
 def test_pressurant_sizing_includes_gg_and_is_order_independent():
-    from unittest.mock import patch
     import propulsion_fixtures as support
     from test_prop_system import config as regulated_config
     from Fluids.PropSystem import PropSystem
     cfg = regulated_config('pump_fed', 'regulator')
-    original_template = load_template(cfg)
-    with patch('Fluids.PropSystem._make_cea', return_value=support.FakeCEA()):
-        tanks = dict(zip(('ox_tank', 'fuel_tank', 'press_tank'), support.tanks()))
-        baseline = PropSystem(cfg, tanks)
-        cfg['prop_system']['template'] = original_template
-        gg = gg_config()['prop_system']
-        cfg['prop_system']['pumps'] = gg['pumps']
-        cfg['prop_system']['gas_generators'] = gg['gas_generators']
-        for role, tank in [('fuel', 'fuel_ullage'), ('oxidizer', 'ox_ullage')]:
-            original_template['branches'][f'GG_{role}'] = dict(component='mass_flow', circuit=role,
-                **{'from': tank, 'to': 'ambient'}, from_port='liquid')
-        cfg['prop_system']['template']['branches'] = dict(reversed(list(original_template['branches'].items())))
-        sized = PropSystem(cfg, tanks)
-        for role, regulator, engine_mdot in [('fuel', 'FUEL_REGULATOR', baseline.mdot_fuel),
-                                           ('oxidizer', 'OX_REGULATOR', baseline.mdot_ox)]:
-            ratio = 1 + sized.gg_sizing['main'][f'{role}_mdot'] / engine_mdot
-            assert sized.branch_definitions[regulator]['CdA'] == pytest.approx(baseline.branch_definitions[regulator]['CdA'] * ratio)
+    original_template = prepare_design_inputs(cfg)[0]
+    tanks = dict(zip(('ox_tank', 'fuel_tank', 'press_tank'), support.tanks()))
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    baseline = PropSystem(cfg, tanks, initial_states=states, template=template, fluid_properties=CoolPropPropertySource(), combustion_properties=CEAPropertySource(support.FakeCEA()))
+    cfg['prop_system']['template'] = original_template
+    gg = gg_config()['prop_system']
+    cfg['prop_system']['pumps'] = gg['pumps']
+    cfg['prop_system']['gas_generators'] = gg['gas_generators']
+    for role, tank in [('fuel', 'fuel_ullage'), ('oxidizer', 'ox_ullage')]:
+        original_template['branches'][f'GG_{role}'] = dict(component='mass_flow', circuit=role,
+            **{'from': tank, 'to': 'ambient'}, from_port='liquid')
+    cfg['prop_system']['template']['branches'] = dict(reversed(list(original_template['branches'].items())))
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    sized = PropSystem(cfg, tanks, initial_states=states, template=template, fluid_properties=CoolPropPropertySource(), combustion_properties=CEAPropertySource(support.FakeCEA()))
+    for role, regulator, engine_mdot in [('fuel', 'FUEL_REGULATOR', baseline.mdot_fuel),
+                                       ('oxidizer', 'OX_REGULATOR', baseline.mdot_ox)]:
+        ratio = 1 + sized.gg_sizing['main'][f'{role}_mdot'] / engine_mdot
+        assert sized.branch_definitions[regulator]['CdA'] == pytest.approx(baseline.branch_definitions[regulator]['CdA'] * ratio)
 
 
 def test_other_drain_continues_after_main_engine_shutdown():

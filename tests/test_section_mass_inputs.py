@@ -1,6 +1,7 @@
 import unittest
 from copy import deepcopy
 import numpy as np
+from Fluids.design import prepare_design_inputs
 from Configs.loader import load_config
 from FluidTables.PropertyModels import CoolPropPropertySource
 from Vehicle.Vehicle import Vehicle
@@ -9,7 +10,8 @@ from Vehicle.Engine import Engine
 class SectionMassTests(unittest.TestCase):
     def test_named_additions_and_overrides_for_every_section(self):
         cfg = load_config('Configs/flight_pressure_fed_regulator.yaml')
-        vehicle = Vehicle(cfg, CoolPropPropertySource())
+        template, states, wall_pressures = prepare_design_inputs(cfg)
+        vehicle = Vehicle(cfg, CoolPropPropertySource(), initial_states=states, wall_pressures=wall_pressures)
         vehicle.engine = Engine(30, .5715, .01)
         vehicle.sections = vehicle._build_sections()
         vehicle._stack_sections()
@@ -37,7 +39,8 @@ class SectionMassTests(unittest.TestCase):
 
     def test_pressure_fos_allowable_and_endcap_multiplier(self):
         cfg = load_config('Configs/flight_pressure_fed_regulator.yaml')
-        vehicle = Vehicle(cfg, CoolPropPropertySource())
+        template, states, wall_pressures = prepare_design_inputs(cfg)
+        vehicle = Vehicle(cfg, CoolPropPropertySource(), initial_states=states, wall_pressures=wall_pressures)
         tank = vehicle.tanks['ox_tank']
         self.assertAlmostEqual(tank.wall_thickness,
             cfg['advanced']['tank_pressure_fos'] * tank.max_pressure * tank.OMLD / 2

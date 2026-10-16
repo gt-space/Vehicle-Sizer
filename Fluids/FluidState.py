@@ -172,4 +172,17 @@ class BranchState(Mapping):
         return len(self.trial_values) + len(self.properties) + 3
 
 
-__all__ = ["FluidState", "NodeState", "BranchState"]
+@dataclass
+class NetworkState:
+    """Accepted component state with one detached reporting representation."""
+
+    nodes: dict[str, NodeState] = field(default_factory=dict)
+    branches: dict[str, BranchState] = field(default_factory=dict)
+
+    def as_dict(self):
+        return dict(node={k: v.as_dict() for k, v in self.nodes.items()},
+                    branch={k: v.as_dict() for k, v in self.branches.items()},
+                    mdot={k: v.mdot for k, v in self.branches.items()})
+
+
+__all__ = ["FluidState", "NodeState", "BranchState", "NetworkState"]

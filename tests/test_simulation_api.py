@@ -1,3 +1,4 @@
+from diagnostics.constraints import ConstraintRecord
 from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
@@ -6,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from Fluids.design import initial_conditions, tank_design_pressure
+from Fluids.design import prepare_design_inputs
 from Flight.Flight import FlightSim
 from simulation_types import KinematicsState, PlantOut, SimResult
 from Vehicle.Engine import Engine
@@ -37,6 +38,24 @@ def test_headless_skips_loads_and_vector_snapshots_and_matches_history():
     assert flight.result.apogee is None
     assert flight.result.termination == "time_limit"
     assert not flight.result.burn_complete
+
+
+@pytest.mark.parametrize('record_history', [False, True])
+@pytest.mark.parametrize('compute_loads', [False, True])
+def test_shared_samples_and_independent_recording_options(record_history, compute_loads):
+    from simulation_types import history_samples
+    flight = make_flight()
+    flight.run(record_history=record_history, compute_loads=compute_loads)
+    samples = list(history_samples(flight.result))
+    assert bool(flight.result.load_peaks) == compute_loads
+    assert bool(samples) == record_history
+    assert not hasattr(flight.result, 'burn_load_history')
+    if record_history:
+        assert [s['kinematics'].t for s in samples] == pytest.approx([0, .1])
+        assert all(('loads' in s) == compute_loads for s in samples)
+        assert all('wind' in s and 'mass_properties' in s for s in samples)
+    else:
+        assert flight.result.initial_state is None
 
 
 def test_coast_reports_interpolated_apogee_not_time_limit_maximum():
@@ -83,17 +102,17 @@ def test_initial_defaults_are_design_based_without_mutation():
             "press_tank": {"fluid": "Nitrogen", "T": 300}}},
         "tanks": {"press_tank": {"type": "pressurant", "design_pressure": 30e6}}}
     original = deepcopy(cfg)
-    first = initial_conditions(cfg)
+    template, first, _ = prepare_design_inputs(cfg)
     assert cfg == original
-    assert first["ox_tank"]["P"] == tank_design_pressure(cfg, "ox_tank")
+    assert first["ox_tank"]["P"] == template["nodes"]["ox"]["P0"]
     assert first["fuel_tank"]["T"] == 295
     assert first["ox_tank"]["gas_T"] == 290
     assert first["press_tank"]["P"] == 30e6
     cfg["prop_system"]["Pc_target"] *= 2
-    assert initial_conditions(cfg)["ox_tank"]["P"] > first["ox_tank"]["P"]
+    assert prepare_design_inputs(cfg)[1]["ox_tank"]["P"] > first["ox_tank"]["P"]
     for tank_id in ("ox_tank", "fuel_tank"):
         cfg["prop_system"]["initial_conditions"][tank_id]["P"] = 3e6
-    resolved = initial_conditions(cfg)
+    resolved = prepare_design_inputs(cfg)[1]
     assert resolved["ox_tank"]["P"] == resolved["fuel_tank"]["P"] == 3e6
     assert resolved["press_tank"]["P"] == 30e6
 
@@ -103,7 +122,10 @@ def test_initial_defaults_are_design_based_without_mutation():
 def test_pressurant_pressure_is_one_design_and_initial_input(name, pressure):
     cfg = {"tanks": {name: {"type": "pressurant", "design_pressure": pressure}},
            "prop_system": {"initial_conditions": {name: {"fluid": "Nitrogen", "T": 300}}}}
-    assert initial_conditions(cfg)[name]["P"] == pressure
+    cfg["prop_system"]["template"] = dict(circuits={}, branches={}, nodes={
+        name: dict(component="pressurant_tank", tank_id=name,
+                   P0={"config": f"tanks.{name}.design_pressure"})})
+    assert prepare_design_inputs(cfg)[1][name]["P"] == pressure
     assert "P" not in cfg["prop_system"]["initial_conditions"][name]
 
 
@@ -116,16 +138,21 @@ def test_initial_temperatures_are_explicit_and_valid(field, value):
     else:
         state[field] = value
     with pytest.raises(ValueError, match=field):
-        initial_conditions({"prop_system": {"initial_conditions": {"ox_tank": state}}})
+        prepare_design_inputs({"prop_system": {
+            "initial_conditions": {"ox_tank": state},
+            "template": dict(circuits={}, branches={}, nodes={
+                "ox": dict(component="propellant_tank", tank_id="ox_tank", P0=2e6)})}})
 
 
 def test_copv_default_does_not_require_an_engine_pressure_ladder():
     cfg = {"prop_system": {"initial_conditions": {"press_tank": {"fluid": "Nitrogen", "T": 300}}},
            "tanks": {"press_tank": {"type": "pressurant", "design_pressure": 30e6}}}
-    assert initial_conditions(cfg)["press_tank"]["P"] == 30e6
+    cfg["prop_system"]["template"] = dict(circuits={}, branches={}, nodes={
+        "press": dict(component="pressurant_tank", tank_id="press_tank", P0=30e6)})
+    assert prepare_design_inputs(cfg)[1]["press_tank"]["P"] == 30e6
     del cfg["tanks"]["press_tank"]["design_pressure"]
     with pytest.raises(ValueError, match="design_pressure"):
-        initial_conditions(cfg)
+        prepare_design_inputs(cfg)[1]
 
 
 @pytest.mark.parametrize("field", ["initial_temperature", "sink_temperature"])
@@ -157,15 +184,19 @@ def test_engine_overlay_is_conservative_and_survives_mass_assembly():
     edges = np.array([0, .3, .6, .9, 1.2])
     overlay = engine.mass_on_grid(edges, .6)
     np.testing.assert_allclose(overlay, [0, 0, 30*.3/.55, 30*.25/.55])
+    from Vehicle.sections.Section import Section
+    section = SimpleNamespace(tank_id='tank', n=4, dry_mass=np.ones(4), mass=np.ones(4),
+                              station=(edges[:-1]+edges[1:])/2, radius=.125)
+    section.get_MOI = lambda: Section.get_MOI(section)
     vehicle = Vehicle.__new__(Vehicle)
-    vehicle.engine_mass = overlay
-    section = SimpleNamespace(station=(edges[:-1]+edges[1:])/2, mass=np.ones(4),
-                              EI=np.ones(4), lat_area=np.ones(4), surf_area=np.ones(4))
-    vehicle.sections = [section]
-    vehicle._assemble_vectors()
+    vehicle.cfg = {'vehicle': {'OMLD': .25}}
+    vehicle.engine_mass, vehicle.station = overlay, section.station
+    vehicle.sections, vehicle.mass = [section], section.mass + overlay
+    vehicle.dry_pitch_correction = 0.
+    vehicle.fluid_sections = [('node', section, slice(None))]
+    vehicle.update_mass_distribution({'node': {'axial_mass': np.zeros(4)}})
     assert vehicle.mass.sum() == pytest.approx(34)
-    section.mass = np.full(4, 2)
-    vehicle._assemble_vectors()
+    vehicle.update_mass_distribution({'node': {'axial_mass': np.ones(4)}})
     assert vehicle.mass.sum() == pytest.approx(38)
     with pytest.raises(ValueError, match="complete engine"):
         engine.mass_on_grid(edges, 1)
@@ -183,8 +214,8 @@ def test_geometry_constraints_have_consistent_sign():
     engine = Engine(30, .6, np.pi*.1**2)
     assert check_nozzle(fin, engine) < 0
     assert check_engine_length(fin, engine) < 0
-    assert SimResult(geometry_constraints={"missing": None}).feasible is None
-    assert SimResult(geometry_constraints={"failed": -1, "missing": None}).feasible is False
+    assert SimResult(constraint_records={"missing": ConstraintRecord(None, "test", "sizing", "m")}).feasible is None
+    assert SimResult(constraint_records={"failed": ConstraintRecord(-1, "test", "sizing", "m"), "missing": ConstraintRecord(None, "test", "sizing", "m")}).feasible is False
 
 
 @pytest.mark.parametrize("apogee, expected", [(None, "not reached"), (105.0, "105.0 m")])
@@ -198,7 +229,6 @@ def test_cli_distinguishes_apogee_from_maximum(monkeypatch, capsys, apogee, expe
     monkeypatch.setattr(main, "load_config", lambda _: {
         "simulation": {"output": "unused.csv", "plot": "unused.png"}})
     monkeypatch.setattr(main, "simulate", lambda *args, **kwargs: result)
-    monkeypatch.setattr(main, "history_rows", lambda _: [])
     monkeypatch.setattr(main, "write_history", lambda *args: None)
     monkeypatch.setattr(main, "write_events", lambda *args: None)
     monkeypatch.setattr(main, "write_structural_loads", lambda *args: None)

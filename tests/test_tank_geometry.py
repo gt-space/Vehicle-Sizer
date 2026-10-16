@@ -1,4 +1,5 @@
 import unittest
+import pytest
 from copy import deepcopy
 
 import numpy as np
@@ -212,3 +213,42 @@ class TankGeometryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize('pressure', [False, True])
+def test_fill_profile_is_normalized_once_and_conserves_contact_area(pressure):
+    from unittest.mock import patch
+    import Vehicle.tank_geometry as module
+    geometry = (PressTankGeometry(.02, .7, .25, .5, 1.25, .6) if pressure else
+                PropTankGeometry(.02, .25, .5, 1.25, .05))
+    with patch.object(module, 'ellipsoidal_profile', wraps=module.ellipsoidal_profile) as profile:
+        rows = [geometry.fill_state(v) for v in np.linspace(0., geometry.volume, 101)]
+    assert profile.call_count == 1
+    assert geometry._profile['volume'][-1] == geometry.volume
+    assert rows[0]['liquid_contact_area'] == rows[-1]['ullage_contact_area'] == 0.
+    np.testing.assert_allclose([r['liquid_contact_area'] + r['ullage_contact_area'] for r in rows],
+                               geometry.internal_area)
+    np.testing.assert_allclose(rows[50]['fill_height'], .35)
+    assert np.all(np.diff([r['fill_height'] for r in rows]) >= 0.)
+    for invalid in (-1., geometry.volume * 1.01, float('nan')):
+        with pytest.raises(ValueError, match='Liquid volume'):
+            geometry.fill_state(invalid)
+
+
+@pytest.mark.parametrize('profile', ['von_karman', 'power_series'])
+def test_nose_and_avionics_follow_one_continuous_contour(profile):
+    from Configs.loader import load_config
+    from Vehicle.sections.Nosecone import Nosecone
+    from Vehicle.sections.AviBay import AviBay
+    cfg = load_config('Configs/flight_pressure_fed_regulator.yaml')
+    cfg['nosecone']['profile'] = profile
+    cfg['nosecone']['power_series_n'] = .7
+    nose, bay = Nosecone(cfg), AviBay(cfg)
+    x = np.concatenate((nose.local_centers, nose.length + bay.local_centers))
+    radius = cfg['vehicle']['OMLD'] / 2
+    if profile == 'power_series':
+        expected = radius * (x / nose.L_total)**.7
+    else:
+        theta = np.arccos(1 - 2 * x / nose.L_total)
+        expected = radius / np.sqrt(np.pi) * np.sqrt(theta - .5 * np.sin(2 * theta))
+    np.testing.assert_allclose(np.concatenate((nose.radius, bay.radius)), expected)

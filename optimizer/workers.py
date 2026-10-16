@@ -87,14 +87,6 @@ def check_sources(output):
 
 
 def worker(output, indices):
-    import simulation
-    from Fluids.PropSystem import PropSystem
-    tracked = []
-    class Tracked(PropSystem):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            tracked.append(self)
-    opt.PropSystem = simulation.PropSystem = Tracked
     patch = output/'diagnostic_fixes.py'
     patch_version = hashlib.sha256(patch.read_bytes()).hexdigest() if patch.exists() else 'none'
     if patch.exists():
@@ -109,7 +101,6 @@ def worker(output, indices):
         faulthandler.enable()
         faulthandler.dump_traceback_later(240, repeat=False)
         started, cpu_started = time.perf_counter(), time.process_time()
-        original_simulate = opt.simulate
         try:
             source_version = check_sources(output)
             cfg, settings = opt.load_config(output/'base.yaml'), opt.load_config(output/'search.yaml')
@@ -138,30 +129,16 @@ def worker(output, indices):
                     last_progress[0] = now
                     if timing is not None and timing.enabled:
                         timing.save(job/'timings.json')
-            simulation_results = []
-            def monitored(*args, **kwargs):
-                if settings.get('verification', False):
-                    kwargs['compute_loads'] = True
-                result = original_simulate(*args, **kwargs, progress=progress)
-                simulation_results.append(result)
-                return result
-            opt.simulate = monitored
-            try:
-                candidate = evaluator.decode(task['coordinates'])
-                (job/'candidate.yaml').write_text(yaml.safe_dump(candidate, sort_keys=False))
-            except opt.GeometryError:
-                pass
-            score = evaluator(task['coordinates'])
-            row = json.loads((job/'evaluations.jsonl').read_text().splitlines()[-1])
+            verification = settings.get('verification', False)
+            _, _, row = evaluator.evaluate(
+                cfg if verification else task['coordinates'], verification=verification, progress=progress)
             if check_sources(output) != source_version:
                 raise RuntimeError('Sources changed while evaluating this candidate; discard this evaluation')
             row.update(evaluation=index, index=index, coordinates=task['coordinates'], patch_version=patch_version, source_version=source_version,
                        wall_seconds=time.perf_counter()-started, cpu_seconds=time.process_time()-cpu_started,
                        profiled=profiled, model_cache_hit=reused_models, loading_cpu_seconds=loading_cpu,
                        timing_version=(hashlib.sha256((ROOT/'optimizer/timing.py').read_bytes()).hexdigest()
-                                       if profiled else None),
-                       recovered_fluid_retries=[d for p in tracked for d in p.network.retry_diagnostics],
-                       load_peaks=simulation_results[-1].load_peaks if simulation_results else {})
+                                       if profiled else None))
         except Exception as error:
             # Setup, publication, scoring and invariant failures are never numerical rejects.
             detail = failure_details(error, phase='worker')
@@ -173,10 +150,6 @@ def worker(output, indices):
                 if timing is not None and timing.enabled:
                     timing.save(job/'timings.json')
                 faulthandler.cancel_dump_traceback_later()
-                opt.simulate = original_simulate
-                for prop in tracked:
-                    prop.close()
-                tracked.clear()
                 gc.collect()
             except Exception as error:
                 detail = failure_details(error, phase='worker cleanup')
@@ -293,16 +266,16 @@ def launch_batch(output, tasks, timeout, *, stop_event=None):
     return results
 
 
-def launch(output, index, coordinates, timeout):
-    return launch_batch(output, [(index, coordinates)], timeout)[0]
-
-
-def main(args):
-    output = args.output.resolve()
+def optimize_parallel(settings, output, *, workers, timeout=300., candidates_per_worker=3,
+                      resume=False, profile=False):
+    output = Path(output).resolve()
+    if output.exists() and not resume:
+        raise FileExistsError(f'Output directory already exists: {output}; use --resume to continue it')
+    requested = dict(settings) if settings is not None else None
+    if requested is not None and profile is not None:
+        requested['profile'] = profile
     if not output.exists():
-        settings = getattr(args, 'settings', None)
-        if settings is None:
-            settings = opt.load_config(args.config)
+        settings = requested
         model = opt.DragModel(opt.project_path(opt.load_config(settings['base_config'])['aero']['model']))
         cfg, settings = opt.prepare(settings, model)
         output.mkdir(parents=True)
@@ -314,7 +287,6 @@ def main(args):
         if json.loads((output/'fingerprints.json').read_text()) != fingerprints():
             raise RuntimeError('Main sources changed since this search started; use a new output directory')
         cfg, settings = opt.load_config(output/'base.yaml'), opt.load_config(output/'search.yaml')
-        requested = getattr(args, 'settings', None)
         if requested is not None:
             model = opt.DragModel(opt.project_path(cfg['aero']['model']))
             _, prepared = opt.prepare(requested, model)
@@ -333,8 +305,8 @@ def main(args):
         vectors = list(vectors)
         available = min(len(vectors), budget-count)
         tasks = [(count+i+1, vector) for i, vector in enumerate(vectors[:available])]
-        batches = [tasks[i:i+args.candidates_per_worker] for i in range(0, len(tasks), args.candidates_per_worker)]
-        futures = [pool.submit(launch_batch, output, batch, args.timeout, stop_event=stop_workers) for batch in batches]
+        batches = [tasks[i:i+candidates_per_worker] for i in range(0, len(tasks), candidates_per_worker)]
+        futures = [pool.submit(launch_batch, output, batch, timeout, stop_event=stop_workers) for batch in batches]
         for future in as_completed(futures):
             for row in future.result():
                 rows[row['index']] = row
@@ -352,7 +324,7 @@ def main(args):
         if available < len(vectors):
             raise opt.EvaluationBudget
         return [rows[i]['score'] for i, _ in tasks]
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         def generation_finished(intermediate_result):
             nonlocal generation
             generation = intermediate_result.nit
@@ -388,20 +360,14 @@ def main(args):
         write_json(output/'best.json', winner)
         verification = output/'verification'
         verification.mkdir(exist_ok=True)
-        verify_cfg = opt.load_config(output/'best.yaml')
-        verify_cfg['simulation']['dt'] *= settings['verification_dt_factor']
-        verify_settings = dict(settings, conditional_geometry=False, verification=True, max_evaluations=1)
-        paths = opt.variable_paths(verify_cfg, settings['tank_ids'])
-        verify_values = [float(opt.get_path(verify_cfg, path)) for path in paths.values()]
-        verify_settings['bounds'] = {name: [value, value] for name, value in zip(paths, verify_values)}
-        (verification/'base.yaml').write_text(yaml.safe_dump(verify_cfg, sort_keys=False))
-        (verification/'search.yaml').write_text(yaml.safe_dump(verify_settings, sort_keys=False))
+        shutil.copyfile(output/'best.yaml', verification/'base.yaml')
+        (verification/'search.yaml').write_text(yaml.safe_dump(dict(settings, verification=True), sort_keys=False))
         shutil.copyfile(output/'diagnostic_fixes.py', verification/'diagnostic_fixes.py')
-        verification_result = launch(verification, 1, verify_values, 2*args.timeout)
+        verification_result = launch_batch(verification, [(1, [])], 2*timeout)[0]
         write_json(output/'verification.json', verification_result)
         verified = verification_result['accepted']
         if verified:
-            (output/'verified.yaml').write_text(yaml.safe_dump(verify_cfg, sort_keys=False))
+            shutil.copyfile(verification/'candidates'/'0001'/'candidate.yaml', output/'verified.yaml')
     summary = dict(evaluations=len(ordered), counts=dict(Counter(r['termination'] for r in ordered)),
                    failure_kinds=dict(Counter(r['failure_details']['kind'] for r in ordered if r.get('failure_details'))),
                    recovered_native_candidates=sum(bool(r.get('worker_attempts')) and r['score_class'] != 'unresolved'
@@ -416,17 +382,6 @@ def main(args):
                    candidate_seconds=sum(r['wall_seconds'] for r in ordered))
     write_json(output/'summary.json', summary)
     return summary
-
-
-def optimize_parallel(settings, output, *, workers, timeout=300., candidates_per_worker=3,
-                      resume=False, profile=False):
-    from types import SimpleNamespace
-    output = Path(output).resolve()
-    if output.exists() and not resume:
-        raise FileExistsError(f'Output directory already exists: {output}; use --resume to continue it')
-    settings = dict(settings, profile=profile)
-    return main(SimpleNamespace(settings=settings, output=output, workers=workers,
-                                timeout=timeout, candidates_per_worker=candidates_per_worker))
 
 
 def cli():
@@ -463,10 +418,13 @@ def cli():
             replay_settings['profile'] = args.profile
             (target/'search.yaml').write_text(yaml.safe_dump(replay_settings, sort_keys=False))
         task = json.loads((source/'candidates'/f'{args.replay:04d}'/'task.json').read_text())
-        result = launch(target, args.replay, task['coordinates'], args.timeout)
+        result = launch_batch(target, [(args.replay, task['coordinates'])], args.timeout)[0]
         print(json.dumps(result, indent=2))
     else:
-        print(json.dumps(main(args), indent=2), flush=True)
+        settings = None if args.output.exists() else opt.load_config(args.config)
+        print(json.dumps(optimize_parallel(settings, args.output, workers=args.workers,
+            timeout=args.timeout, candidates_per_worker=args.candidates_per_worker,
+            resume=args.output.exists(), profile=args.profile), indent=2), flush=True)
 
 
 if __name__ == '__main__':

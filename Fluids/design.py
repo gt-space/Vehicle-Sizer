@@ -1,7 +1,7 @@
 """design calculations which are shared by tank sizing and propulsion construction."""
 from copy import deepcopy
 from math import isfinite
-from .helpers.templates import load_template
+from .helpers.templates import bind_template
 
 
 def pump_definition(prop: dict, pump_id: str) -> dict:
@@ -28,7 +28,7 @@ def size_pump(definition: dict, mdot: float, rho: float) -> dict:
         raise ValueError("Pump design power must be finite")
     result = dict(design_mdot=mdot, inlet_density=rho, volume_flow_m3_s=flow,
                   pressure_rise_pa=rise, hydraulic_power_w=rise * flow,
-                  drive=definition.get("drive", "electric"))
+                  drive=definition["drive"])
     if result["drive"] == "electric":
         result.update(required_power_kw=power,
                       max_power_kw=float(definition["max_power_kw"]),
@@ -36,11 +36,6 @@ def size_pump(definition: dict, mdot: float, rho: float) -> dict:
     else:
         result["required_shaft_power_w"] = 1000 * power
     return result
-
-
-def size_electric_pump(definition: dict, mdot: float, rho: float) -> dict:
-    """Compatibility entry point; efficiency includes pump, motor and drive."""
-    return size_pump({**definition, "drive": "electric"}, mdot, rho)
 
 
 def size_gas_generator(power_w, inlet_pressure_pa, definition, properties):
@@ -73,49 +68,73 @@ def size_gas_generator(power_w, inlet_pressure_pa, definition, properties):
                 fuel_mdot=mdot / (1 + mr), oxidizer_mdot=mdot * mr / (1 + mr))
 
 
-def tank_design_pressure(cfg: dict, tank_id: str, *, fallback=None) -> float:
-    """Use the selected template's pressure relationship, or an explicit value."""
-    if cfg['prop_system'].get('template') is not None:
-        template = load_template(cfg)
-        matches = [node for node in template['nodes'].values() if node.get('tank_id') == tank_id]
-        if len(matches) != 1 or 'P0' not in matches[0]:
-            raise ValueError(f'Template must declare one design pressure for tank {tank_id!r}')
-        return float(matches[0]['P0'])
-    value = cfg.get('tanks', {}).get(tank_id, {}).get('design_pressure', fallback)
-    if value is None or not isfinite(float(value)) or float(value) <= 0:
-        raise ValueError(f'Tank {tank_id!r} needs a template design pressure or an explicit design_pressure')
-    return float(value)
+def prepare_design_inputs(cfg: dict) -> tuple[dict, dict, dict]:
+    """Resolve a finalized candidate once into template, P/T states and wall pressures.
 
-
-def initial_conditions(cfg: dict) -> dict:
-    """Resolve P/T inputs, never store derived inventories in the design config.
-
-    Temperatures are mandatory. Propellant initial P can override its design
-    pressure; pressurant initial P is exclusively the tank design variable.
+    Propellant initial pressure can override design pressure. Pressurant initial
+    pressure follows its design variable; inventories require tank geometry later.
+    The returned dictionaries are independent of the source configuration.
     """
+    template = bind_template(cfg)
+    nodes = template["nodes"]
+    visiting = set()
+
+    def pressure(key):
+        if key in visiting:
+            raise ValueError(f"Cyclic design-pressure references at {key!r}")
+        if key not in nodes or "P0" not in nodes[key]:
+            raise ValueError(f"Missing design pressure for node {key!r}")
+        value = nodes[key]["P0"]
+        if isinstance(value, dict):
+            if "node" not in value or set(value) - {"node", "relative_rise", "rise", "drop"}:
+                raise ValueError(f"Invalid design-pressure relation for {key!r}")
+            visiting.add(key)
+            value = (pressure(value["node"]) * (1 + float(value.get("relative_rise", 0)))
+                     + float(value.get("rise", 0)) - float(value.get("drop", 0)))
+            visiting.remove(key)
+        value = float(value)
+        if not isfinite(value) or value <= 0:
+            raise ValueError(f"Node {key!r} design pressure must be finite and positive")
+        nodes[key]["P0"] = value
+        return value
+
+    for key, node in nodes.items():
+        if "P0" in node:
+            pressure(key)
+        state = node.get('state0', {})
+        if isinstance(state.get('P'), dict) and set(state['P']) == {'node'}:
+            state['P'] = pressure(state['P']['node'])
+
+    tank_nodes = {}
+    for key, node in nodes.items():
+        if "tank_id" in node:
+            tank_id = node["tank_id"]
+            if tank_id in tank_nodes or "P0" not in node:
+                raise ValueError(f"Template must declare one design pressure for tank {tank_id!r}")
+            tank_nodes[tank_id] = key
+    bands = {}
+    for branch in template["branches"].values():
+        if branch["component"] == "bang_bang_valve":
+            target, band = branch["to"], float(branch["pressure_band"])
+            bands[target] = max(bands.get(target, band), band)
+    wall_pressures = {}
     prop = cfg["prop_system"]
-    template = prop.get("template")
-    if isinstance(template, str) or (isinstance(template, dict) and any(
-            isinstance(node.get("P0"), dict) for node in template["nodes"].values())):
-        template = load_template(cfg)
     states = deepcopy(prop.get("initial_conditions", {}))
     for tank_id, state in states.items():
         required = {"T", "gas_T"} if "gas_fluid" in state else {"T"}
         missing = required.difference(state)
         if missing:
             raise ValueError(f"Tank {tank_id!r} requires explicit temperatures: {sorted(missing)}")
+        node_id = tank_nodes[tank_id]
+        node = nodes[node_id]
         definition = cfg.get("tanks", {}).get(tank_id, {})
-        pressurant = definition.get("type") == "pressurant"
-        if template is not None:
-            pressurant |= any(node.get("tank_id") == tank_id and
-                              node.get("component", node.get("model")) == "pressurant_tank"
-                              for node in template["nodes"].values())
+        pressurant = definition.get("type") == "pressurant" or node["component"] == "pressurant_tank"
         if pressurant:
             if "design_pressure" not in definition:
                 raise ValueError(f"Pressurant tank {tank_id!r} requires tanks.{tank_id}.design_pressure")
-            state["P"] = tank_design_pressure(cfg, tank_id)
+            state["P"] = node["P0"]
         elif "P" not in state:
-            state["P"] = tank_design_pressure(cfg, tank_id)
+            state["P"] = node["P0"]
         for name in ("P", "T", "gas_T"):
             if name not in state:
                 continue
@@ -125,4 +144,6 @@ def initial_conditions(cfg: dict) -> dict:
                 raise ValueError(f"Tank {tank_id!r} requires finite positive {name}") from exc
             if not isfinite(value) or value <= 0:
                 raise ValueError(f"Tank {tank_id!r} requires finite positive {name}")
-    return states
+        nominal = max(float(node["P0"]), float(state["P"]))
+        wall_pressures[tank_id] = nominal + bands[node_id] if node_id in bands else 1.1 * nominal
+    return template, states, wall_pressures

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from reporting.history import capture_history
 from reporting.run_report import collect_design_summary, build_run_tables
 from simulation_types import SimResult
 
@@ -48,16 +49,17 @@ def fixture():
 
 def test_sections_are_dynamic_and_engine_not_double_counted():
     cfg, result = fixture()
-    sections = result.design_summary["sections"]
-    assert [s[0] for s in sections] == ["Payload", "custom_oxidizer", "Fin can / boattail", "Engine"]
-    assert sum(s[3] for s in sections) == result.dry_mass
+    sections = result.design_summary["section"].values()
+    assert [s["label"] for s in sections] == ["Payload", "custom_oxidizer", "Fin can / boattail", "Engine"]
+    assert sum(s["mass"] for s in sections) == result.dry_mass
+    assert 'sections' not in result.design_summary and 'tanks' not in result.design_summary
     tank = result.design_summary['tank']['custom_oxidizer']
     assert tank['mass'] == 3.
     assert tank['shell_mass'] == 2.
     assert tank['hardware_mass'] == 1.
-    assert result.design_summary['tank']['total_mass'] == 3.
+    assert result.design_summary['tank_totals']['mass'] == 3.
     assert result.design_summary['section']['engine']['mass'] == 20.
-    output = "\n".join(build_run_tables(cfg, result))
+    output = "\n".join(build_run_tables(cfg, result, capture_history(result)[1]))
     assert "Avionics" not in output
     assert "custom_pump_out" in output
     assert "custom_oxidizer" in output
@@ -67,7 +69,7 @@ def test_sections_are_dynamic_and_engine_not_double_counted():
 
 def test_report_uses_launch_snapshot_not_first_endpoint():
     cfg, result = fixture()
-    tables = build_run_tables(cfg, result)
+    tables = build_run_tables(cfg, result, capture_history(result)[1])
     mass_rows = [line for line in tables[3].splitlines() if "Launch mass" in line]
     assert "40.00" in mass_rows[0]
     assert "10.000" in tables[2]  # Initial liquid load.
@@ -79,7 +81,7 @@ def test_partial_run_does_not_claim_shutdown_or_apogee():
     result.history = result.history[:1]
     result.apogee = None
     result.burn_complete = False
-    tables = build_run_tables(cfg, result)
+    tables = build_run_tables(cfg, result, capture_history(result)[1])
     assert "N/A" in next(line for line in tables[3].splitlines() if "Mass after shutdown" in line)
     assert "Not reached" in tables[5]
     assert "(incomplete)" in tables[6]
@@ -91,7 +93,7 @@ def test_proper_acceleration_is_not_vertical_coordinate_acceleration():
         state["forces"]["thrust"] = 0
         state["plant"].aero.N = 0
         state["plant"].aero.A = 0
-    table = build_run_tables(cfg, result)[5]
+    table = build_run_tables(cfg, result, capture_history(result)[1])[5]
     assert "0.000 g" in table
 
 
@@ -103,7 +105,6 @@ def test_main_prints_tables(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(sys, "argv", ["main.py", "custom.yaml"])
     monkeypatch.setattr(main, "load_config", lambda path: cfg)
     monkeypatch.setattr(main, "simulate", lambda *args, **kwargs: result)
-    monkeypatch.setattr(main, "history_rows", lambda history: [])
     monkeypatch.setattr(main, "write_history", lambda *args: None)
     monkeypatch.setattr(main, "write_events", lambda *args: None)
     monkeypatch.setattr(main, "write_structural_loads", lambda *args: None)
@@ -129,5 +130,5 @@ def test_copv_report_uses_equivalent_density_without_material():
         cf_efficiency=.95, throat_area=.01, mdot_total=8., design_thrust=16000.,
         combustion_properties=SimpleNamespace(evaluate=lambda **kwargs: SimpleNamespace(Cf=1.5)))
     summary = collect_design_summary(cfg, vehicle, propulsion)
-    assert summary['tanks'][0]['material'] == 'Equivalent density 2238.6 kg/m³'
-    assert summary['tanks'][0]['thickness'] == vessel.wall_thickness
+    assert summary['tank']['nitrogen']['material'] == 'Equivalent density 2238.6 kg/m³'
+    assert summary['tank']['nitrogen']['thickness'] == vessel.wall_thickness

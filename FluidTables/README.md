@@ -6,6 +6,11 @@ Inputs: pressure/temperature or chamber pressure, mixture ratio, expansion ratio
 
 `LookupTables.py` reads HDF5 tables; `PropertyModels.py` exposes table, CoolProp, and RocketCEA sources. Select sources under `property_models` in the flight config.
 
+Pure-fluid pressure–temperature tables require Hermite density and internal-energy
+data, including pressure, temperature, and mixed derivatives. The provider shares
+one cached evaluation between state and derivative queries. Combustion, saturation,
+and other outputs continue to use the generic lookup interpolation.
+
 To generate `sizer_lookups.h5`, run these commands sequentially from the project root. Engine-table generation also requires `fullplot` and `rocketcea` in the virtual environment.
 
 ```bash

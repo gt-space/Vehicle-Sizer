@@ -70,7 +70,6 @@ class AeroTests(unittest.TestCase):
                 "nose": "vonkarman",
                 "finish": "20um",
                 "fins_on_boattail": True,
-                "aoa_schedule": [[0.0, 0.0], [10.0, 10.0]],
             },
             CANDIDATE,
             self.model,
@@ -84,9 +83,7 @@ class AeroTests(unittest.TestCase):
     def test_passes_actual_nozzle_exit_without_clipping(self):
         candidate = {**CANDIDATE, "exit": 6.79}
         aero = Aero(
-            {
-                "aoa_schedule": [[0.0, 0.0], [10.0, 0.0]],
-            },
+            {},
             candidate,
             FakeDragModel(),
         )
@@ -100,7 +97,7 @@ class AeroTests(unittest.TestCase):
                 candidate = {**CANDIDATE, "length": length}
                 model = FakeDragModel()
                 aero = Aero(
-                    {"aoa_schedule": [[0.0, 0.0], [10.0, 0.0]]},
+                    {},
                     candidate,
                     model,
                 )
@@ -116,7 +113,7 @@ class AeroTests(unittest.TestCase):
     def test_invalid_geometry_is_rejected_not_clipped(self):
         for changes in ({"exit": 5.8}, {"length": 501.0}, {"length": 275.0}):
             with self.assertRaises(ValueError):
-                Aero({"aoa_schedule": [[0, 0], [10, 0]]}, {**CANDIDATE, **changes}, FakeDragModel())
+                Aero({}, {**CANDIDATE, **changes}, FakeDragModel())
 
     def test_interpolates_tables_and_engine_state(self):
         alpha = np.deg2rad(5.0)
@@ -127,9 +124,6 @@ class AeroTests(unittest.TestCase):
         self.assertAlmostEqual(cd_off, 0.45)
         self.assertAlmostEqual(cn, 0.15)
         self.assertAlmostEqual(cp, 115.0 * 0.0254)
-
-    def test_interpolates_aoa_schedule_in_radians(self):
-        self.assertAlmostEqual(self.aero.aoa(5.0), np.deg2rad(5.0))
 
     def test_drag_multiplier_preserves_normal_force_and_changes_axial_force(self):
         for multiplier in (0.0, 1.0, 1.3):
@@ -177,13 +171,11 @@ class AeroTests(unittest.TestCase):
         self.assertAlmostEqual(output["x"][-1], 360.0 * 0.0254)
         self.assertAlmostEqual(trapezoid(output["dcn_dx"], output["x"]), 0.1)
 
-    def test_errors_outside_model_coordinates_and_schedule(self):
+    def test_errors_outside_model_coordinates(self):
         with self.assertRaises(ValueError):
             self.aero.coefficients(1.1, 0.0, True)
         with self.assertRaises(ValueError):
             self.aero.coefficients(0.5, np.deg2rad(16.0), True)
-        with self.assertRaises(ValueError):
-            self.aero.aoa(11.0)
 
 
 if __name__ == "__main__":

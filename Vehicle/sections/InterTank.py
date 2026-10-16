@@ -1,7 +1,6 @@
 import numpy as np
 from .Section import Section
 from ..utils import distribute as dist
-from ..utils import geometry as geo
 
 class InterTank(Section):
 
@@ -32,22 +31,3 @@ class InterTank(Section):
 
     def get_EI(self):
         self.EI = np.full(self.n, self.stiffness_input)
-
-    def get_area(self):
-        r = self.cfg["vehicle"]["OMLD"] * 0.5
-        self.lat_area = dist.uniform(geo.cylinder_lateral_area(r, self.length), self.n)
-        self.surf_area = dist.uniform(geo.cylinder_surface_area(r, self.length), self.n)
-
-    def get_MOI(self):
-        r = self.cfg["vehicle"]["OMLD"] * 0.5
-        self.cg = (np.sum(self.mass * self.station) / np.sum(self.mass)
-                   if np.sum(self.mass) > 0 else np.mean(self.station))
-        self.Ixx = np.sum(self.mass * r**2)
-        self.Iyy = np.sum(self.mass * (self.station - self.cg)**2)
-
-
-    def get_thermal_oml_area(self) -> np.ndarray:
-        return self.surf_area.copy()
-
-    def get_thermal_shell_mass(self) -> np.ndarray:
-        return self.shell_mass.copy()

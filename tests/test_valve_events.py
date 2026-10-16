@@ -1,4 +1,5 @@
 """Valve laws and localized events exercise the same component event contract."""
+from Fluids.design import prepare_design_inputs
 from math import pi, sin
 
 import pytest
@@ -9,7 +10,6 @@ from Fluids.FluidNode import VolumeComponent
 from Fluids.events import Event
 from test_fluid_network import Properties, gas_tank, loss
 from test_prop_system import config, build
-from Fluids.helpers.templates import load_template
 
 
 def switch(**overrides):
@@ -187,7 +187,7 @@ def test_coincident_valves_and_failed_transition_rollback(monkeypatch):
 @pytest.mark.parametrize('kind', ['switch_valve', 'relief_valve'])
 def test_propsystem_uses_config_areas_without_sizing(kind):
     cfg = config()
-    template = load_template(cfg)
+    template = prepare_design_inputs(cfg)[0]
     if kind == 'switch_valve':
         branch = template['branches']['OX_TANK_INJ']
         branch.update(component=kind, CdA_initial=1.23e-5, CdA_switch=4.56e-5,
@@ -225,3 +225,56 @@ def test_invalid_relief_inputs_fail_before_integration(overrides):
     definition.update(overrides)
     with pytest.raises(ValueError):
         network(definition)
+
+
+def test_step_events_are_detached_and_counts_survive_previews_and_restore(monkeypatch):
+    with network(switch()) as net:
+        net.initialize(bcs={'sensor': lambda t: {'P': 2e5 + t*1e5}})
+        start = net._checkpoint()
+        preview = net.update(.75, commit=False)
+        assert preview['event_counts'] == {'branch:valve:switch': 1}
+        assert preview['events'][0]['count'] == 1
+        assert not net.events and not net.event_counts
+        original = FluidNetwork._accept
+        def fail_after_event(self):
+            original(self)
+            if self.events:
+                raise RuntimeError('reject event step')
+        with monkeypatch.context() as patch:
+            patch.setattr(FluidNetwork, '_accept', fail_after_event)
+            with pytest.raises(RuntimeError, match='reject event step'):
+                net.update(.75)
+        assert not net.events and not net.event_counts and not net.branches['valve'].is_switched
+        first = net.update(.75)
+        assert first['events'] == preview['events']
+        accepted = net._checkpoint()
+        for _ in range(2):
+            later = net.update(.25)
+            assert later['events'] == () and later['numerical_remainders'] == ()
+            assert later['event_counts'] == {'branch:valve:switch': 1}
+            assert not net.events
+            net.restore(accepted)
+        first['events'][0]['name'] = 'mutated output'
+        assert net.events[0]['name'] == 'switch'
+        net.restore(start)
+        assert net.update(.75)['events'][0]['count'] == 1
+
+
+def test_repeated_event_counts_are_incremental_across_steps():
+    from collections import Counter
+    nodes = {'supply': gas_tank(2e6), 'tank': gas_tank(3e5, .01),
+             'ambient': dict(component='boundary', P=1e5)}
+    branches = {'valve': dict(component='bang_bang_valve', **{'from': 'supply', 'to': 'tank'},
+                             CdA=3e-5, target_pressure=3e5, pressure_band=2e4, initially_open=False),
+                'outlet': loss('tank', 'ambient', 1e-5)}
+    with FluidNetwork(nodes, branches, fluid_properties=Properties()) as net:
+        net.initialize()
+        seen = Counter()
+        for _ in range(8):
+            output = net.update(.5)
+            for event in output['events']:
+                key = f"{event['kind']}:{event['component']}:{event['name']}"
+                seen[key] += 1
+                assert event['count'] == seen[key]
+            assert output['event_counts'] == dict(seen)
+        assert seen['branch:valve:switch'] > 5

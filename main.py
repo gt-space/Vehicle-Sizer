@@ -3,122 +3,21 @@ from __future__ import annotations
 import argparse
 import time
 import csv
+import json
 from copy import deepcopy
 from pathlib import Path
 
-import numpy as np
-
 from Configs.loader import load_config
-from simulation import ROOT, project_path, property_sources, simulate
-from reporting.run_report import print_run_summary
-
-
-def history_rows(history: list) -> list[dict]:
-    """Flatten synchronized endpoint states for CSV output."""
-
-    rows = []
-    for state in history:
-        kin = state["kinematics"]
-        speed = np.hypot(kin.vx, kin.vz)
-        gamma = np.arctan2(kin.vz, kin.vx) if speed > 1.0e-8 else kin.theta
-        atmosphere = state["atmosphere"]
-        wind = state["wind"]
-        aero = state["plant"].aero
-        propulsion = state["plant"].fluids.propulsion
-        fluids = state["plant"].fluids
-        forces = state["forces"]
-        mass = state["mass_properties"]
-        row = {
-            "time_s": kin.t,
-
-            "x_m": kin.x,
-            "altitude_m": kin.h,
-
-            "vx_m_s": kin.vx,
-            "vz_m_s": kin.vz,
-            "speed_m_s": speed,
-            "velocity_m_s": kin.vz,
-
-            "wind_x_m_s": wind["wind_x"],
-            "wind_z_m_s": wind["wind_z"],
-            "airspeed_m_s": wind["airspeed"],
-
-            "acceleration_m_s2": forces["acceleration"],
-
-            "flight_path_angle_deg": np.degrees(gamma),
-            "air_flight_path_angle_deg": np.degrees(wind["gamma_air"]),
-            "pitch_angle_deg": np.degrees(kin.theta),
-            "angle_of_attack_deg": np.degrees(kin.alpha),
-
-            "pitch_rate_rad_s": kin.q,
-            "angular_rate_rad_s": kin.q,
-
-            "mass_kg": mass["total_mass"],
-            "cg_m": mass["cg"],
-            "Iyy_kg_m2": mass["Iyy"],
-
-            "ambient_pressure_Pa": atmosphere.p,
-            "mach": atmosphere.Ma,
-            "dynamic_pressure_Pa": atmosphere.q,
-
-            "Cd": aero.Cd,
-            "drag_N": forces["drag"],
-            "Ca": aero.Ca,
-            "axial_aero_force_N": aero.A,
-            "Cn": aero.Cn,
-            "normal_force_N": aero.N,
-            "cp_m": aero.cp,
-            "static_stability_margin_calibers": (aero.cp - mass["cg"]) / mass["diameter"],
-
-            "thrust_N": propulsion.thrust,
-            "chamber_pressure_Pa": propulsion.Pc,
-            "mixture_ratio": propulsion.MR,
-            "oxidizer_mdot_kg_s": propulsion.mdot_ox,
-            "fuel_mdot_kg_s": propulsion.mdot_fuel,
-            "nozzle_mdot_kg_s": propulsion.mdot_nozzle,
-
-            "engine_mode": propulsion.mode,
-            "engine_on": state["engine_on"],
-            "on_rail": state["on_rail"],
-        }
-        row.update(
-            {
-                f"{node_id}_pressure_Pa": node["P"]
-                for node_id, node in fluids.node.items()
-                if "P" in node
-            }
-        )
-        row.update(
-            {
-                f"{branch_id}_open": branch["is_open"]
-                for branch_id, branch in fluids.branch.items()
-                if "is_open" in branch
-            }
-        )
-        for branch_id, branch in fluids.branch.items():
-            for field in ("is_switched", "effective_CdA"):
-                if field in branch:
-                    row[f"{branch_id}_{field}"] = branch[field]
-            if "opening_fraction" in branch:
-                for field in ("opening_fraction", "pressure_error", "max_mdot"):
-                    row[f"{branch_id}_{field}"] = branch[field]
-                row[f"{branch_id}_mdot"] = fluids.mdot[branch_id]
-            if "is_open" in branch or "is_switched" in branch:
-                row[f"{branch_id}_switch_count"] = fluids.event_counts.get(
-                    f"branch:{branch_id}:switch", 0
-                )
-                row[f"{branch_id}_switches"] = sum(
-                    event["kind"] == "branch" and event["component"] == branch_id
-                    and ("is_open" in event or "is_switched" in event) for event in fluids.events
-                )
-        rows.append(row)
-    return rows
+from simulation import ROOT, project_path, simulate
+from reporting.run_report import build_run_tables
+from reporting.history import capture_history
+from diagnostics.errors import EvaluationFailure, format_failure
 
 
 def write_history(rows: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=rows[0])
+        writer = csv.DictWriter(stream, fieldnames=list(dict.fromkeys(key for row in rows for key in row)))
         writer.writeheader()
         writer.writerows(rows)
 
@@ -138,35 +37,6 @@ def write_events(history: list, path: Path) -> None:
         writer.writerows(events)
 
 
-def write_structural_loads(history: list, path: Path) -> None:
-    """Export every tenth accepted time plus the final time, keeping all stations."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as stream:
-        writer = csv.writer(stream)
-        writer.writerow((
-            "time_s", "station_m", "cell_width_m", "internal_axial_force_kN",
-            "distributed_axial_aero_force_kN_m", "distributed_normal_force_kN_m",
-            "internal_shear_force_kN", "internal_bending_moment_kN_m",
-        ))
-        for index, state in enumerate(history):
-            if index % 10 != 0 and index != len(history) - 1:
-                continue
-            loads = state["loads"]
-            station = np.asarray(loads["station"], dtype=float)
-            widths = np.asarray(state["mass_properties"]["cell_widths"], dtype=float)
-            if widths.shape != station.shape or not np.all(np.isfinite(widths) & (widths > 0)):
-                raise ValueError("Structural load export requires a positive width for every station")
-            columns = (
-                station, widths, np.asarray(loads["axial"]) / 1000,
-                np.asarray(loads["axial_aero"]) / widths / 1000,
-                np.asarray(loads["normal"]) / widths / 1000,
-                np.asarray(loads["shear"]) / 1000,
-                np.asarray(loads["bending"]) / 1000,
-            )
-            writer.writerows((state["kinematics"].t, *values)
-                             for values in zip(*columns, strict=True))
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run")
     parser.add_argument(
@@ -177,12 +47,16 @@ def main() -> None:
     )
     parser.add_argument("--dt", type=float)
     parser.add_argument("--t-end", type=float)
-    parser.add_argument("--enforce-constraints", action="store_true",
-                        help="Apply saved flight/optimizer limits during this manual run")
+    parser.add_argument("--sweep", type=Path, help="Run all cases from a sweep YAML")
+    parser.add_argument("--dry-run", action="store_true", help="Validate a sweep without running flights")
     args = parser.parse_args()
+    if args.sweep:
+        from sensitivity import run_file
+        run_file(args.sweep, dry_run=args.dry_run)
+        return
+    if args.dry_run:
+        parser.error('--dry-run requires --sweep')
     cfg = deepcopy(load_config(args.config))
-    if not args.enforce_constraints:
-        cfg.pop('constraints', None)
     if args.dt is not None:
         cfg["simulation"]["dt"] = args.dt
     if args.t_end is not None:
@@ -205,42 +79,37 @@ def main() -> None:
               f"elapsed={now - started:.1f} s [last completed step]", flush=True)
         last_report = now
 
-    result = simulate(cfg, record_history=True, compute_loads=True, progress=report_progress)
+    try:
+        result = simulate(cfg, record_history=True, compute_loads=True, progress=report_progress)
+    except EvaluationFailure as error:
+        output = cfg.get('simulation', {}).get('output')
+        if output:
+            path = project_path(output).with_suffix('.failure.json')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(error.diagnostic, indent=2))
+        raise SystemExit(format_failure(error)) from None
     history = result.history
     if not history:
-        if result.termination in {"infeasible_initial_design", "infeasible_operating_state"}:
-            failures = [
-                f"  {name}: margin={record.margin:.6g} {record.units} (must be >= 0)"
-                for name, record in result.constraint_records.items()
-                if record.required and record.margin is not None and record.margin < 0
-            ]
-            raise SystemExit("\n".join([
-                f"Simulation rejected: {result.termination}",
-                f"Config: {args.config}",
-                *failures,
-            ]))
         raise RuntimeError(f"Flight simulation returned no time steps ({result.termination})")
     print(f"Propagation finished at t={history[-1]['kinematics'].t:.3f} s "
           f"in {time.perf_counter() - started:.1f} s. Writing history and plots...", flush=True)
 
-    rows = history_rows(history)
+    rows, summary = capture_history(result)
     output_path = project_path(cfg["simulation"]["output"])
     plot_path = project_path(cfg["simulation"]["plot"])
     write_history(rows, output_path)
     events_path = output_path.with_name(output_path.stem + "_events.csv")
     write_events(history, events_path)
-    loads_path = output_path.with_name(output_path.stem + "_structural_loads.csv")
-    write_structural_loads(history, loads_path)
     from reporting.flight_plots import plot_flight
-    plots = plot_flight(history, rows, plot_path)
+    plots = plot_flight(history, rows, plot_path, summary.get("flight.burnout_time_s"))
     print(f"Run complete: {time.perf_counter() - setup_started:.1f} s total.", flush=True)
 
     print(f"Max altitude reached: {result.max_altitude:.1f} m")
     print(f"Apogee: {result.apogee:.1f} m" if result.apogee_reached else "Apogee: not reached")
-    print_run_summary(cfg, result)
+    for table in build_run_tables(cfg, result, summary):
+        print(table, end="\n\n")
     print(f"History: {output_path}")
     print(f"Events: {events_path}")
-    print(f"Structural loads: {loads_path}")
     for name, path in plots.items():
         print(f"{name.replace('_', ' ').title()}: {path}")
 

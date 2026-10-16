@@ -3,6 +3,49 @@ import hashlib
 import traceback
 
 
+class GeometryError(ValueError):
+    """Geometry cannot be represented by the model or search coordinates."""
+    def __init__(self, margins):
+        self.constraints = margins  # Signed bounds used by optimizer decoding.
+        self.details = dict(margins=margins)
+        super().__init__(f"Unsupported geometry: {margins}")
+
+
+class SimulationIncompleteError(RuntimeError):
+    """Integration stopped before reaching apogee."""
+    def __init__(self, result):
+        self.details = dict(termination=result.termination, time_s=result.final_time)
+        super().__init__(f"Flight did not reach apogee: {result.termination} at t={result.final_time:g} s")
+
+
+class EvaluationFailure(RuntimeError):
+    """One simulation failure contract, including inputs, partial state and cautions."""
+    def __init__(self, phase, config, partial_result=None, *, warnings=()):
+        self.phase = phase
+        self.config = config
+        self.partial_result = partial_result
+        self.warnings = list(warnings)
+        super().__init__(f"Simulation failed during {phase}")
+
+    @property
+    def diagnostic(self):
+        return dict(failure_details(self, phase=self.phase), warnings=self.warnings)
+
+    def __str__(self):
+        reason = f": {type(self.__cause__).__name__}: {self.__cause__}" if self.__cause__ else ''
+        return super().__str__() + reason
+
+
+def format_failure(error):
+    """The same readable failure reason for single runs and sweep cases."""
+    detail = failure_details(error, phase=getattr(error, 'phase', None))
+    message = (f"Simulation failed [{detail['kind']} / {detail['exception']}]"
+               f" during {detail['phase'] or 'evaluation'}: {detail['message']}")
+    for warning in getattr(error, 'warnings', ()):
+        message += f"\nWarning [{warning['code']}]: {warning['message']}"
+    return message
+
+
 class TrialDomainError(ValueError):
     """A numerical trial is invalid or singular, not proven infeasible.
 
@@ -74,6 +117,8 @@ def failure_details(error, *, phase=None):
         ((SolverSetupError, KeyError, TypeError, AttributeError, AssertionError,
           ImportError, MemoryError), 'configuration_error', True),
         ((UnsupportedPhaseChangeError,), 'unsupported_phase_change', False),
+        ((GeometryError,), 'geometry_error', False),
+        ((SimulationIncompleteError,), 'incomplete_flight', False),
         ((LookupBoundsError, ModelDomainExceeded), 'table_domain_exceeded', False),
         ((ResidualAcceptanceError,), 'residual_acceptance_failure', False),
         ((SolverConvergenceError,), 'solver_nonconvergence', False),

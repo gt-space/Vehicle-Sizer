@@ -58,5 +58,7 @@ def test_colored_table_template_preview_and_shutdown(control, rtol):
         actual = prop.update(.2, atm, {})
         assert actual.propulsion.mode == preview.propulsion.mode == 'shutdown'
         assert actual.event_counts == preview.event_counts
-        for key in actual.td_state:
-            assert actual.td_state[key]['mass'] == pytest.approx(preview.td_state[key]['mass'])
+        for key in actual.node:
+            if 'mass' not in actual.node[key]:
+                continue
+            assert actual.node[key]['mass'] == pytest.approx(preview.node[key]['mass'])

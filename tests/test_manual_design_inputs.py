@@ -1,4 +1,5 @@
 """Supplied geometry replaces sizing; mass and COM still follow the cell model."""
+from Fluids.design import prepare_design_inputs
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ from Configs.loader import load_config
 from FluidTables.PropertyModels import CEAPropertySource
 from Fluids.PropSystem import PropSystem
 from Vehicle.Vehicle import Vehicle
-from simulation import property_sources
+from FluidTables.PropertyModels import property_sources
 from test_prop_system import config, build
 
 
@@ -18,8 +19,9 @@ from test_prop_system import config, build
 def vespula():
     cfg = load_config('Configs/Vespula.yaml')
     pure, combustion = property_sources(cfg)
-    vehicle = Vehicle(cfg, pure)
-    with PropSystem(cfg, vehicle.tanks, pure, combustion) as prop:
+    template, states, wall_pressures = prepare_design_inputs(cfg)
+    vehicle = Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures)
+    with PropSystem(cfg, vehicle.tanks, pure, combustion, initial_states=states, template=template) as prop:
         vehicle.build(prop)
         yield cfg, vehicle, prop
 
@@ -175,4 +177,5 @@ def test_invalid_manual_geometry_is_rejected(tank, key, value):
     cfg['tanks'][tank][key] = value
     pure, _ = property_sources(cfg)
     with pytest.raises(ValueError):
-        Vehicle(cfg, pure)
+        template, states, wall_pressures = prepare_design_inputs(cfg)
+        Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures)

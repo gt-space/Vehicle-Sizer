@@ -136,6 +136,24 @@ def test_hermite_values_and_derivatives_share_a_continuous_interpolant():
         table.derivative(['density'], wrt='pressure', pressure=0., temperature=12.)
 
 
+@pytest.mark.parametrize('missing', [('density',), ('internal_energy',), ('density', 'internal_energy')])
+def test_pure_fluid_provider_requires_complete_hermite_data(tmp_path, missing):
+    from FluidTables.pt_lookup import PTSpecification, generate_pt_table
+    from FluidTables.PropertyModels import TablePureFluidPropertySource
+    path = tmp_path / 'properties.h5'
+    generate_pt_table(PTSpecification('Nitrogen', 'nitrogen_pt', (1e6, 5e6), (280., 320.), 3, 3, 'gas'), path)
+    with h5py.File(path, 'a') as file:
+        table = file['nitrogen_pt']
+        metadata = json.loads(table.attrs['metadata'])
+        for name in missing:
+            del metadata['hermite_outputs'][name]
+        table.attrs['metadata'] = json.dumps(metadata)
+    # Ordinary interpolation remains supported by the general lookup reader.
+    assert LookupTables(path).get('nitrogen_pt', 'density', pressure=3e6, temperature=300.) > 0
+    with pytest.raises(ValueError, match='requires Hermite density and internal_energy'):
+        TablePureFluidPropertySource(path, {'Nitrogen': 'nitrogen_pt'})
+
+
 def test_generated_pt_table_stores_coolprop_slopes_and_runtime_uses_them(tmp_path):
     from CoolProp import AbstractState
     from CoolProp.CoolProp import PT_INPUTS, iDmass, iUmass, iP, iT

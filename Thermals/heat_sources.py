@@ -29,14 +29,6 @@ class NoHeating:
 
 
 @dataclass(frozen=True)
-class PrescribedHeatRates:
-    rates: Mapping
-
-    def evaluate(self, node_state):
-        return dict(self.rates)
-
-
-@dataclass(frozen=True)
 class Aeroheating:
     def evaluate(self, node_state):
         raise ValueError('Aeroheating requires heat rates from the wall thermal solve')
@@ -102,12 +94,11 @@ def build_heat_source(config, geometry=None):
 
 
 def evaluate_heat(source, state, time):
-    """Adapt legacy time callbacks and prescribed mappings to the same contract."""
+    """Validate phase heat rates from a state model, time callback or mapping."""
     if hasattr(source, 'evaluate'):
         rates = source.evaluate(state)
     else:
         rates = source(time) if callable(source) else source
-        rates = PrescribedHeatRates(rates).evaluate(state)
     phases = {fluid.phase for fluid in state.fluids.values()}
     result = {}
     for phase, value in rates.items():

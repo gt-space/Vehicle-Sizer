@@ -1,6 +1,7 @@
 """Integration checks against the expanded HDF5 deck, not synthetic CA shapes."""
 from types import SimpleNamespace
 
+import h5py
 import numpy as np
 import pytest
 from scipy.integrate import trapezoid
@@ -16,11 +17,45 @@ def model():
     return DragModel()
 
 
+@pytest.fixture
+def deck_file(tmp_path, model):
+    path = tmp_path / 'deck.h5'
+    # Link immutable arrays rather than copying the entire production deck.
+    with h5py.File(model.path, 'r') as source, h5py.File(path, 'w') as deck:
+        deck.attrs.update(source.attrs)
+        for name in source:
+            deck[name] = h5py.ExternalLink(str(model.path.resolve()), '/' + name)
+    return path
+
+
+@pytest.mark.parametrize('field,value', [('cd_scaling', 'none'), ('d0', 0.), ('d0', np.nan)])
+def test_invalid_aero_scaling_is_rejected_at_load(deck_file, field, value):
+    with h5py.File(deck_file, 'a') as deck:
+        deck.attrs[field] = value
+    with pytest.raises(ValueError, match='scaling|diameter'):
+        DragModel(deck_file)
+
+
+@pytest.mark.parametrize('missing', ['bodyparts', 'finparts', 'shorttube', 'casplit', 'delta'])
+def test_incomplete_aero_deck_is_rejected_at_load(deck_file, model, missing):
+    with h5py.File(deck_file, 'a') as deck:
+        if missing == 'delta':
+            del deck['fins']
+            with h5py.File(model.path, 'r') as source:
+                fins = deck.create_group('fins/10um')
+                fins.attrs.update(source['fins/10um'].attrs)
+                fins['cd'] = h5py.ExternalLink(str(model.path.resolve()), '/fins/10um/delta')
+        else:
+            del deck[missing]
+    with pytest.raises(KeyError, match=missing):
+        DragModel(deck_file)
+
+
 @pytest.mark.parametrize("length,exit", [(309.26, 6.79), (433.20, 7.75)])
 @pytest.mark.parametrize("drag_multiplier", [1.0, 1.3, 0.0])
 def test_unclipped_geometry_and_force_closure_on_actual_deck(model, length, exit, drag_multiplier):
     candidate = {**CANDIDATE, "length": length, "exit": exit}
-    aero = Aero(dict(aoa_schedule=[[0, 0], [10, 15]], fins_on_boattail=True,
+    aero = Aero(dict(fins_on_boattail=True,
                      drag_multiplier=drag_multiplier), candidate, model)
     assert aero.candidate == candidate
     for cells in (17, 137):
@@ -43,7 +78,7 @@ def test_unclipped_geometry_and_force_closure_on_actual_deck(model, length, exit
 
 
 def test_adapter_units_sign_and_base_credit(model):
-    aero = Aero(dict(aoa_schedule=[[0, 0], [10, 15]]), CANDIDATE, model)
+    aero = Aero({}, CANDIDATE, model)
     raw = model.ca_distribution(CANDIDATE, 2., 7.)
     off = aero.axial_distribution(2., np.deg2rad(-7.), False)
     on = aero.axial_distribution(2., np.deg2rad(7.), True)
@@ -62,4 +97,4 @@ def test_adapter_units_sign_and_base_credit(model):
 @pytest.mark.parametrize("change", [{"exit": 5.8}, {"length": 501}, {"length": 275}])
 def test_actual_deck_rejects_out_of_bounds(model, change):
     with pytest.raises(ValueError):
-        Aero(dict(aoa_schedule=[[0, 0], [10, 0]]), {**CANDIDATE, **change}, model)
+        Aero({}, {**CANDIDATE, **change}, model)

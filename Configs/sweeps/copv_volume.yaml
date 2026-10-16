@@ -5,7 +5,6 @@ sweep:
   mode: one_at_a_time
   workers: 1                 # Increase for independent parallel simulations.
   max_cases: 100
-  ignore_feasibility: false   # Preserve normal design and operating checks.
   ignore_wind: true           # Disable wind in candidate copies only.
   parameters:
     tanks.press_tank.volume:

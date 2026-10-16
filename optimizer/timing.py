@@ -43,6 +43,7 @@ class Timings:
 
 def install():
     from Flight.Flight import FlightSim
+    from Flight.loads import Loads
     from Flight.environment import Environment
     from Vehicle.Vehicle import Vehicle
     from Thermals import ThermalNetwork
@@ -57,7 +58,8 @@ def install():
         FlightSim: {'run': 'flight.total', '_attempt_segment': lambda self, kin, fluids, *args, **kwargs:
                     'flight.powered_attempt' if fluids.propulsion.mode == 'combusting' else 'flight.coast_attempt',
                     'step_coupled': 'flight.fluid_thermal_coupling', 'trial_aero': 'flight.aero',
-                    'correct_kinematics': 'flight.kinematic_corrector', '_evaluate_loads': 'flight.loads'},
+                    'correct_kinematics': 'flight.kinematic_corrector'},
+        Loads: {'evaluate': 'flight.loads'},
         Environment: {'__init__': 'setup.atmosphere', 'atmosphere': 'flight.atmosphere'},
         Vehicle: {'__init__': 'setup.vehicle', 'build': 'setup.vehicle_build',
                   'update_mass_distribution': 'flight.mass_distribution'},

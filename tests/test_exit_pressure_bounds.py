@@ -2,7 +2,10 @@ from copy import deepcopy
 
 import pytest
 
+from Fluids.PropSystem import PropSystem
+from Vehicle.Vehicle import Vehicle
 import optimizer.core as opt
+from Fluids.design import prepare_design_inputs
 from Configs.loader import load_config
 from FluidTables.PropertyModels import TableCombustionPropertySource
 
@@ -20,11 +23,14 @@ def test_real_table_interval_and_nozzle_response():
 
 
 @pytest.mark.parametrize('bounds', [(100., 103421.), (40726., 104000.), (40726., 1.4e6)])
-def test_unsupported_search_interval_rejected(bounds):
+def test_unsupported_search_interval_rejected(bounds, tmp_path):
     settings = load_config('Configs/optimizer_pressure_fed.yaml')
     settings['bounds']['exit_pressure'] = bounds
     with pytest.raises(ValueError, match='Exit-pressure'):
-        opt.prepare(settings, opt.DragModel())
+        model = opt.DragModel()
+        cfg, settings = opt.prepare(settings, model)
+        pure, combustion = opt.property_sources(cfg)
+        opt.Evaluator(cfg, settings, model, pure, combustion, tmp_path)
 
 
 def test_exit_pressure_changes_sized_engine_without_mutating_base():
@@ -35,8 +41,9 @@ def test_exit_pressure_changes_sized_engine_without_mutating_base():
     for pressure in (40726., 103421.):
         candidate = deepcopy(cfg)
         candidate['engine']['exit_pressure'] = pressure
-        vehicle = opt.Vehicle(candidate, pure)
-        with opt.PropSystem(candidate, vehicle.tanks, pure, combustion) as prop:
+        template, states, wall_pressures = prepare_design_inputs(candidate)
+        vehicle = Vehicle(candidate, pure, initial_states=states, wall_pressures=wall_pressures)
+        with PropSystem(candidate, vehicle.tanks, pure, combustion, initial_states=states, template=template) as prop:
             sizes.append((prop.expansion_ratio, prop.exit_area, prop.throat_area))
     assert sizes[0][0] > sizes[1][0]
     assert sizes[0][1] > sizes[1][1]

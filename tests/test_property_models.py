@@ -1,5 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+import sys
 
 import pytest
 
@@ -11,6 +14,45 @@ from FluidTables.PropertyModels import (
     TableCombustionPropertySource,
     TablePureFluidPropertySource,
 )
+
+
+@pytest.mark.parametrize('pure_source', ['coolprop', 'table'])
+@pytest.mark.parametrize('combustion_source', ['cea', 'table'])
+def test_property_factory_owns_source_selection_and_cea_units(monkeypatch, pure_source, combustion_source):
+    import FluidTables.PropertyModels as models
+    cea = Mock()
+    monkeypatch.setitem(sys.modules, 'rocketcea.cea_obj_w_units', SimpleNamespace(CEA_Obj=cea))
+    constructors = {}
+    for name in ('CoolPropPropertySource', 'TablePureFluidPropertySource',
+                 'CEAPropertySource', 'TableCombustionPropertySource'):
+        constructors[name] = Mock()
+        monkeypatch.setattr(models, name, constructors[name])
+    cfg = dict(property_models={
+        'pure_fluid': dict(source=pure_source, table=dict(lookup_file='fluid.h5', fluids={'N2': 'nitrogen'})),
+        'combustion': dict(source=combustion_source, table=dict(lookup_file='combustion.h5', nfz='2'))},
+        engine=dict(oxidizer='LOX', fuel='RP-1'))
+    pure, combustion = models.property_sources(cfg)
+    pure_constructor = constructors['CoolPropPropertySource' if pure_source == 'coolprop' else 'TablePureFluidPropertySource']
+    combustion_constructor = constructors['CEAPropertySource' if combustion_source == 'cea' else 'TableCombustionPropertySource']
+    assert (pure, combustion) == (pure_constructor.return_value, combustion_constructor.return_value)
+    assert sum(constructor.call_count for constructor in constructors.values()) == 2
+    root = Path(models.__file__).resolve().parents[1]
+    if pure_source == 'table':
+        pure_constructor.assert_called_once_with(root / 'fluid.h5', {'N2': 'nitrogen'})
+    if combustion_source == 'table':
+        combustion_constructor.assert_called_once_with(root / 'combustion.h5', 2)
+        cea.assert_not_called()
+    else:
+        cea.assert_called_once_with(oxName='LOX', fuelName='RP-1', pressure_units='Pa',
+            cstar_units='m/s', temperature_units='K', enthalpy_units='J/kg',
+            density_units='kg/m^3', specific_heat_units='J/kg-K')
+        combustion_constructor.assert_called_once_with(cea.return_value)
+
+
+def test_propsystem_requires_sources_instead_of_selecting_defaults():
+    from Fluids.PropSystem import PropSystem
+    with pytest.raises(TypeError, match='fluid_properties.*combustion_properties'):
+        PropSystem({}, {}, template={}, initial_states={})
 
 
 def branch_flow(branch_id, incidence, state):
@@ -213,9 +255,9 @@ def test_table_cache_exact_keys_and_derivative_ownership():
     expected = slopes.copy()
     slopes['drho_dP'] = -123.
     assert source.derivatives_pt('Nitrogen', 3e6, 300.) == expected
-    assert source._cached_state_pt.cache_info().hits == 1
-    assert source._cached_derivatives_pt.cache_info().hits == 1
-    assert source._cached_state_pt.cache_info().maxsize == 8192
+    assert source._cached_pt.cache_info().hits == 3
+    assert source._cached_pt.cache_info().misses == 2
+    assert source._cached_pt.cache_info().maxsize == 8192
     with pytest.raises(ValueError):
         source.state_pt('Nitrogen', -1., 300.)
 

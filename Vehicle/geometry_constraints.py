@@ -3,7 +3,7 @@
 These are packaging checks, not pressure-vessel certification or routing CAD.
 """
 import math
-from diagnostics.constraints import GeometryError
+from diagnostics.constraints import ConstraintRecord
 
 
 def check_press_tank_to_airframe(section, diameter, clearance=0.0):
@@ -48,7 +48,7 @@ def geometry_constraints(vehicle):
     if not math.isfinite(clearance) or clearance < 0:
         raise ValueError("geometry.radial_clearance must be finite and nonnegative")
     diameter = float(cfg["vehicle"]["OMLD"])
-    margins = {}
+    margins, optional = {}, set()
     for section in vehicle.sections:
         if isinstance(section, PressTank):
             margins[f"{section.tank_id}.airframe"] = check_press_tank_to_airframe(section, diameter, clearance)
@@ -64,10 +64,13 @@ def geometry_constraints(vehicle):
             body = cfg["engine"].get("envelope_diameter")
             if body is not None and (not math.isfinite(float(body)) or float(body) <= 0):
                 raise ValueError("Engine envelope_diameter must be finite and positive")
+            if body is None:
+                optional.add("engine.envelope")
             margins["engine.envelope"] = None if body is None else check_engine_envelope(section, vehicle.engine, diameter, float(body), clearance)
     lines = packaging.get("feedlines", [])
     if not lines:
         margins["feedline.routing"] = None
+        optional.add("feedline.routing")
     for line in lines:
         outer = float(line["outer_diameter"])
         if not math.isfinite(outer) or outer <= 0:
@@ -79,6 +82,5 @@ def geometry_constraints(vehicle):
         if key in margins:
             raise ValueError(f"Duplicate feedline constraint {key}")
         margins[key] = check_feedline(tank, outer, clearance)
-    if any(value is not None and not math.isfinite(value) for value in margins.values()):
-        raise ValueError("Geometry constraints must be finite")
-    return margins
+    return {key: ConstraintRecord(value, 'Vehicle.geometry_constraints', 'sizing', 'm',
+                                  required=key not in optional) for key, value in margins.items()}

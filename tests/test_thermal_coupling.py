@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from Flight.Flight import FlightSim
-from simulation_types import AeroOut, AtmosState, KinematicsState, ThermalOut
+from simulation_types import AtmosState, KinematicsState, ThermalOut
 from tests.test_flight import FakeAero, FakeEnvironment, FakePropSystem, FakeVehicle
 
 
@@ -11,7 +11,7 @@ class FakeThermal:
         self.calls = []
 
     def trial(
-        self, kin, atm, aero, fluids, previous=None, axial_specific_force=0.0
+        self, kin, atm, fluids, previous=None, axial_specific_force=0.0
     ):
         del axial_specific_force
         self.calls.append(fluids)
@@ -56,9 +56,8 @@ def test_flight_converges_node_heat_boundaries_before_fluid_commit():
     atmosphere = AtmosState(288.0, 101325.0, 1.2, 1.8e-5, 340.0, 0.0, 2.0)
     initial = propulsion.update(None, atmosphere, {}, commit=False)
     kin = KinematicsState(t=0.0, dt=0.1, x=0., h=0.0, vx=0., vz=0.0, theta=np.pi/2, q=0.0, alpha=0.0, m=10.0, Iyy=2.0)
-    aero = AeroOut(0.0, 0.0)
 
-    _, thermal_out = flight.step_coupled(kin, atmosphere, aero, initial, 0.0)
+    _, thermal_out = flight.step_coupled(kin, atmosphere, initial, 0.0)
 
     assert propulsion.calls[-2]["commit"] is False
     assert propulsion.calls[-1]["commit"] is True
@@ -89,6 +88,6 @@ def test_failed_fluid_preview_is_not_silently_replaced_by_a_commit():
 
     with pytest.raises(RuntimeError, match="preview failure"):
         flight.step_coupled(
-            kin, atmosphere, AeroOut(0.0, 0.0), initial, 9.81
+            kin, atmosphere, initial, 9.81
         )
     assert not hasattr(thermal, "committed")
