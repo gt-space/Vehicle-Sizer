@@ -7,6 +7,7 @@ class Section(ABC):
     def __init__(self, cfg: dict):
 
         self.cfg: dict = cfg
+        self.name: str | None = None
         self.radius = float(cfg["vehicle"]["OMLD"]) / 2
 
         self.dx: float = cfg["vehicle"]["dx"]

@@ -1,23 +1,23 @@
 """Dependency-neutral state/output contracts shared by flight, fluids and thermals."""
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+from math import nan
 from diagnostics.constraints import ConstraintRecord, feasibility
+
+if TYPE_CHECKING:
+    from Flight.canards import CanardForces
 
 @dataclass
 class KinematicsState:
     """Planar state in SI units; theta is measured counterclockwise from horizontal."""
     t: float
-    dt: float
     x: float # horizontal movement in plane
     h: float # altitude direction, z
     vx: float # horizontal speed
     vz: float # vertical speed
     theta: float # pitch angle (about y-axis)
     q: float # pitch rate
-    alpha: float # angle of attack
-    m: float
-    Iyy: float # mass moment of inertia about y-axis
 
 @dataclass
 class AtmosState:
@@ -41,6 +41,21 @@ class AeroOut:
     cp: float = float("nan")
     Mroll: float = 0.0
     ballistic_coast: bool = False
+    canard: Optional[CanardForces] = None
+    slope_stability_calibers: float = nan
+    pitch_stiffness_nm_rad: float = nan
+    pitch_hz: float = nan
+
+    @property
+    def total_cp(self) -> float:
+        """Normal-force resultant location; base outputs retain their original meaning."""
+        if self.canard is None:
+            return self.cp
+        normal = self.N + self.canard.normal_force_n
+        scale = abs(self.N) + abs(self.canard.normal_force_n)
+        if abs(normal) <= 1e-12 * scale:
+            return nan
+        return (self.N * self.cp + self.canard.normal_force_n * self.canard.station_m) / normal
 
 
 @dataclass
@@ -83,6 +98,9 @@ class FluidOut:
     events: tuple[Dict[str, Any], ...] = ()
     event_counts: Dict[str, int] = field(default_factory=dict)
     constraint_records: Dict[str, ConstraintRecord] = field(default_factory=dict)
+    # Detached start, event-left/event-right and end states for one advance.
+    # Leaves have no samples of their own.
+    samples: tuple[tuple[float, FluidOut], ...] = ()
 
 
 @dataclass
@@ -96,8 +114,8 @@ class PlantOut:
 class SimResult:
     """Scalar optimizer output; SI units, stability in body diameters.
 
-    Extrema are sampled at flight endpoints. Apogee is approached from ascent
-    with event-split integration to avoid evaluating descent-only aerodynamics.
+    Flight extrema use accepted RK states; structural loads use solved fluid
+    snapshots. Apogee is localized with accepted-step dense output.
     A missing apogee or incomplete burn must not be treated as an achieved target.
     Unavailable masses on preflight rejection are None. Use accepted, not
     feasible alone, to select completed designs that meet the mission limits.
@@ -111,6 +129,7 @@ class SimResult:
     max_q: float = 0.0
     max_aoa_deg: float = 0.0
     min_stability_calibers: Optional[float] = None
+    min_slope_stability_calibers: Optional[float] = None
     min_stability_length_fraction: Optional[float] = None
     max_stability_length_fraction: Optional[float] = None
     burn_duration: float = 0.0
@@ -129,6 +148,7 @@ class SimResult:
     fluid_retries: list[dict] = field(default_factory=list)
     pressure_tracking: Dict[str, Dict[str, float]] = field(default_factory=dict)
     history: Optional[list] = None  # Accepted endpoints; events include a before_event snapshot.
+    roll: Optional[dict] = None
     initial_state: Optional[dict] = None
     design_summary: Dict[str, Any] = field(default_factory=dict)
     battery_sizing: Dict[str, Any] = field(default_factory=dict)

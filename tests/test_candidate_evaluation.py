@@ -121,7 +121,7 @@ def test_twr_interpolates_first_exit_and_does_not_reenter():
     flight = make_flight()
     flight.cfg["launch"]["rail_height"] = 5
     result = SimResult()
-    start = KinematicsState(t=0, dt=1, x=0., h=0, vx=0., vz=1, theta=np.pi/2, q=0, alpha=0, m=10, Iyy=1)
+    start = KinematicsState(t=0, x=0.0, h=0, vx=0.0, vz=1, theta=np.pi / 2, q=0)
     end = replace(start, t=1, h=10)
     flight._record_twr(result, start, 2)
     flight._record_twr(result, end, 0, start, 2)
@@ -140,10 +140,10 @@ def test_exceeded_burn_limit_does_not_stop_flight():
 
         def update(self, dt, *args, **kwargs):
             out = super().update(dt, *args, **kwargs)
-            self.time += dt or 0
             if self.time >= .3:
                 out.propulsion = replace(out.propulsion, mode="shutdown", thrust=0,
                                          shutdown_reason="test_shutdown")
+                out.samples = tuple((t, replace(f, propulsion=out.propulsion)) for t, f in out.samples)
             return out
 
     flight = make_flight(end=2, propulsion=TimedBurn())

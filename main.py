@@ -101,7 +101,7 @@ def main() -> None:
     events_path = output_path.with_name(output_path.stem + "_events.csv")
     write_events(history, events_path)
     from reporting.flight_plots import plot_flight
-    plots = plot_flight(history, rows, plot_path, summary.get("flight.burnout_time_s"))
+    plots = plot_flight(history, rows, plot_path, summary.get("flight.burnout_time_s"), roll=result.roll)
     print(f"Run complete: {time.perf_counter() - setup_started:.1f} s total.", flush=True)
 
     print(f"Max altitude reached: {result.max_altitude:.1f} m")

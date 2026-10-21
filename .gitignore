@@ -5,6 +5,7 @@ __pycache__/
 outputs/
 FluidTables/*.h5
 AeroTables/*.h5
+!AeroTables/canardmodel.h5
 tests/*
 !tests/test_phase_change_rejection.py
 !tests/test_battery_sizing.py
@@ -12,5 +13,6 @@ tests/*
 !tests/test_gas_generator.py
 !tests/test_sensitivity_plots.py
 !tests/test_sensitivity_runner.py
+!tests/test_canards.py
 
 .venv/

@@ -89,9 +89,9 @@ def fluid_output():
 
 
 def inputs():
-    kin = KinematicsState(t=0.0, dt=1.0, x=0., h=0.0, vx=0., vz=0.0, theta=np.pi/2, q=0.0, alpha=0.0, m=1.0, Iyy=1.0)
+    kin = KinematicsState(t=0.0, x=0.0, h=0.0, vx=0.0, vz=0.0, theta=np.pi / 2, q=0.0)
     atm = AtmosState(300.0, 101325.0, 1.2, 1.8e-5, 340.0, 0.0, 0.0)
-    return kin, atm
+    return 1., atm
 
 
 @patch("Thermals.ThermalNode.heating.get_recovery_temperature", return_value=300.0)

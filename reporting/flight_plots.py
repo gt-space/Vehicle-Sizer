@@ -140,7 +140,7 @@ def _valve_history(history, branch_id):
     kin = history[0]["kinematics"]
     initial_count = events[0]["count"] - 1 if events else first.event_counts[key]
     initial_open = events[0][previous_key] if events else first.branch[branch_id][state_key]
-    times = [kin.t - kin.dt] + [event["time_s"] for event in events]
+    times = [0.0] + [event["time_s"] for event in events]
     states = [initial_open] + [event[state_key] for event in events]
     counts = [initial_count] + [event["count"] for event in events]
     return (times + [history[-1]["kinematics"].t], states + [states[-1]], counts + [counts[-1]])
@@ -167,7 +167,7 @@ def plot_aoa_flight_path(rows, path, burnout=None):
     time = _series(rows, "state.kinematics.t")
     figure, aoa_axis = plt.subplots(figsize=(11, 6))
     path_axis = aoa_axis.twinx()
-    aoa_axis.plot(time, _series(rows, "state.kinematics.alpha", 180 / np.pi),
+    aoa_axis.plot(time, _series(rows, "state.alpha", 180 / np.pi),
                   color="tab:blue", label="Angle of attack")
     path_axis.plot(time, _series(rows, "derived.flight_path_angle_rad", 180 / np.pi),
                    color="tab:orange", linestyle="--", label="Flight-path angle (ground-relative)")
@@ -186,7 +186,7 @@ def plot_aoa_flight_path(rows, path, burnout=None):
     plt.close(figure)
 
 
-def plot_flight(history: list, rows: list[dict], base_path: Path, burnout) -> dict[str, Path]:
+def plot_flight(history: list, rows: list[dict], base_path: Path, burnout, *, roll=None) -> dict[str, Path]:
     """Write the standard flight diagnostic figures and return their paths."""
 
     base_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,6 +197,31 @@ def plot_flight(history: list, rows: list[dict], base_path: Path, burnout) -> di
         "force_distributions", "wind", "aoa_flight_path",
     )}
     time = _series(rows, "state.kinematics.t")
+    if roll is not None and roll['time']:
+        paths['roll'] = _path(base_path, 'roll')
+        figure, axes = plt.subplots(3, 1, figsize=(11, 10), sharex=True)
+        axes[0].plot(roll['time'], np.asarray(roll['p']) / (2 * np.pi), label='Roll rate')
+        axes[0].plot(roll['time'], roll['pitch_hz'], label='Local pitch frequency')
+        axes[0].set_ylabel('Frequency [Hz]')
+        for name, label in (('forcing_moment', 'Forcing'), ('damping_moment', 'Damping'),
+                            ('canard_roll_moment', 'Canard'), ('roll_moment', 'Net')):
+            axes[1].plot(roll['time'], roll[name], label=label)
+        axes[1].set_ylabel('Roll torque [N m]')
+        axes[2].plot(roll['time'], np.degrees(roll['phi']), label='Roll angle')
+        axes[2].set(xlabel='Time [s]', ylabel='Angle [deg]')
+        _finish(figure, axes, paths['roll'], burnout)
+    if any('state.plant.aero.canard.deflection_rad' in row for row in rows):
+        paths['canards'] = _path(base_path, 'canards')
+        figure, axes = plt.subplots(3, 1, figsize=(11, 10), sharex=True)
+        prefix = 'state.plant.aero.canard.'
+        axes[0].plot(time, _series(rows, prefix + 'deflection_rad', 180 / np.pi), label='Command')
+        axes[0].set_ylabel('Deflection [deg]')
+        for name, label in (('axial_force_n', 'Axial'), ('normal_force_n', 'Normal'), ('drag_n', 'Drag')):
+            axes[1].plot(time, _series(rows, prefix + name), label=label)
+        axes[1].set_ylabel('Force [N]')
+        axes[2].plot(time, _series(rows, prefix + 'authority_ratio'), label='Authority / demand')
+        axes[2].set(xlabel='Time [s]', ylabel='Authority ratio')
+        _finish(figure, axes, paths['canards'], burnout)
     plot_aoa_flight_path(rows, paths["aoa_flight_path"], burnout)
     tank_nodes = {node["tank_id"]: node_id for node_id, node in history[0]["plant"].fluids.node.items()
                   if node.get("tank_id")}
@@ -288,7 +313,7 @@ def plot_flight(history: list, rows: list[dict], base_path: Path, burnout) -> di
     )
     axes[3, 0].plot(
         time,
-        _series(rows, "state.kinematics.alpha", 180 / np.pi),
+        _series(rows, "state.alpha", 180 / np.pi),
         label="Angle of attack",
     )
     axes[3, 0].set_ylabel("Angle [deg]")
@@ -319,6 +344,9 @@ def plot_flight(history: list, rows: list[dict], base_path: Path, burnout) -> di
     mach_axis = stability_axis.twinx()
     stability_axis.plot(time, _series(rows, "derived.static_stability_margin_calibers"),
                         color="tab:blue", label="Static stability margin")
+    if any('state.plant.aero.slope_stability_calibers' in row for row in rows):
+        stability_axis.plot(time, _series(rows, 'state.plant.aero.slope_stability_calibers'),
+                            linestyle=':', label='Incremental stability margin')
     stability_axis.axhline(0, color="gray", linewidth=1, linestyle=":")
     mach_axis.plot(time, _series(rows, "state.atmosphere.Ma"), color="tab:orange", linestyle="--", label="Mach")
     stability_axis.set(xlabel="Time [s]", ylabel="Static stability margin [calibers]",
@@ -385,7 +413,7 @@ def plot_flight(history: list, rows: list[dict], base_path: Path, burnout) -> di
     field = axis.pcolormesh(time, station, (mass / cell_widths).T, shading="nearest")
     figure.colorbar(field, ax=axis, label="Mass per unit length [kg/m]")
     axis.plot(time, _series(rows, "state.mass_properties.cg"), color="white", linewidth=2, label="Center of mass")
-    axis.plot(time, _series(rows, "state.plant.aero.cp"), color="black", linewidth=2, label="Center of pressure")
+    axis.plot(time, _series(rows, "derived.total_cp_m"), color="black", linewidth=2, label="Center of pressure")
     axis.set(xlabel="Time [s]", ylabel="Axial station [m]", title="Vehicle mass distribution")
     _finish(figure, axis, paths["mass_distribution"], burnout)
 

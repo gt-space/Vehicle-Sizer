@@ -39,7 +39,7 @@ def main():
                     template=template, initial_states=states) as propulsion:
         if any(thermal_model(node.get('thermal')) == 'Aeroheating'
                for node in propulsion.node_definitions.values()):
-            parser.error('Aeroheating requires the flight/wall solver; use None or DensityPowerLaw here')
+            parser.error('Aeroheating requires the flight/wall solver; use None or Prescribed here')
         atm = SimpleNamespace(p=args.ambient_pressure)
         propulsion.update(None, atm, {})
         while propulsion.network.time < args.duration:

@@ -154,6 +154,9 @@ def test_incumbent_uses_soft_objective_not_mass(settings, tmp_path):
 def test_pressure_fed_policy_validates_owned_limits():
     settings = load_config('Configs/optimizer_pressure_fed.yaml')
     original = load_config(settings['base_config'])
+    assert 'constraints' not in original
+    assert all('min_temperature' not in tank and 'min_pressure' not in tank
+               for tank in original['tanks'].values())
     model = opt.DragModel()
     cfg, prepared = opt.prepare(settings, model)
     for path, value in settings['evaluation_overrides'].items():

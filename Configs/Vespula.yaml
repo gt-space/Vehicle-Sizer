@@ -188,19 +188,16 @@ vehicle:
     - type: inter_tank
       length: 0.50165
       mass_override: 12.0
-      stringer_unit_mass: 0.0
       stiffness_EI: 2590060.99915326
     - {type: prop_tank, tank_id: fuel_tank, mass_override: 10.0}
     - type: inter_tank
       length: 0.50165
       mass_override: 12.0
-      stringer_unit_mass: 0.0
       stiffness_EI: 2590060.99915326
     - {type: prop_tank, tank_id: ox_tank, mass_override: 13.0}
     - type: inter_tank
       length: 0.358775
       mass_override: 20.35916
-      stringer_unit_mass: 0.0
       stiffness_EI: 2590060.99915326
     - {type: fin_can, mass_override: 9.0}
 

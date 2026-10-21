@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from simulation_types import history_samples
+from simulation_types import FluidOut, history_samples
 
 MAX_DEPTH = 12
 NODE_FIELDS = {'P', 'T', 'T_liq', 'T_ull', 'm', 'm_liq', 'm_ull',
@@ -49,6 +49,8 @@ def flatten_numbers(value: Any, prefix: str, out: dict[str, float], *,
                 flatten_numbers(child, f'{prefix}.{name}', out, depth=depth+1, arrays=arrays)
     elif is_dataclass(value) and not isinstance(value, type):
         for entry in fields(value):
+            if isinstance(value, FluidOut) and entry.name == "samples":
+                continue
             flatten_numbers(getattr(value, entry.name), f'{prefix}.{entry.name}',
                             out, depth=depth+1, arrays=arrays)
     elif isinstance(value, (list, tuple)):
@@ -76,12 +78,19 @@ def snapshot_row(state: dict) -> dict:
         row['derived.speed_m_s'] = float(np.hypot(vx, vz))
         row['derived.flight_path_angle_rad'] = (float(np.arctan2(vz, vx))
             if row['derived.speed_m_s'] > 1e-8 else row.get('state.kinematics.theta', np.nan))
-    if {'state.plant.aero.cp', 'state.mass_properties.cg', 'state.mass_properties.diameter'} <= row.keys() and row['state.mass_properties.diameter'] > 0:
+    aero = getattr(state.get('plant'), 'aero', None)
+    cp = getattr(aero, 'total_cp', getattr(aero, 'cp', float('nan')))
+    if isfinite(cp):
+        row['derived.total_cp_m'] = cp
+    if {'derived.total_cp_m', 'state.mass_properties.cg', 'state.mass_properties.diameter'} <= row.keys() and row['state.mass_properties.diameter'] > 0:
         row['derived.static_stability_margin_calibers'] = (
-            row['state.plant.aero.cp'] - row['state.mass_properties.cg']) / row['state.mass_properties.diameter']
+            row['derived.total_cp_m'] - row['state.mass_properties.cg']) / row['state.mass_properties.diameter']
     if {'state.forces.thrust', 'state.plant.aero.A', 'state.plant.aero.N', 'state.mass_properties.total_mass'} <= row.keys() and row['state.mass_properties.total_mass'] > 0:
         row['derived.proper_acceleration_g'] = float(np.hypot(
-            row['state.forces.thrust'] - row['state.plant.aero.A'], row['state.plant.aero.N'])
+            row.get('state.forces.thrust_axial', row['state.forces.thrust'])
+                - row.get('state.forces.axial_aero', row['state.plant.aero.A']),
+            row.get('state.forces.normal_aero', row['state.plant.aero.N'])
+                + row.get('state.forces.thrust_normal', 0.))
             / row['state.mass_properties.total_mass'] / 9.80665)
     fluids = getattr(state.get('plant'), 'fluids', None)
     mode = getattr(getattr(fluids, 'propulsion', None), 'mode', None)

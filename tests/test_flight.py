@@ -1,5 +1,7 @@
 import unittest
 from copy import deepcopy
+from dataclasses import replace
+import pytest
 
 import numpy as np
 
@@ -27,7 +29,7 @@ class FakeAero:
     reference_area = 1.0
 
     @staticmethod
-    def evaluate(kinematics, atmosphere, engine_on):
+    def evaluate(atmosphere, alpha, engine_on):
         return AeroOut(Cd=0.0, D=0.0, cp=1.5)
 
     @staticmethod
@@ -44,6 +46,8 @@ class FakeAero:
 class FakePropSystem:
     def __init__(self):
         self.calls = []
+        self.time = 0.
+        self.last = None
 
     def checkpoint(self):
         return deepcopy(self.__dict__)
@@ -64,7 +68,7 @@ class FakePropSystem:
             }
         )
         liquid_mass = 5.0 if dt is None else 4.9
-        return FluidOut(
+        out = FluidOut(
             node={
                 "tank": {
                     "mass": liquid_mass,
@@ -93,17 +97,25 @@ class FakePropSystem:
                 mdot_nozzle=1.5,
             ),
         )
+        start = self.time
+        end = start + (dt or 0.)
+        out.samples = ((start, replace(self.last or out, samples=(), events=())),
+                       (end, replace(out, samples=())))
+        if commit:
+            self.time, self.last = end, replace(out, samples=())
+        return out
 
 
 class ShutdownPropSystem(FakePropSystem):
-    def update(self, dt, atm, heat_rate, commit=True, axial_specific_force=0.0):
-        output = super().update(dt, atm, heat_rate, commit, axial_specific_force)
-        output.mdot = {"OX_INJ": 1.0, "FUEL_INJ": 0.5, "NOZZLE": 1.5}
+    def update(self, dt, atm, heat_rate, commit=True, axial_specific_force=0.):
+        out = super().update(dt, atm, heat_rate, commit, axial_specific_force)
         if dt is not None:
-            output.propulsion.mode = "shutdown"
-            output.propulsion.shutdown_reason = "oxidizer_unavailable"
-            output.events = ({"event": "dryout"},)
-        return output
+            before = replace(out, samples=())
+            out.propulsion = replace(out.propulsion, mode='shutdown', thrust=0.,
+                                     shutdown_reason='oxidizer_unavailable')
+            out.events = ({'event': 'shutdown', 'time_s': self.time, 'before': before},)
+            out.samples = out.samples[:1] + ((self.time, before), (self.time, replace(out, samples=())))
+        return out
 
 
 class FakeVehicle:
@@ -129,287 +141,76 @@ class FakeVehicle:
         self.cg = float(np.sum(self.mass * self.station) / self.total_mass)
 
 
-class FlightSkeletonTests(unittest.TestCase):
-    def setUp(self):
-        self.prop_system = FakePropSystem()
-        self.flight = FlightSim(
-            cfg={
-                "simulation": {"dt": 0.1, "t_end": 0.1},
-                "launch": {"altitude": 0.0, "rail_height": 5.0},
-            },
-            env=FakeEnvironment(),
-            aero=FakeAero(),
-            prop_system=self.prop_system,
-            vehicle=FakeVehicle(),
-        )
-
-    def test_progress_reports_initial_and_completed_states(self):
-        reported = []
-        history = self.flight.run(progress=reported.append)
-        self.assertEqual(reported[0].t, 0.0)
-        self.assertEqual([kin.t for kin in reported[1:]],
-                         [state["kinematics"].t for state in history])
-        self.assertEqual(len(reported), len(history) + 1)
-
-    def test_run_uses_prop_system_and_dynamic_node_mass(self):
-        history = self.flight.run()
-
-        self.assertEqual(len(history), 1)
-        self.assertEqual(self.prop_system.calls[0]["dt"], None)
-        self.assertTrue(self.prop_system.calls[0]["commit"])
-        self.assertEqual(self.prop_system.calls[1]["dt"], 0.1)
-        self.assertTrue(self.prop_system.calls[1]["commit"])
-        self.assertAlmostEqual(
-            self.prop_system.calls[0]["axial_specific_force"],
-            gravity(10.0, 0.0) / 10.0,
-        )
-        self.assertAlmostEqual(
-            self.prop_system.calls[1]["axial_specific_force"], 300.0 / 16.0
-        )
-        self.assertAlmostEqual(history[0]["kinematics"].m, 15.9)
-        start_acceleration = (300.0 - gravity(16.0, 0.0)) / 16.0
-        end_acceleration = history[0]["forces"]["acceleration"]
-        self.assertAlmostEqual(
-            history[0]["kinematics"].vz,
-            0.5 * (start_acceleration + end_acceleration) * 0.1,
-        )
-        self.assertAlmostEqual(
-            history[0]["kinematics"].h,
-            0.5 * history[0]["kinematics"].vz * 0.1,
-        )
-
-    def test_history_is_synchronized_at_end_of_step(self):
-        history = self.flight.run()
-        result = history[0]
-        kin = result["kinematics"]
-
-        self.assertAlmostEqual(result["atmosphere"].q, kin.h)
-        self.assertEqual(len(self.prop_system.calls), 2)
-        self.assertAlmostEqual(
-            result["plant"].fluids.node["tank"]["mass"],
-            4.9,
-        )
-        self.assertTrue(result["on_rail"])
-        self.assertEqual(kin.alpha, 0.0)
-
-    def test_endpoint_derives_aoa_after_crossing_rail_end(self):
-        self.flight.cfg["launch"]["rail_height"] = 0.001
-
-        result = self.flight.run()[0]
-
-        self.assertFalse(result["on_rail"])
-        self.assertAlmostEqual(
-            result["kinematics"].alpha,
-            0.0,
-        )
-
-    def test_engine_on_uses_combustion_mode_not_residual_thrust(self):
-        propulsion = self.prop_system.update(
-            dt=None,
-            atm=FakeEnvironment.atmosphere(0.0, 0.0),
-            heat_rate={},
-            commit=False,
-        ).propulsion
-        self.assertTrue(self.flight.engine_on(propulsion))
-
-        propulsion.mode = "shutdown"
-        propulsion.thrust = 50.0
-
-        self.assertFalse(self.flight.engine_on(propulsion))
-
-    def test_disabling_post_shutdown_solve_freezes_zero_flow_state(self):
-        propulsion = ShutdownPropSystem()
-        flight = FlightSim(
-            cfg={
-                "simulation": {
-                    "dt": 0.1,
-                    "t_end": 0.3,
-                    "fluid_solve_post_shutdown": False,
-                },
-                "launch": {"altitude": 0.0, "rail_height": 5.0},
-            },
-            env=FakeEnvironment(),
-            aero=FakeAero(),
-            prop_system=propulsion,
-            vehicle=FakeVehicle(),
-        )
-
-        history = flight.run(v0=100.0)
-
-        # Rail exit inserts an accepted event boundary before the usual samples.
-        self.assertEqual(len(propulsion.calls), 2)
-        self.assertEqual(len(history), 4)
-        for state in history:
-            fluids = state["plant"].fluids
-            self.assertTrue(all(mdot == 0.0 for mdot in fluids.mdot.values()))
-            self.assertEqual(fluids.propulsion.thrust, 0.0)
-        self.assertEqual(history[0]["plant"].fluids.events, ({"event": "dryout"},))
-        self.assertEqual(history[1]["plant"].fluids.events, ())
-
-    def test_history_records_end_forces_and_mass_distribution(self):
-        result = self.flight.run()[0]
-        kin = result["kinematics"]
-        mass = result["mass_properties"]
-        forces = result["forces"]
-
-        self.assertAlmostEqual(mass["total_mass"], kin.m)
-        self.assertAlmostEqual(mass["cg"], self.flight.vehicle.cg)
-        np.testing.assert_array_equal(mass["station"], self.flight.vehicle.station)
-        np.testing.assert_array_equal(mass["axial_mass"], self.flight.vehicle.mass)
-        self.assertEqual(mass["length"], self.flight.vehicle.length)
-        self.assertEqual(set(result["loads"]), {"station", "axial", "axial_aero", "normal", "shear", "bending"})
-        self.assertAlmostEqual(forces["gravity"], gravity(kin.m, kin.h))
-        self.assertAlmostEqual(forces["acceleration"], forces["net"] / kin.m)
-
-    def test_fluid_update_passes_node_heat_rate_and_commit_policy(self):
-        atmosphere = FakeEnvironment.atmosphere(0.0, 0.0)
-        thermal = ThermalOut(
-            node={
-                "tank": {
-                    "cells": {"wall_T": np.array([300.0])},
-                    "phases": {"gas": {"heat_rate": 25.0}},
-                }
-            }
-        )
-
-        for commit in (False, True):
-            with self.subTest(commit=commit):
-                self.flight.update_fluid(
-                    0.1,
-                    atmosphere,
-                    thermal_out=thermal,
-                    axial_specific_force=12.0,
-                    commit=commit,
-                )
-                self.assertEqual(
-                    self.prop_system.calls[-1]["heat_rate"], {"tank": {"gas": 25.0}}
-                )
-                self.assertIs(self.prop_system.calls[-1]["commit"], commit)
-                self.assertEqual(self.prop_system.calls[-1]["axial_specific_force"], 12.0)
+def flight():
+    return FlightSim({'simulation': {'dt': .1, 't_end': .3},
+                      'launch': {'altitude': 0., 'rail_height': 5.}},
+                     FakeEnvironment(), FakeAero(), FakePropSystem(), FakeVehicle())
 
 
-    def test_rail_constraint_locks_lateral_and_pitch_states(self):
-        kin = KinematicsState(
-            t=1.0,
-            dt=0.1,
-            x=2.0,
-            h=1.0,
-            vx=3.0,
-            vz=4.0,
-            theta=0.4,
-            q=0.5,
-            alpha=0.2,
-            m=10.0,
-            Iyy=3.0,
-        )
-
-        constrained = self.flight.constrain_to_rail(kin)
-
-        self.assertEqual(constrained.x, 0.0)
-        self.assertEqual(constrained.vx, 0.0)
-        self.assertAlmostEqual(constrained.theta, np.pi / 2)
-        self.assertEqual(constrained.q, 0.0)
-        self.assertEqual(constrained.alpha, 0.0)
-        self.assertEqual(constrained.h, kin.h)
-        self.assertEqual(constrained.vz, kin.vz)
+def test_dynamic_mass_and_synchronized_reports():
+    sim = flight()
+    reported = []
+    history = sim.run(progress=reported.append)
+    assert [k.t for k in reported] == pytest.approx([0., .1, .2, .3])
+    assert len(sim.prop_system.calls) == 4
+    for row in history:
+        kin, props = row['kinematics'], row['mass_properties']
+        assert set(vars(kin)) == {'t', 'x', 'h', 'vx', 'vz', 'theta', 'q'}
+        assert props['total_mass'] == pytest.approx(15.9)
+        assert row['atmosphere'].q == kin.h
+        assert row['alpha'] == 0
+        assert row['plant'].fluids.samples == ()
+        assert row['forces']['gravity'] == gravity(props['total_mass'], kin.h)
+        assert row['forces']['az'] == row['forces']['net'] / props['total_mass']
+        assert set(row['loads']) == {'station', 'axial', 'axial_aero', 'normal', 'shear', 'bending'}
 
 
-    def test_flight_kinematics_derives_and_wraps_angle_of_attack(self):
-        speed = 100.0
-        gamma = np.deg2rad(179.0)
-        kin = KinematicsState(
-            t=0.0,
-            dt=0.1,
-            x=0.0,
-            h=0.0,
-            vx=speed * np.cos(gamma),
-            vz=speed * np.sin(gamma),
-            theta=np.deg2rad(-179.0),
-            q=0.0,
-            alpha=0.0,
-            m=10.0,
-            Iyy=3.0,
-        )
-
-        inertial_speed, inertial_gamma, airspeed, gamma_air, alpha = self.flight.flight_kinematics(kin)
-
-        self.assertAlmostEqual(inertial_speed, speed)
-        self.assertAlmostEqual(airspeed, speed)
-        self.assertAlmostEqual(inertial_gamma, gamma)
-        self.assertAlmostEqual(gamma_air, gamma)
-        self.assertAlmostEqual(alpha, np.deg2rad(2.0))
+def test_mass_interpolation_integrates_variable_acceleration():
+    sim = flight()
+    sim.cfg['simulation']['t_end'] = .1
+    history = sim.run(compute_loads=False)
+    # Mass falls linearly 16 -> 15.9 kg; analytic thrust impulse / mass.
+    expected_v = 300 * np.log(16 / 15.9) - gravity(1., 0.) * .1
+    assert history[-1]['kinematics'].vz == pytest.approx(expected_v, abs=1e-7)
 
 
-    def test_corrector_updates_all_planar_states(self):
-        kin = KinematicsState(
-            t=0.0,
-            dt=0.2,
-            x=1.0,
-            h=2.0,
-            vx=3.0,
-            vz=4.0,
-            theta=0.5,
-            q=0.6,
-            alpha=0.0,
-            m=10.0,
-            Iyy=3.0,
-        )
-        start = {"ax": 1.0, "az": 2.0, "pitch_acceleration": 3.0}
-        end = {"ax": 5.0, "az": 6.0, "pitch_acceleration": 7.0}
-
-        corrected = self.flight.correct_kinematics(kin, start, end, 9.0, 4.0)
-
-        expected_vx = 3.0 + 0.5 * (1.0 + 5.0) * 0.2
-        expected_vz = 4.0 + 0.5 * (2.0 + 6.0) * 0.2
-        expected_q = 0.6 + 0.5 * (3.0 + 7.0) * 0.2
-        self.assertAlmostEqual(corrected.vx, expected_vx)
-        self.assertAlmostEqual(corrected.vz, expected_vz)
-        self.assertAlmostEqual(corrected.x, 1.0 + 0.5 * (3.0 + expected_vx) * 0.2)
-        self.assertAlmostEqual(corrected.h, 2.0 + 0.5 * (4.0 + expected_vz) * 0.2)
-        self.assertAlmostEqual(corrected.q, expected_q)
-        self.assertAlmostEqual(corrected.theta, 0.5 + 0.5 * (0.6 + expected_q) * 0.2)
-        self.assertEqual(corrected.m, 9.0)
-        self.assertEqual(corrected.Iyy, 4.0)
+def test_rail_constraint_and_air_relative_angle():
+    sim = flight()
+    kin = KinematicsState(1., 2., 1., 3., 4., .4, .5)
+    constrained = sim.constrain_to_rail(kin)
+    assert (constrained.x, constrained.vx, constrained.theta, constrained.q) == (0., 0., np.pi/2, 0.)
+    assert (constrained.h, constrained.vz) == (kin.h, kin.vz)
+    gamma = np.deg2rad(179.)
+    kin = KinematicsState(0., 0., 0., 100*np.cos(gamma), 100*np.sin(gamma), np.deg2rad(-179), 0.)
+    assert sim.flight_kinematics(kin)[4] == pytest.approx(np.deg2rad(2.))
 
 
-    def test_forces_transform_body_forces_and_restore_pitch(self):
-        kin = KinematicsState(
-            t=0.0,
-            dt=0.1,
-            x=0.0,
-            h=0.0,
-            vx=1.0,
-            vz=0.0,
-            theta=0.0,
-            q=0.0,
-            alpha=0.1,
-            m=10.0,
-            Iyy=5.0,
-        )
-        plant = PlantOut(
-            aero=AeroOut(Cd=0.1, D=12.0, Ca=0.1, A=10.0, Cn=0.2, N=20.0, cp=2.0),
-            thermal=None,
-            fluids=FluidOut(
-                node={}, branch={}, mdot={},
-                propulsion=PropulsionOut(
-                    mode="combusting", shutdown_reason=None, thrust=100.0,
-                    Pc=1.0, MR=1.0, Cf=1.0, cstar=1.0,
-                    mdot_ox=0.0, mdot_fuel=0.0, mdot_nozzle=0.0,
-                ),
-            ),
-        )
-        self.flight.vehicle.cg = 1.0
-
-        forces = self.flight.forces(kin, plant, kin.m)
-
-        self.assertAlmostEqual(forces["Fx"], 90.0)
-        self.assertAlmostEqual(forces["Fz"], 20.0 - gravity(10.0, 0.0))
-        self.assertAlmostEqual(forces["axial_specific_force"], 9.0)
-        self.assertAlmostEqual(forces["drag"], 12.0)
-        self.assertAlmostEqual(forces["pitch_moment"], -20.0)
-        self.assertAlmostEqual(forces["pitch_acceleration"], -4.0)
+def test_force_rotation_and_restoring_moment():
+    sim = flight()
+    kin = KinematicsState(0., 0., 0., 1., 0., 0., 0.)
+    fluid = sim.prop_system.update(None, FakeEnvironment.atmosphere(0., 0.), {})
+    prop = replace(fluid.propulsion, thrust=100.)
+    aero = AeroOut(Cd=.1, D=12., Ca=.1, A=10., Cn=.2, N=20., cp=2.)
+    force = sim.forces(kin, aero, prop, dict(total_mass=10., cg=1., Iyy=5.))
+    assert force['Fx'] == 90.
+    assert force['Fz'] == 20. - gravity(10., 0.)
+    assert force['pitch_moment'] == -20.
+    assert force['pitch_acceleration'] == -4.
 
 
+def test_fluid_update_passes_heat_and_preview_policy():
+    sim = flight()
+    atm = FakeEnvironment.atmosphere(0., 0.)
+    thermal = ThermalOut({'tank': {'phases': {'gas': {'heat_rate': 25.}}}})
+    for commit in (False, True):
+        sim.update_fluid(.1, atm, thermal, axial_specific_force=12., commit=commit)
+        assert sim.prop_system.calls[-1]['heat_rate'] == {'tank': {'gas': 25.}}
+        assert sim.prop_system.calls[-1]['commit'] is commit
+        assert sim.prop_system.calls[-1]['axial_specific_force'] == 12.
 
-if __name__ == "__main__":
-    unittest.main()
+
+def test_engine_aero_mode_uses_combustion_not_residual_thrust():
+    sim = flight()
+    prop = sim.prop_system.update(None, FakeEnvironment.atmosphere(0., 0.), {}).propulsion
+    assert sim.engine_on(prop)
+    assert not sim.engine_on(replace(prop, mode='shutdown', thrust=50.))

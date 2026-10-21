@@ -88,7 +88,7 @@ class FluidNetwork:
         self.retry_diagnostics = []
         self.nodes = {k: self._make_node(k, v) for k, v in nodes.items()}
         self.node_definitions = {k: node.definition for k, node in self.nodes.items()}
-        self.heat_sources = {key: build_heat_source(definition.get('thermal'), definition.get('geometry'))
+        self.heat_sources = {key: build_heat_source(definition.get('thermal'))
                              for key, definition in self.node_definitions.items()}
         for key, source in self.heat_sources.items():
             if not isinstance(source, NoHeating) and not isinstance(self.nodes[key], (VolumeComponent, JunctionComponent)):
@@ -695,9 +695,9 @@ class FluidNetwork:
                     target.events = []
                     if initial_time is not None:
                         target.time = float(initial_time)
-                    target._advance_interval(duration, bcs, heat_rate, axial_specific_force)
+                    samples = target._advance_interval(duration, bcs, heat_rate, axial_specific_force)
                     target.retry_diagnostics.extend(failures)
-                    return target._output()
+                    return dict(target._output(), samples=tuple(samples))
                 except Exception as error:
                     initializing = target._initializing
                     diagnostic = f'Fluid network failed at t={target.time:g}: {error}'
@@ -724,10 +724,16 @@ class FluidNetwork:
                 target.close()
 
     def _advance_interval(self, duration, bcs, heat_rate, axial_specific_force):
+        samples = []
+        def capture():
+            samples.append((self.time, self._output()))
+
         self._initializing = self.y is None
         if self.frozen:
+            capture()
             self.time += duration
-            return
+            capture()
+            return samples
         changed = ((bcs is not None and bcs != self.bcs)
                    or (heat_rate is not None and heat_rate != self.heat_rate)
                    or axial_specific_force != self.axial_specific_force)
@@ -753,8 +759,12 @@ class FluidNetwork:
             self._accept()
         elif self.session is None or changed:
             self._new_session()
+            # The coupling history starts at the previously accepted output.
+            # New endpoint BCs must not jump flight thrust at the interval start.
+            capture()
             self._settle_initial_events()
         self._initializing = False
+        capture()
         endpoint, start_events = self.time + duration, len(self.events)
         while self.time < endpoint and not self.frozen:
             step = self.session.advance(endpoint)
@@ -764,16 +774,20 @@ class FluidNetwork:
                 events.extend(key for key, event in self._event_specs(self.time, self.y, self.ydot).items()
                               if event.coincident)
                 self._accept()  # Record the limiting pre-event state as well.
+                capture()
                 # SUNDIALS reports coincident roots; mode preparation handles
                 # downstream phase/chamber changes caused by those events.
                 self._apply_events(events)
                 self._accept()
                 self._settle_initial_events()
+                capture()
                 if len(self.events) - start_events > self.options['max_events']:
                     raise RuntimeError('Event budget exceeded; possible mode cycling')
         if self.frozen:
             self.time = endpoint
         self._accept()
+        capture()
+        return samples
 
     def _output(self):
         snapshot = self.state.as_dict()

@@ -20,26 +20,26 @@ def flight(tilt=None):
 @pytest.mark.parametrize("theta", [0., math.pi / 2, 2.1])
 def test_thrust_direction_moment_and_fluid_head(tilt, theta):
     sim = flight(tilt)
-    kin = KinematicsState(1., .1, 0., 10., 0., 10., theta, 0., 0., 10., 3.)
+    kin = KinematicsState(1.0, 0.0, 10.0, 0.0, 10.0, theta, 0.0)
     fluids = sim.prop_system.update(None, sim._atmosphere(kin), {})
     # Retain thrust torque even when the aero cutoff is active.
     aero = AeroOut(Cd=float("nan"), D=0., ballistic_coast=True)
-    result = sim.forces(kin, PlantOut(aero, None, fluids), kin.m)
+    result = sim.forces(kin, aero, fluids.propulsion, dict(total_mass=10., cg=sim.vehicle.cg, Iyy=3.))
     thrust = fluids.propulsion.thrust
     delta = math.radians(tilt or 0.)
     assert result['Fx'] == pytest.approx(thrust * math.cos(theta + delta), abs=1e-12)
     assert result['Fz'] + result['gravity'] == pytest.approx(thrust * math.sin(theta + delta), abs=1e-12)
     assert result['pitch_moment'] == pytest.approx(-.75 * thrust * math.sin(delta))
-    assert result['pitch_acceleration'] == pytest.approx(result['pitch_moment'] / kin.Iyy)
-    assert result['axial_specific_force'] == pytest.approx(thrust * math.cos(delta) / kin.m)
+    assert result['pitch_acceleration'] == pytest.approx(result['pitch_moment'] / 3.)
+    assert result['axial_specific_force'] == pytest.approx(thrust * math.cos(delta) / 10.)
     assert math.hypot(result['thrust_axial'], result['thrust_normal']) == pytest.approx(thrust)
 
     # Aerodynamic and engine moments add; shutdown removes only the engine term.
     aero = AeroOut(Cd=.2, D=2., A=2., N=4., cp=1.5)
-    result = sim.forces(kin, PlantOut(aero, None, fluids), kin.m)
+    result = sim.forces(kin, aero, fluids.propulsion, dict(total_mass=10., cg=sim.vehicle.cg, Iyy=3.))
     assert result['pitch_moment'] == pytest.approx(result['thrust_moment'] - 2.)
     fluids.propulsion = replace(fluids.propulsion, thrust=0., mode='shutdown')
-    result = sim.forces(kin, PlantOut(aero, None, fluids), kin.m)
+    result = sim.forces(kin, aero, fluids.propulsion, dict(total_mass=10., cg=sim.vehicle.cg, Iyy=3.))
     assert result['pitch_moment'] == -2.
     assert result['thrust_axial'] == result['thrust_normal'] == result['thrust_moment'] == 0.
 

@@ -482,7 +482,7 @@ def prepare(settings, model):
         parts = key.split('.')
         field = {'Tmin': 'min_temperature', 'Pmin': 'min_pressure'}.get(parts[-1])
         if len(parts) != 3 or parts[0] != 'tank' or field is None or field not in cfg.get('tanks', {}).get(parts[1], {}):
-            raise ValueError(f'Hard constraint {key!r} requires a limit in its flight-config owner')
+            raise ValueError(f'Hard constraint {key!r} requires a limit in evaluation_overrides or the base config')
     tracking = settings.get('soft_penalties', {}).get('tank_pressure_tracking', {})
     for tank in tracking:
         if cfg.get('tanks', {}).get(tank, {}).get('type') != 'propellant':

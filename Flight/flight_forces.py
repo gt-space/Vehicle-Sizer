@@ -6,7 +6,7 @@ import numpy as np
 from scipy.interpolate import PchipInterpolator
 
 from AeroTables import DragModel
-from simulation_types import AeroOut, AtmosState, KinematicsState
+from simulation_types import AeroOut, AtmosState
 from diagnostics.errors import LookupBoundsError
 
 
@@ -75,6 +75,21 @@ class Aero:
 
     def _at(self, interpolator: PchipInterpolator, mach: float, alpha_deg: float) -> float:
         return float(np.interp(mach, self.mach, interpolator(alpha_deg)))
+
+    def stability_derivatives(self, mach, alpha, cg):
+        """Return dCN/dalpha and dCm/dalpha from the same interpolants as flight."""
+        mach, angle, _ = self._coordinates(mach, alpha)
+        cn = self._at(self._cn, mach, angle)
+        cp = self._at(self._cp, mach, angle) * INCH
+        cn_alpha = self._at(self._cn.derivative(), mach, angle) * 180 / np.pi
+        cp_alpha = self._at(self._cp.derivative(), mach, angle) * INCH * 180 / np.pi
+        diameter = self.candidate['omld'] * INCH
+        return cn_alpha, -(cn_alpha * (cp - cg) + cn * cp_alpha) / diameter
+
+    def fin_normal_force_derivative(self, mach):
+        if not hasattr(self, '_fin_cna'):
+            self._fin_cna = self.model.parts_table(self.candidate, self.nose)['fin_cna']
+        return float(np.interp(mach, self.mach, self._fin_cna))
 
     def coefficients(
         self,
@@ -163,13 +178,13 @@ class Aero:
 
     def evaluate(
         self,
-        kin: KinematicsState,
         atm: AtmosState,
+        alpha: float,
         engine_on: bool,
     ) -> AeroOut:
         """Return aerodynamic coefficients and forces at the current state."""
 
-        cd, ca, cn, cp = self.coefficients(atm.Ma, kin.alpha, engine_on)
+        cd, ca, cn, cp = self.coefficients(atm.Ma, alpha, engine_on)
         scale = atm.q * self.reference_area
         return AeroOut(
             Cd=cd,

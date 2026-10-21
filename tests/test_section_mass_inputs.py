@@ -30,12 +30,14 @@ class SectionMassTests(unittest.TestCase):
                 if hasattr(section, 'dry_mass'):
                     self.assertAlmostEqual(section.dry_mass.sum(), 12)
 
-    def test_stringers_use_configured_linear_mass(self):
+    def test_stringers_use_explicit_mass(self):
         from Vehicle.sections.InterTank import InterTank
         cfg = load_config('Configs/flight_pressure_fed_regulator.yaml')
-        sec = InterTank(cfg, .3, 3.6e-5, stringer_unit_mass=2.7)
+        sec = InterTank(cfg, .3, 3.6e-5)
         sec.get_mass()
-        self.assertAlmostEqual(sec.mass.sum(), 2.7 * .3 * cfg['inter_tank']['stringer_count'])
+        sec.mass_inputs = {'masses': {'stringers': 2.7}}
+        sec.apply_mass_inputs()
+        self.assertAlmostEqual(sec.mass.sum(), 2.7)
 
     def test_pressure_fos_allowable_and_endcap_multiplier(self):
         cfg = load_config('Configs/flight_pressure_fed_regulator.yaml')

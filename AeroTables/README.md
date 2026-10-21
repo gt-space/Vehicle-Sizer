@@ -258,3 +258,21 @@ moments and exposes any error in the fin slope.
 * Four fins, hexagonal sharp section, nozzle exit flush with the boattail
   exit plane, no protuberances.
 * The design ranges are the team's. Keep the files off public repositories.
+
+
+## Canard shock/expansion table
+
+`canardmodel.h5` stores the combined shock/expansion normal-force coefficient
+before finite-wing corrections, for gamma = 1.4. Regenerate it from the existing
+reference solver with:
+
+```sh
+.venv/bin/python -m AeroTables.generate_canardmodel
+```
+
+The grid covers Mach 2.8–10 in 0.01 increments and absolute incidence 0–25 degrees
+in 0.05-degree increments (`angle_rad` stores radians). Flight loads it once and
+uses bilinear interpolation, restoring the incidence sign. Requests outside this
+grid use the original solver, retaining its domain checks. Low-Mach lift,
+finite-wing corrections, blending, drag, and command selection are unchanged.
+Regenerate the table whenever the reference shock/expansion equations change.

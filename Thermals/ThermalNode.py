@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 import numpy as np
 
-from simulation_types import AtmosState, FluidOut, KinematicsState
+from simulation_types import AtmosState, FluidOut
 from . import heating
 from .ThermalCircuit import solve_lumped_wall
 
@@ -188,7 +188,7 @@ class ThermalNode:
 
     def _external_heat_flux(
         self,
-        kin: KinematicsState,
+        alpha: float,
         atm: AtmosState,
         wall_T: np.ndarray,
     ) -> np.ndarray:
@@ -201,13 +201,14 @@ class ThermalNode:
                 wall_T,
             )
         x = np.maximum(self.section.station, 0.5 * self.section.dx)
-        return heating.get_body_heating(x, wall_T, atm, abs(kin.alpha))
+        return heating.get_body_heating(x, wall_T, atm, abs(alpha))
 
     def trial(
         self,
-        kin: KinematicsState,
+        dt: float,
         atm: AtmosState,
         fluid_out: FluidOut,
+        alpha: float = 0.0,
         wall_T_guess: np.ndarray | None = None,
         axial_specific_force: float = 0.0,
     ) -> Dict[str, Any]:
@@ -215,7 +216,7 @@ class ThermalNode:
         if guess.shape != (self.n,):
             raise ValueError(f"Thermal node {self.id!r} received the wrong wall-temperature shape")
 
-        heat_flux = self._external_heat_flux(kin, atm, guess)
+        heat_flux = self._external_heat_flux(alpha, atm, guess)
         heat_aero = heat_flux * self.oml_area
         (
             fluid_G,
@@ -244,7 +245,7 @@ class ThermalNode:
             where=total_G > 0.0,
         )
         wall_T = solve_lumped_wall(
-            kin.dt,
+            dt,
             self.wall_T,
             self.shell_mass * self.specific_heat,
             heat_aero,
@@ -256,7 +257,7 @@ class ThermalNode:
         )
         heat_to_fluid = fluid_G * (wall_T - fluid_T)
 
-        recovery_T = heating.get_recovery_temperature(atm, abs(kin.alpha))
+        recovery_T = heating.get_recovery_temperature(atm, abs(alpha))
         external_h = np.abs(heat_flux) / np.maximum(np.abs(recovery_T - guess), 1.0)
         exposed_area = self.oml_area + np.where(internal_h > 0.0, self.internal_area, 0.0)
         characteristic_length = (self.shell_mass / self.density) / exposed_area

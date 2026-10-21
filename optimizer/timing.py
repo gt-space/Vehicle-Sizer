@@ -55,10 +55,8 @@ def install():
     from Fluids.FluidBranch import FluidBranch, RegulatorComponent, NozzleComponent
     timing = Timings()
     methods = {
-        FlightSim: {'run': 'flight.total', '_attempt_segment': lambda self, kin, fluids, *args, **kwargs:
-                    'flight.powered_attempt' if fluids.propulsion.mode == 'combusting' else 'flight.coast_attempt',
-                    'step_coupled': 'flight.fluid_thermal_coupling', 'trial_aero': 'flight.aero',
-                    'correct_kinematics': 'flight.kinematic_corrector'},
+        FlightSim: {'run': 'flight.total', 'rhs': 'flight.rk_rhs',
+                    'step_coupled': 'flight.fluid_thermal_coupling', 'trial_aero': 'flight.aero'},
         Loads: {'evaluate': 'flight.loads'},
         Environment: {'__init__': 'setup.atmosphere', 'atmosphere': 'flight.atmosphere'},
         Vehicle: {'__init__': 'setup.vehicle', 'build': 'setup.vehicle_build',

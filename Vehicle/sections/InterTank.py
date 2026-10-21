@@ -1,16 +1,11 @@
 import numpy as np
 from .Section import Section
-from ..utils import distribute as dist
 
 class InterTank(Section):
 
-    def __init__(self, cfg: dict, length: float, stiffness_EI: float,
-                 *, stringer_unit_mass: float):
+    def __init__(self, cfg: dict, length: float, stiffness_EI: float):
 
         super().__init__(cfg)
-        self.stringer_unit_mass = float(stringer_unit_mass)
-        if not np.isfinite(self.stringer_unit_mass) or self.stringer_unit_mass < 0:
-            raise ValueError("stringer_unit_mass must be finite and nonnegative")
         self.length = length
         self.set_grid()
         self.stiffness_input = float(stiffness_EI)
@@ -25,9 +20,8 @@ class InterTank(Section):
 
     def get_mass(self):
         self.shell_mass = np.zeros(self.n)
-        # Unit mass is per stringer; count comes from inter_tank.stringer_count.
-        mass = self.stringer_unit_mass * self.length * self.stringer_count
-        self.mass = dist.uniform(mass, self.n)
+        # All intertank hardware mass is supplied through the section mass inputs.
+        self.mass = np.zeros(self.n)
 
     def get_EI(self):
         self.EI = np.full(self.n, self.stiffness_input)

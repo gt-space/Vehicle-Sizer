@@ -23,7 +23,7 @@ def main():
         if 'mode' not in d or not d.get('success'):
             continue
         reports[file.stem] = d
-        dt = d['coupling_dt'] if d['mode'] == 'decoupled' else d['baseline_dt']
+        dt = d['coupling_dt'] if d['mode'] != 'baseline' else d['baseline_dt']
         groups[(d['mode'], dt, d.get('rk_rtol'))].append(d)
     baseline = groups[('baseline', 2., 1e-7)]
     baseline_time = statistics.median(d['wall_s'] for d in baseline)
@@ -34,7 +34,7 @@ def main():
         d = runs[-1]
         m = d['metrics']
         wall = statistics.median(x['wall_s'] for x in runs)
-        flight = statistics.median(x['timings']['flight']['wall_s'] if mode == 'baseline'
+        flight = statistics.median(x['timings']['flight']['wall_s'] if mode != 'decoupled'
                                     else x['harness']['flight_wall_s'] for x in runs)
         rows.append(dict(mode=mode, dt=dt, rtol=rtol, runs=len(runs), wall_s=wall,
                          min_wall_s=min(x['wall_s'] for x in runs), max_wall_s=max(x['wall_s'] for x in runs),
@@ -62,8 +62,8 @@ def main():
     text = [
         'Pressure-fed regulator, RAP_HWM wind enabled: isolated decoupling experiment',
         '',
-        'Original = current working-tree FlightSim, including pre-existing user edits.',
-        'Both modes: history enabled, structural loads/plots/constraint assessment disabled.',
+        'Original and experimental harness = archived commit 5b84921; production = current split solver.',
+        'All modes: history enabled, structural loads/plots/constraint assessment disabled.',
         'Times include model setup and simulation, plus small CSV serialization overhead;',
         'they exclude Python/import startup. Runs use fresh processes and execute serially.',
         'Lightweight identical timing wrappers are installed in both modes.',
@@ -111,14 +111,15 @@ def main():
                  '', 'Reproduction:',
                  '.venv/bin/python examples/benchmark_decoupling.py --mode baseline --output outputs/decoupling_benchmark/new_baseline.json',
                  '.venv/bin/python examples/benchmark_decoupling.py --mode decoupled --coupling-dt 0.5 --flight-max-step 2 --output outputs/decoupling_benchmark/new_decoupled.json',
-                 '.venv/bin/python -m pytest -q examples/test_decoupled_harness.py',
+                 'Run the baseline/harness commands above from archived commit 5b84921.',
+                 '.venv/bin/python examples/benchmark_decoupling.py --mode production --coupling-dt 0.5 --flight-max-step 2 --output outputs/decoupling_benchmark/production.json',
                  '.venv/bin/python examples/summarize_decoupling.py'])
     (OUT/'report.txt').write_text('\n'.join(text)+'\n')
 
     fig, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True)
     selected = [r for r in rows if r['rtol']==1e-7 and ((r['mode']=='baseline' and r['dt'] in (2., .1, .05))
-                or (r['mode']=='decoupled' and r['dt'] in (2., .5, .25)))]
-    labels = [f"{'Original' if r['mode']=='baseline' else 'Decoupled'}\n{r['dt']:g} s" for r in selected]
+                or (r['mode'] in ('decoupled', 'production') and r['dt'] in (2., .5, .25)))]
+    labels = [f"{'Original' if r['mode']=='baseline' else r['mode'].capitalize()}\n{r['dt']:g} s" for r in selected]
     colors = ['#63738a' if r['mode']=='baseline' else '#168b8a' for r in selected]
     ax = axes[0,0]
     bars = ax.bar(labels, [r['wall_s'] for r in selected], color=colors)

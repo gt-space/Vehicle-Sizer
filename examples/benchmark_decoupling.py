@@ -1,8 +1,4 @@
-"""Isolated runtime/accuracy experiment; does not modify production modules on disk.
-
-Run each case in a fresh process, with identical history/load settings. The
-baseline is the current working-tree solver, not a historical git revision.
-"""
+"""Benchmark the production solver; pre-refactor baseline/harness live at 5b84921."""
 from __future__ import annotations
 
 import argparse
@@ -37,17 +33,7 @@ def instrument():
             started = time.perf_counter()
             try:
                 value = original(*args, **kwargs)
-                if label == 'flight_attempt' and value[0] is None:
-                    key = 'event_retry_' + value[3]['event']
-                    records[label][key] = records[label].get(key, 0) + 1
                 return value
-            except Exception as error:
-                if label == 'flight_attempt':
-                    key = 'exception_' + type(error).__name__
-                    records[label][key] = records[label].get(key, 0) + 1
-                    if 'corrector failed to converge' in str(error):
-                        records[label]['corrector_failures'] = records[label].get('corrector_failures', 0) + 1
-                raise
             finally:
                 rec = records[label]
                 rec['calls'] += 1
@@ -57,7 +43,7 @@ def instrument():
         (FluidNetwork, {'update': 'fluid_update', 'restore': 'fluid_restore',
                         '_new_session': 'fluid_restart', '_checkpoint': 'fluid_checkpoint'}),
         (IdaSession, {'advance': 'idas_advance', 'consistent': 'idas_consistency'}),
-        (FlightSim, {'run': 'flight', '_attempt_segment': 'flight_attempt',
+        (FlightSim, {'run': 'flight', 'rhs': 'flight_rhs',
                      'trial_aero': 'aero', 'step_coupled': 'fluid_thermal'}),
     ):
         for method, label in methods.items():
@@ -74,25 +60,19 @@ def summarize(result):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--mode', choices=['baseline', 'decoupled'], required=True)
+    p.add_argument('--mode', choices=['production'], required=True)
     p.add_argument('--config', default='Configs/flight_pressure_fed_regulator.yaml')
-    p.add_argument('--coupling-dt', type=float, default=2.0)
-    p.add_argument('--baseline-dt', type=float)
+    p.add_argument('--coupling-dt', type=float, default=0.5)
     p.add_argument('--rtol', type=float, default=1e-7)
-    p.add_argument('--flight-max-step', type=float, default=0.25)
+    p.add_argument('--flight-max-step', type=float, default=2.0)
     p.add_argument('--output', type=Path, required=True)
     args = p.parse_args()
     cfg = load_config(ROOT / args.config)
     cfg['environment']['wind']['enabled'] = True
-    if args.baseline_dt is not None:
-        cfg['simulation']['dt'] = args.baseline_dt
     records = instrument()
-    if args.mode == 'decoupled':
-        from decoupled_flight_harness import DecoupledFlight
-        DecoupledFlight.coupling_dt = args.coupling_dt
-        DecoupledFlight.rk_rtol = args.rtol
-        DecoupledFlight.rk_max_step = args.flight_max_step
-        simulation.FlightSim = DecoupledFlight
+    cfg['simulation']['dt'] = args.coupling_dt
+    cfg.setdefault('advanced', {}).setdefault('flight', {}).update(
+        rtol=args.rtol, max_step=args.flight_max_step)
     last = [0.0]
     def progress(kin):
         now = time.perf_counter()
@@ -101,7 +81,7 @@ def main():
             last[0] = now
     args.output.parent.mkdir(parents=True, exist_ok=True)
     report = dict(mode=args.mode, config=args.config, wind=True,
-                  coupling_dt=args.coupling_dt if args.mode == 'decoupled' else None,
+                  coupling_dt=args.coupling_dt,
                   baseline_dt=cfg['simulation']['dt'], rk_rtol=args.rtol,
                   rk_max_step=args.flight_max_step, compute_loads=False,
                   record_history=True, python=sys.version,
@@ -122,7 +102,7 @@ def main():
         for state in samples:
             kin, fluid = state['kinematics'], state['plant'].fluids
             rows.append([kin.t, kin.h, kin.x, kin.vx, kin.vz, kin.theta, kin.q,
-                         kin.m, kin.Iyy, fluid.propulsion.thrust, state['atmosphere'].q])
+                         state['mass_properties']['total_mass'], state['mass_properties']['Iyy'], fluid.propulsion.thrust, state['atmosphere'].q])
         report['metrics']['impulse_Ns'] = float(np.trapezoid(
             [row[9] for row in rows], [row[0] for row in rows]))
         shutdown = next((s for s in result.history if 'before_event' in s

@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from simulation_types import AtmosState, FluidOut, KinematicsState, ThermalOut
+from simulation_types import AtmosState, FluidOut, ThermalOut
 from Vehicle.Material import MaterialProperties
 from .ThermalNode import DryNodeModel, ThermalNode, WetNodeModel
 from Thermals.heat_sources import thermal_model
@@ -77,9 +77,10 @@ class ThermalNetwork:
 
     def trial(
         self,
-        kin: KinematicsState,
+        dt: float,
         atm: AtmosState,
         fluid_out: FluidOut,
+        alpha: float = 0.0,
         previous: Optional[ThermalOut] = None,
         axial_specific_force: float = 0.0,
     ) -> ThermalOut:
@@ -89,10 +90,11 @@ class ThermalNetwork:
             if previous is not None:
                 guess = previous.node[node_id]["cells"]["wall_T"]
             output[node_id] = node.trial(
-                kin,
+                dt,
                 atm,
                 fluid_out,
-                guess,
+                alpha=alpha,
+                wall_T_guess=guess,
                 axial_specific_force=axial_specific_force,
             )
         return ThermalOut(node=output)

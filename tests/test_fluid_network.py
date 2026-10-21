@@ -856,3 +856,26 @@ def test_shared_gas_flow_rejects_invalid_sizing_and_classifies_runtime_trials():
     assert type(invalid.value) is ValueError
     with pytest.raises(TrialDomainError):
         _gas_flux(1e5, -1., {'T': 300., 'R': 287., 'gamma': 1.4})
+
+
+def test_interval_snapshots_are_detached_and_include_both_event_sides():
+    from test_prop_system import build, config
+    from simulation_types import AtmosState
+    cfg = config('pump_fed', 'regulator')
+    cfg['simulation'] = {'fluid_solve_post_shutdown': False}
+    atm = AtmosState(288., 101325., 1.2, 1.8e-5, 340., 0., 0.)
+    with build(cfg, tabled=True) as prop:
+        first = prop.update(None, atm, {})
+        out = prop.update(.2, atm, {})
+        times = [t for t, _ in out.samples]
+        assert times == sorted(times) and times[0] == 0. and times[-1] == .2
+        shutdown = next(e for e in out.events if e['event'] == 'shutdown')
+        sides = [f for t, f in out.samples if t == shutdown['time_s']]
+        assert sides[0].propulsion.mode == 'combusting'
+        assert sides[-1].propulsion.mode == 'shutdown'
+        assert all(not f.samples for _, f in out.samples)
+        stored = out.samples[0][1].node[prop.chamber_id]['P']
+        first.node[prop.chamber_id]['P'] = -1.
+        prop.update(.1, atm, {})
+        assert out.samples[0][1].node[prop.chamber_id]['P'] == stored
+        assert out.samples[-1][0] == .2

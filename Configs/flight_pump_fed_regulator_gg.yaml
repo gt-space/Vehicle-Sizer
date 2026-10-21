@@ -2,8 +2,6 @@ advanced:
   flight:
     trial_max_retries: 10
     trial_min_dt: 1.0e-06
-    corrector_max_iterations: 10
-    corrector_tolerance: 1.0e-08
     event_max_iterations: 50
     event_time_tolerance: 1.0e-06
   fluid_network:
@@ -90,10 +88,12 @@ prop_system:
   ox_inj_stiffness: 0.24
   regulator:
     FUEL_REGULATOR:
+      eol_temperature: 180.0 # K; pressurant temperature used for feed sizing
       capacity_factor: 8.0
       collapse_factor: 1.2
       tank_id: fuel_tank
     OX_REGULATOR:
+      eol_temperature: 180.0 # K; pressurant temperature used for feed sizing
       capacity_factor: 8.0
       collapse_factor: 1.4
       tank_id: ox_tank
@@ -143,6 +143,19 @@ prop_system:
       stiffness: 0.2
   template: Configs/templates/gas_generator_regulator.yaml
   thrust_target: 11153.487228542977
+roll:
+  fin_cant: 0.00174533 # radians
+canards:
+  section: canard_bay
+  offset_m: 0.16666666666666666 # force application point aft of section start [m]
+  root_chord_m: 0.25
+  max_deflection_deg: 10.0
+  control_start_time_s: 0.0
+  net_roll_multiplier: 0.5
+  aero:
+    cd0: 0.2
+    oswald: 0.4
+    deflection_drag_multiplier: 2.0
 property_models:
   combustion:
     source: table
@@ -167,8 +180,6 @@ simulation:
   t_end: 600.0
 tanks:
   fuel_tank:
-    min_temperature: 80.0
-    min_pressure: 68947.57293168
     thermal:
       model: None
     ellipse_ratio: 1.75
@@ -179,8 +190,6 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   ox_tank:
-    min_temperature: 80.0
-    min_pressure: 68947.57293168
     thermal:
       model: None
     ellipse_ratio: 1.75
@@ -191,12 +200,10 @@ tanks:
     type: propellant
     ullage_factor: 1.1
   press_tank:
-    min_pressure: 4136854.3759008
     thermal:
       model: None
     design_pressure: 26316668.628870275
     ellipse_ratio: 1.75
-    min_temperature: 180.0
     outer_diameter: 0.2794
     type: pressurant
     construction: copv
@@ -230,13 +237,13 @@ vehicle:
       mounting: 2.0
       fitting: 1.0
   - length: 0.3302
+    name: canard_bay
     type: inter_tank
     masses:
       stringers: 0.88
       clamshell: 1.63
       components: 4.0
       canards: 3.0
-    stringer_unit_mass: 0.0
     stiffness_EI: 3270000.0
   - tank_id: ox_tank
     type: prop_tank
@@ -247,7 +254,6 @@ vehicle:
       stringers: 0.74
       clamshell: 1.38
       components: 4.0
-    stringer_unit_mass: 0.0
     stiffness_EI: 3270000.0
   - tank_id: fuel_tank
     type: prop_tank
@@ -261,14 +267,7 @@ vehicle:
       tubing_solenoids: 3.0
       thrust_structure: 3.0
       pumps: 12.0
-    stringer_unit_mass: 0.0
     stiffness_EI: 3270000.0
   - type: fin_can
     masses:
       hardware: 2.0
-constraints:
-  max_length_to_diameter: 35.0
-  min_stability_calibers: 2.0
-  max_aoa_deg: 15.0
-  goal_apogee: 150000.0
-  max_burn_duration: 75.0

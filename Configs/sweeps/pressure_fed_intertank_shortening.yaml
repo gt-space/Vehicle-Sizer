@@ -1,0 +1,38 @@
+# Shorten each IT independently; explicit masses and stiffness remain fixed.
+base_config: Configs/flight_pressure_fed_regulator.yaml
+sweep:
+  mode: one_at_a_time
+  workers: 3
+  max_cases: 13
+  ignore_wind: false
+  parameters:
+    IT1_canard_bay:
+      path: vehicle.sections[3].length
+      offset: true
+      values:
+      - -0.05
+      - -0.1
+      - -0.15
+      - -0.2
+    IT2_propellant_intertank:
+      path: vehicle.sections[5].length
+      offset: true
+      values:
+      - -0.05
+      - -0.1
+      - -0.15
+      - -0.2
+    IT3_engine_bay:
+      path: vehicle.sections[7].length
+      offset: true
+      values:
+      - -0.05
+      - -0.1
+      - -0.15
+      - -0.2
+outputs:
+  record_history: true
+  history_detail: standard
+  compute_loads: false
+  record_structural_profiles: false
+  directory: outputs/sensitivity/pressure_fed_intertank_shortening

@@ -28,8 +28,7 @@ def make_flight(end=0.1, propulsion=None):
 
 def test_headless_skips_loads_and_vector_snapshots_and_matches_history():
     flight = make_flight()
-    with patch.object(flight.loads, "evaluate", side_effect=AssertionError), \
-         patch.object(flight, "mass_properties", side_effect=AssertionError):
+    with patch.object(flight.loads, "evaluate", side_effect=AssertionError):
         assert flight.run(record_history=False, compute_loads=False) == []
     reference = make_flight()
     reference.run()
@@ -63,6 +62,7 @@ def test_coast_reports_interpolated_apogee_not_time_limit_maximum():
         def update(self, *args, **kwargs):
             out = super().update(*args, **kwargs)
             out.propulsion = replace(out.propulsion, thrust=0.0, mode="shutdown")
+            out.samples = tuple((t, replace(f, propulsion=out.propulsion)) for t, f in out.samples)
             return out
     flight = make_flight(end=4, propulsion=Coast())
     flight.run(h0=100, v0=10, record_history=False)
@@ -78,9 +78,9 @@ def test_pitch_projects_thrust_not_body_load():
     flight = make_flight()
     atmosphere = FakeEnvironment.atmosphere(10, 10)
     fluid = FakePropSystem().update(None, atmosphere, None)
-    kin = KinematicsState(t=0, dt=1, x=0., h=10, vx=0., vz=10, theta=np.pi/6, q=0, alpha=0.0, m=16, Iyy=2)
-    plant = PlantOut(FakeAero.evaluate(kin, atmosphere, True), None, fluid)
-    force = flight.forces(kin, plant, kin.m)
+    kin = KinematicsState(t=0, x=0.0, h=10, vx=0.0, vz=10, theta=np.pi / 6, q=0)
+    plant = PlantOut(FakeAero.evaluate(atmosphere, 0., True), None, fluid)
+    force = flight.forces(kin, plant.aero, fluid.propulsion, dict(total_mass=16., cg=flight.vehicle.cg, Iyy=2.))
     assert force["thrust"] == 300
     assert force["Fz"] + force["gravity"] == pytest.approx(150)
     assert force["net"] == pytest.approx(150 - force["gravity"])

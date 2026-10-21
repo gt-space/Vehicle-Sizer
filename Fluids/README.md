@@ -104,6 +104,14 @@ events rather than stored separately. Consumers retaining complete history appen
 the returned events; the flight history already does this. Saved output snapshots
 remain valid after later advances, previews, and restores.
 
+Every update also returns `samples`: ordered `(time, snapshot)` pairs at the
+start, both sides of events, and the endpoint. Repeated times preserve a jump;
+coincident events settle before the final right-hand snapshot. Failed attempts
+discard their sample list. `PropSystem` converts these to detached `FluidOut`
+leaves with empty `samples`, using the same conversion as its final output and
+shutdown `before` record. These samples drive flight interpolation; they are
+not optional and do not contain every internal IDAS step.
+
 Assessments use immutable `constraint_records` throughout network and propulsion
 outputs; monitors return the same record type. Margin and measurement time roll
 back together. Initial assessment records are seeded once, instead of being
@@ -114,3 +122,14 @@ are identified once during propulsion construction.
 Sizing and runtime gas restrictions use the same `compressible_mass_flux()`
 equation. Invalid physical inputs raise `ValueError` for sizing; the runtime
 adapter classifies them as recoverable `TrialDomainError` solver inputs.
+
+Pressurant-feed sizing uses `eol_temperature` (kelvin) on each regulator under
+`prop_system.regulator.<branch_id>`. The representative sizing temperature is the
+mean of initial pressurant temperature and this EOL value. Automatically sized
+bang-bang feeds use the same field in their branch configuration. Explicitly
+supplied CdA values do not require it. Tank acceptance limits do not affect sizing.
+
+The regulator flight configs keep sizing inputs only. Their corresponding
+optimizer configs supply mission/design constraints and tank `min_temperature` /
+`min_pressure` limits through `evaluation_overrides`. Standalone flights retain
+physical model validity checks without applying optimizer acceptance limits.

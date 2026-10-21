@@ -194,15 +194,16 @@ def test_design_aoa_limit_does_not_control_model_domain():
     from test_simulation_api import make_flight
     flight = make_flight()
     flight.cfg['constraints'] = {'max_aoa_deg': 5.0}
-    start = KinematicsState(t=0, dt=0.1, x=0, h=10, vx=0, vz=10,
-                            theta=np.pi / 2, q=0, alpha=np.deg2rad(10), m=10, Iyy=1)
+    start = KinematicsState(t=0, x=0, h=10, vx=0, vz=10, theta=np.pi / 2, q=0)
     end = replace(start, t=0.1, h=11)
-    assert flight.check_commit(start, end) is None
     from simulation_types import SimResult
+    from diagnostics.errors import TrialDomainError
     result = SimResult()
     atmosphere = flight._atmosphere(end)
-    flight._record_extrema(result, atmosphere, flight.trial_aero(end, atmosphere, True), end)
+    alpha = np.deg2rad(10)
+    aero = flight.trial_aero(atmosphere, alpha, True)
+    flight._record_extrema(result, atmosphere, aero, alpha, flight.vehicle.cg)
     assert result.max_aoa_deg == pytest.approx(10)
     assert result.constraint_records == {}
-    with pytest.raises(ModelDomainExceeded, match='AoA'):
-        flight.check_commit(start, replace(end, alpha=np.deg2rad(16)))
+    with pytest.raises(TrialDomainError, match='AoA'):
+        flight.trial_aero(atmosphere, np.deg2rad(16), True)

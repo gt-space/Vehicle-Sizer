@@ -165,7 +165,13 @@ class Vehicle:
     def _build_sections(self) -> list:
         sections = []
         used_tanks = set()
+        names = set()
         for definition in self._resolve_section_masses():
+            name = definition.get("name")
+            if name is not None:
+                if not isinstance(name, str) or not name.strip() or name in names:
+                    raise ValueError("Vehicle section names must be nonempty and unique")
+                names.add(name)
             section_type = definition["type"]
             if section_type == "nosecone":
                 section = Nosecone(self.cfg)
@@ -191,13 +197,13 @@ class Vehicle:
                     self.cfg,
                     length=definition["length"],
                     stiffness_EI=definition["stiffness_EI"],
-                    stringer_unit_mass=definition["stringer_unit_mass"],
                 )
             elif section_type == "fin_can":
                 section = FinCan(self.cfg, self.engine)
             else:
                 raise ValueError(f"Unknown vehicle section type {section_type!r}")
             section.stiffness_input = definition.get("stiffness_EI")
+            section.name = name
             section.mass_inputs = definition
             sections.append(section)
 

@@ -81,7 +81,7 @@ def config():
                 branch_id: {
                     "duty_cycle": 0.5,
                     "collapse_factor": 1.2,
-                    "min_temperature": 220.0,
+                    "eol_temperature": 220.0,
                     "pressure_band": 68_947.6,
                     "initially_open": True,
                 }

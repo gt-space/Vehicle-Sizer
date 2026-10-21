@@ -56,20 +56,20 @@ def flight(env, aero=None):
 
 def test_air_relative_mach_pressure_and_alpha():
     sim = flight(WindEnvironment(5, 3))
-    kin = KinematicsState(0, .1, 0, 50, 0, 100, math.pi / 2, 0, 0, 10, 3)
-    kin = sim._kinematic_boundary(kin, False)
+    kin = KinematicsState(0, 0, 50, 0, 100, math.pi / 2, 0)
     atm = sim._atmosphere(kin)
-    assert kin.alpha == pytest.approx(math.pi / 2 - math.atan2(97, -5))
+    assert sim._flight_kinematics(kin)[4] == pytest.approx(math.pi / 2 - math.atan2(97, -5))
     assert atm.Ma == pytest.approx(math.hypot(-5, 97) / 340)
     assert atm.q == pytest.approx(.5 * 1.2 * (5**2 + 97**2))
     # The branch retains a constrained zero-AoA rail model.
-    assert sim._kinematic_boundary(kin, True).alpha == 0
+    prop = sim.prop_system.update(None, atm, {}).propulsion
+    assert sim.evaluate_state(kin, prop, sim.mass_properties(), True)[3] == 0
 
 
 class NormalAero(FakeAero):
     @staticmethod
-    def evaluate(kinematics, atmosphere, engine_on):
-        return AeroOut(Cd=0, D=0, N=atmosphere.q * kinematics.alpha * .01, cp=1.5)
+    def evaluate(atmosphere, alpha, engine_on):
+        return AeroOut(Cd=0, D=0, N=atmosphere.q * alpha * .01, cp=1.5)
 
 
 def test_wind_changes_trajectory_and_history():
@@ -80,7 +80,7 @@ def test_wind_changes_trajectory_and_history():
         kin, wind = state["kinematics"], state["wind"]
         assert wind["wind_x"] == 5
         assert wind["airspeed"] == pytest.approx(math.hypot(kin.vx - 5, kin.vz))
-        assert kin.alpha == pytest.approx(kin.theta - wind["gamma_air"])
+        assert state["alpha"] == pytest.approx(kin.theta - wind["gamma_air"])
         assert state["atmosphere"].Ma == pytest.approx(wind["airspeed"] / 340)
 
 

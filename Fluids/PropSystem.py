@@ -471,14 +471,13 @@ class PropSystem:
                 )
                 eol_pressure = downstream_pressure / critical_ratio
                 pressure_mid = 0.5 * (start_pressure + eol_pressure)
-                tank_definition = getattr(self, "tank_definitions", {}).get(source_node.get("tank_id"), {})
-                min_temperature = float(tank_definition.get("min_temperature", branch.get("min_temperature", float("nan"))))
+                eol_temperature = float(branch.get("eol_temperature", float("nan")))
                 collapse_factor = float(branch["collapse_factor"])
-                if not isfinite(min_temperature) or not isfinite(collapse_factor) or min_temperature <= 0.0 or collapse_factor <= 0.0:
+                if not isfinite(eol_temperature) or not isfinite(collapse_factor) or eol_temperature <= 0.0 or collapse_factor <= 0.0:
                     raise ValueError(
-                        f"Pressurant branch '{branch_id}' sizing inputs must be positive"
+                        f"Pressurant branch '{branch_id}' eol_temperature and collapse_factor must be finite and positive"
                     )
-                temperature_mid = 0.5 * (start_temperature + min_temperature)
+                temperature_mid = 0.5 * (start_temperature + eol_temperature)
                 gas = self.fluid_properties.state_pt(
                     circuit["fluid"],
                     pressure_mid,
@@ -666,21 +665,23 @@ class PropSystem:
             commit=commit,
             axial_specific_force=axial_specific_force,
         )
-        events = result["events"]
+        return self._to_fluid_out(result)
+
+    def _to_fluid_out(self, result) -> FluidOut:
+        """Use the same conversion for endpoints and one-sided event snapshots."""
+        events = tuple(dict(event) for event in result.get("events", ()))
         for event in events:
             if "before" in event:
-                before = event["before"]
-                event["before"] = FluidOut(
-                    node=before["node"], branch=before["branch"], mdot=before["mdot"],
-                    propulsion=self._propulsion_output(before))
+                event["before"] = self._to_fluid_out(event["before"])
         return FluidOut(
             node=result["node"],
             branch=result["branch"],
             mdot=result["mdot"],
             propulsion=self._propulsion_output(result),
             events=events,
-            event_counts=result["event_counts"],
-            constraint_records=result["constraint_records"],
+            event_counts=result.get("event_counts", {}),
+            constraint_records=result.get("constraint_records", {}),
+            samples=tuple((t, self._to_fluid_out(sample)) for t, sample in result.get("samples", ())),
         )
 
     def checkpoint(self):

@@ -11,9 +11,11 @@ from Vehicle.sections.Nosecone import Nosecone
 class SectionStiffnessTests(unittest.TestCase):
     def test_intertank_uses_input_independent_of_mass(self):
         cfg = load_config('Configs/flight_pressure_fed_regulator.yaml')
-        for unit_mass in [1, 100]:
-            section = InterTank(cfg, .3, 123456, stringer_unit_mass=unit_mass)
+        for mass in [1, 100]:
+            section = InterTank(cfg, .3, 123456)
+            section.mass_inputs = {"masses": {"stringers": mass}}
             section.get_mass()
+            section.apply_mass_inputs()
             section.build_stiffness()
             np.testing.assert_array_equal(section.EI, np.full(section.n, 123456))
 

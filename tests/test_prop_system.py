@@ -18,7 +18,7 @@ def config(feed='pressure_fed', control='regulator'):
     cfg = fixtures.config()
     prop = cfg['prop_system']
     prop['template'] = f'Configs/templates/{feed}_{control}.yaml'
-    prop['regulator'] = {leg + '_REGULATOR': dict(capacity_factor=2., collapse_factor=1.2, min_temperature=220.)
+    prop['regulator'] = {leg + '_REGULATOR': dict(capacity_factor=2., collapse_factor=1.2, eol_temperature=220.)
                          for leg in ('OX', 'FUEL')}
     if feed == 'pump_fed':
         prop['pumps'] = {key: dict(drive='electric', pressure_rise_pa=1e6, gas_CdA=1e-5,
@@ -75,6 +75,40 @@ def test_template_is_required_and_topology_not_selected_by_feed_flags():
     del cfg['prop_system']['template']
     with pytest.raises(ValueError,match='template'):
         prepare_design_inputs(cfg)[0]
+
+
+def test_regulator_sizing_uses_eol_temperature_not_constraint_limit():
+    cfg = config()
+    def areas():
+        with build(cfg) as prop:
+            return {key: value['CdA'] for key, value in prop.branch_definitions.items()
+                    if value['component'] == 'regulator'}
+    original = areas()
+    cfg['tanks']['press_tank']['min_temperature'] = 100.
+    assert areas() == original
+    cfg['prop_system']['regulator']['OX_REGULATOR']['eol_temperature'] = 250.
+    updated = areas()
+    assert updated['OX_REGULATOR'] != original['OX_REGULATOR']
+    assert updated['FUEL_REGULATOR'] == original['FUEL_REGULATOR']
+
+
+def test_eol_temperature_does_not_create_tank_constraint():
+    from diagnostics.constraints import PropulsionAssessment
+    with build(config()) as prop:
+        assessment = PropulsionAssessment(prop)
+        assert 'tank.press_tank.Tmin' not in assessment.initial
+
+
+@pytest.mark.parametrize('temperature', [None, 0., -1., float('nan'), float('inf')])
+def test_regulator_requires_valid_eol_temperature(temperature):
+    cfg = config()
+    regulator = cfg['prop_system']['regulator']['OX_REGULATOR']
+    if temperature is None:
+        del regulator['eol_temperature']
+    else:
+        regulator['eol_temperature'] = temperature
+    with pytest.raises(ValueError, match='eol_temperature'):
+        build(cfg)
 
 
 @pytest.mark.parametrize('control,expected', [('regulator', 1e-4), ('bang_bang', 1e-5), ('blowdown', 1e-7)])

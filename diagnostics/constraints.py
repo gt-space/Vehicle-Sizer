@@ -65,11 +65,6 @@ class PropulsionAssessment:
             definition = propulsion.tank_definitions.get(tank_id, {})
             limits = {name: float(definition[name]) for name in ('min_temperature', 'min_pressure')
                       if name in definition}
-            if node.get('component') == 'pressurant_tank' and 'min_temperature' not in limits:
-                values = [float(b['min_temperature']) for b in propulsion.branch_definitions.values()
-                          if b['from'] == node_id and 'min_temperature' in b]
-                if values:
-                    limits['min_temperature'] = max(values)
             if any(not isfinite(v) or v <= 0 for v in limits.values()):
                 raise ValueError('Tank constraint limits must be finite and positive')
             self.tank_limits[node_id] = (tank_id, limits)

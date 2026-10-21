@@ -48,6 +48,12 @@ failure_policy:
   rate_limit: 0.2
   repeated_limit: 3
 evaluation_overrides:
+  tanks.fuel_tank.min_temperature: 80.0
+  tanks.fuel_tank.min_pressure: 68947.57293168
+  tanks.ox_tank.min_temperature: 80.0
+  tanks.ox_tank.min_pressure: 68947.57293168
+  tanks.press_tank.min_pressure: 4136854.3759008
+  tanks.press_tank.min_temperature: 180.0
   constraints.max_length_to_diameter: 35.0
   constraints.min_stability_calibers: 2.0
   constraints.max_aoa_deg: 15.0

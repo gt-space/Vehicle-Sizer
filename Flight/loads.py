@@ -27,6 +27,18 @@ class Loads:
         cumulative = running[index] + density[index]*offset + .5*slope[index]*offset**2
         return np.diff(cumulative)
 
+    def add_point_load(self, forces, station, force):
+        """Add equivalent loads at adjacent centers, preserving force and first moment."""
+        x, edges = self.vehicle.station, self.vehicle.cell_edges
+        if not np.isfinite(station) or not edges[0] <= station <= edges[-1]:
+            raise ValueError("Point load station must lie within the vehicle grid")
+        if not np.isfinite(force) or len(x) < 2:
+            raise ValueError("Point loads require a finite force and at least two stations")
+        right = int(np.clip(np.searchsorted(x, station), 1, len(x) - 1))
+        fraction = (station - x[right - 1]) / (x[right] - x[right - 1])
+        forces[right - 1] += force * (1 - fraction)
+        forces[right] += force * fraction
+
     def get_axial_forces(self, q: float, mach: float, alpha: float, engine_on: bool) -> np.ndarray:
         """Aerodynamic force per cell, with base drag applied exactly once aft."""
         distribution = self.aero.axial_distribution(mach, alpha, engine_on)
@@ -66,7 +78,7 @@ class Loads:
         return np.cumsum(effective_force)
 
     def get_normal_load(self, q: float, M: float, alpha: float, *,
-                        thrust_normal: float = 0.0, aerodynamic: bool = True):
+                        thrust_normal: float = 0.0, aerodynamic: bool = True, point_loads=()):
 
         v = self.vehicle
         x = v.station
@@ -77,17 +89,9 @@ class Loads:
             cell_cn = self._cell_coefficients(distribution["x"], distribution["dcn_dx"])
             N = q * self.ref_area * cell_cn
         if thrust_normal:
-            interface = float(v.engine_start_station)
-            if not np.isfinite(interface) or not v.cell_edges[0] <= interface < v.cell_edges[-1]:
-                raise ValueError("Engine thrust interface must lie within the vehicle grid")
-            if len(x) < 2:
-                raise ValueError("Lateral thrust loads require at least two vehicle stations")
-            # Equivalent forces at adjacent centers preserve both the point
-            # force and its exact moment about COM before inertial relief.
-            right = int(np.clip(np.searchsorted(x, interface), 1, len(x) - 1))
-            fraction = (interface - x[right - 1]) / (x[right] - x[right - 1])
-            N[right - 1] += thrust_normal * (1.0 - fraction)
-            N[right] += thrust_normal * fraction
+            self.add_point_load(N, v.engine_start_station, thrust_normal)
+        for station, axial, normal in point_loads:
+            self.add_point_load(N, station, normal)
 
         a_trans = np.sum(N) / v.total_mass
         r = x - v.cg
@@ -107,7 +111,7 @@ class Loads:
         axial_force: float,
         thrust: float,
         engine_on: bool,
-        *, aerodynamic: bool = True, thrust_normal: float = 0.0,
+        *, aerodynamic: bool = True, thrust_normal: float = 0.0, point_loads=(),
     ) -> dict[str, np.ndarray]:
         """Evaluate synchronized aerodynamic, inertial, and internal loads."""
 
@@ -115,8 +119,10 @@ class Loads:
             axial_aero = self.get_axial_forces(q, mach, alpha, engine_on)
         else:
             axial_aero = np.zeros_like(self.vehicle.station)
+        for station, axial, normal in point_loads:
+            self.add_point_load(axial_aero, station, axial)
         normal = self.get_normal_load(q, mach, alpha, thrust_normal=thrust_normal,
-                                      aerodynamic=aerodynamic)
+                                      aerodynamic=aerodynamic, point_loads=point_loads)
         if not np.isclose(axial_aero.sum(), axial_force, rtol=1e-7, atol=1e-7):
             raise ValueError("Distributed axial force disagrees with flight CA force")
         axial = self.get_axial_load(axial_aero, thrust)

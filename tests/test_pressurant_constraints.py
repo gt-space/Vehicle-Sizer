@@ -26,6 +26,7 @@ def build(cfg, tanks):
 @pytest.fixture(scope="module")
 def example():
     cfg = support.config()
+    cfg['tanks']['press_tank']['min_temperature'] = 220.
     tanks = dict(zip(("ox_tank", "fuel_tank", "press_tank"), support.tanks()))
     return cfg, tanks, build(cfg, tanks)
 
@@ -47,7 +48,7 @@ def explicit_template(example, split=False):
     if split:
         tanks["fuel_supply"] = GeometrySource(GasGeometry(.025))
         cfg["prop_system"]["initial_conditions"]["fuel_supply"] = dict(fluid="Nitrogen", T=290)
-        cfg["tanks"]["fuel_supply"] = dict(type="pressurant", design_pressure=20e6)
+        cfg["tanks"]["fuel_supply"] = dict(type="pressurant", design_pressure=20e6, min_temperature=220.)
         template["nodes"]["fuel_supply"] = dict(component="pressurant_tank", tank_id="fuel_supply")
         template["circuits"]["second_gas"] = dict(prop="pressurant", tank_id="fuel_supply")
         template["branches"]["FUEL_BANGBANG"].update(circuit="second_gas", **{"from": "fuel_supply"})

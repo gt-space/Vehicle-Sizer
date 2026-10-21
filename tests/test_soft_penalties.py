@@ -86,7 +86,7 @@ def test_length_fraction_extrema_use_same_samples_as_calibers():
     result = SimResult()
     for cp in (3., 4., 2.5):
         FlightSim._record_extrema(flight, result, SimpleNamespace(q=1.), SimpleNamespace(cp=cp),
-                               SimpleNamespace(alpha=0., t=0.))
+                               0., 2.)
     assert result.min_stability_length_fraction == .05
     assert result.max_stability_length_fraction == .2
     assert result.min_stability_calibers == 1.
