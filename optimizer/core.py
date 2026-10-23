@@ -140,6 +140,11 @@ def soft_penalties(result, settings):
     """Soft preferences never change feasibility; missing measurements cannot pass."""
     policy = settings.get('soft_penalties', {})
     penalties = {}
+    if 'downrange' in policy:
+        spec = policy['downrange']
+        if not result.apogee_reached or not isfinite(result.final_x):
+            raise ValueError('Downrange penalty requires a completed flight and finite displacement')
+        penalties['downrange'] = spec['weight'] * max(0., abs(result.final_x) - spec['target_m']) / spec['scale_m']
     for tank, spec in policy.get('tank_pressure_tracking', {}).items():
         record = result.pressure_tracking.get(tank)
         if record is None or not isfinite(record['duration_s']) or record['duration_s'] <= 0:
@@ -490,8 +495,12 @@ def prepare(settings, model):
     if 'max_q' in settings.get('soft_penalties', {}) and 'max_q' in limits:
         raise ValueError('max_q cannot be both a hard constraint and a soft preference in this policy')
     policy = settings.get('soft_penalties', {})
-    if set(policy) - {'tank_pressure_tracking', 'max_q', 'stability_length_fraction'}:
+    if set(policy) - {'tank_pressure_tracking', 'max_q', 'stability_length_fraction', 'downrange'}:
         raise ValueError('Unknown soft penalty')
+    if 'downrange' in policy:
+        spec = policy['downrange']
+        if any(not isfinite(spec[k]) or spec[k] < 0 for k in ('weight', 'target_m')) or not isfinite(spec['scale_m']) or spec['scale_m'] <= 0:
+            raise ValueError('Invalid downrange penalty')
     for spec in tracking.values():
         for key in ('weight', 'pressure_scale_pa', 'time_scale_s'):
             value = spec[key]

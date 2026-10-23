@@ -11,12 +11,24 @@ from scipy.special import ellipe
 from diagnostics.errors import TrialDomainError
 
 
+LEADING_EDGE_DEG = 74.0
+
+
 @cache
 def _shock_expansion_table():
     with h5py.File(Path(__file__).resolve().parents[1] / 'AeroTables/canardmodel.h5', 'r') as table:
         return RegularGridInterpolator(
             (table['mach'][:], table['angle_rad'][:]), table['cn'][:],
             bounds_error=False, fill_value=np.nan)
+
+
+@cache
+def _roll_table():
+    with h5py.File(Path(__file__).resolve().parents[1] / 'AeroTables/canardmodel.h5', 'r') as table:
+        group = table['roll']
+        return (group['mach'][:], group['alpha_rad'][:], group['deflection_rad'][:],
+                group['coefficient'][:], float(group.attrs['aspect_ratio']),
+                float(group.attrs['leading_edge_deg']))
 
 
 @dataclass
@@ -67,8 +79,9 @@ def resolve_station(config, vehicle):
 
 
 class CanardAerodynamics:
-    def __init__(self, cfg):
+    def __init__(self, cfg, *, shock_lookup=None):
         self.cfg = cfg
+        self.shock_lookup = shock_lookup
         for key, default in (("cd0", .01), ("oswald", .8), ("deflection_drag_multiplier", 1.)):
             value = float(cfg.get(key, default))
             if not np.isfinite(value) or value < 0 or (key == "oswald" and value == 0):
@@ -76,7 +89,7 @@ class CanardAerodynamics:
 
     def surface_geometry(self, root, radius):
         # Size the paired triangular canards from a 74-degree leading edge.
-        span = root / np.tan(radians(74.0))
+        span = root / np.tan(radians(LEADING_EDGE_DEG))
         standoff = 0.020
         area = 0.5 * root * span
         ybar = 4 * span / (3 * pi)
@@ -100,7 +113,7 @@ class CanardAerodynamics:
         TR-970 (pointed-tip limit), and TN-1183 (supersonic leading edge).
         """
         beta = np.sqrt(mach**2 - 1)
-        m = beta / np.tan(radians(74.0))
+        m = beta / np.tan(radians(LEADING_EDGE_DEG))
         elliptic_e = ellipe(np.maximum(0, 1 - m**2))
         return np.where(m < 1, pi * beta * geometry.aspect_ratio /
                         (8 * elliptic_e), 1.0)
@@ -133,6 +146,22 @@ class CanardAerodynamics:
         coefficient = np.min(0.5 * (cp + cm) * np.cos(command), axis=0)
         return np.maximum(coefficient, 0)
 
+    def roll_curve(self, geometry, mach, body_alpha, angle_limit):
+        """Return a tabulated response curve, or None for the live-model fallback."""
+        ms, alphas, angles, coefficients, aspect_ratio, sweep = _roll_table()
+        alpha = abs(body_alpha)
+        if (not ms[0] <= mach <= ms[-1] or not alphas[0] <= alpha <= alphas[-1]
+                or angle_limit > angles[-1] or sweep != LEADING_EDGE_DEG
+                or not np.isclose(geometry.aspect_ratio, aspect_ratio, rtol=1e-12, atol=0.)):
+            return None
+        i = max(0, min(len(ms)-2, int(np.searchsorted(ms, mach)-1)))
+        j = max(0, min(len(alphas)-2, int(np.searchsorted(alphas, alpha)-1)))
+        u = (mach-ms[i]) / (ms[i+1]-ms[i])
+        v = (alpha-alphas[j]) / (alphas[j+1]-alphas[j])
+        curve = ((1-u)*(1-v)*coefficients[i,j] + u*(1-v)*coefficients[i+1,j]
+                 + (1-u)*v*coefficients[i,j+1] + u*v*coefficients[i+1,j+1])
+        return angles, curve
+
     def drag(self, geometry, mach, command, body_alpha, count, q):
         area = geometry.area
         cd0 = self.cfg.get("cd0", 0.01)
@@ -157,7 +186,8 @@ class CanardAerodynamics:
         """Interpolate pressure-derived CN; retain the live solver outside the table."""
         mach, angle = np.broadcast_arrays(np.asarray(mach, dtype=float),
                                           np.asarray(angle, dtype=float))
-        cn = _shock_expansion_table()((mach.ravel(), np.abs(angle).ravel()))
+        lookup = self.shock_lookup if self.shock_lookup is not None else _shock_expansion_table()
+        cn = lookup((mach.ravel(), np.abs(angle).ravel()))
         cn *= np.sign(angle.ravel())
         outside = np.isnan(cn)
         if np.any(outside):
@@ -254,22 +284,22 @@ class CanardSystem:
             self.geometry, mach, angle_limit, alpha))
         maximum_torque = torque_scale * maximum_lift
         demand = abs(open_moment)
-        command = 0.0
-        saturated = False
-        if active and demand > 0:
-            if maximum_torque > 0:
-                angles = np.linspace(0, angle_limit, 240)
-                lift_curve = self.aero.roll_coefficient(
-                    self.geometry, mach, angles, alpha)
-                required = demand / torque_scale
-                if required >= maximum_lift:
-                    command = angle_limit
-                    saturated = required > maximum_lift
-                else:
-                    command = float(np.interp(required, lift_curve, angles))
-            else:
-                saturated = True
-        return command, maximum_torque, saturated
+        # Keep authority/saturation exact and avoid constructing unused curves.
+        if not active or demand == 0:
+            return 0., maximum_torque, False
+        if maximum_torque <= 0:
+            return 0., maximum_torque, True
+        required = demand / torque_scale
+        if required >= maximum_lift:
+            return angle_limit, maximum_torque, required > maximum_lift
+        response = self.aero.roll_curve(self.geometry, mach, alpha, angle_limit)
+        if response is None:
+            angles = np.linspace(0, angle_limit, 240)
+            lift_curve = self.aero.roll_coefficient(self.geometry, mach, angles, alpha)
+        else:
+            angles, lift_curve = response
+        command = min(angle_limit, float(np.interp(required, lift_curve, angles)))
+        return command, maximum_torque, False
 
     def evaluate(self, atmosphere, alpha, forcing_moment, active, cg):
         q = atmosphere.q

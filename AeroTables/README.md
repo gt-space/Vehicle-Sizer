@@ -260,19 +260,42 @@ moments and exposes any error in the fin slope.
 * The design ranges are the team's. Keep the files off public repositories.
 
 
-## Canard shock/expansion table
+## Canard aerodynamic tables
 
-`canardmodel.h5` stores the combined shock/expansion normal-force coefficient
-before finite-wing corrections, for gamma = 1.4. Regenerate it from the existing
-reference solver with:
+Generate the tables directly (no existing HDF5 file is required):
 
 ```sh
-.venv/bin/python -m AeroTables.generate_canardmodel
+.venv/bin/python AeroTables/canardmodel.py
 ```
 
-The grid covers Mach 2.8–10 in 0.01 increments and absolute incidence 0–25 degrees
-in 0.05-degree increments (`angle_rad` stores radians). Flight loads it once and
-uses bilinear interpolation, restoring the incidence sign. Requests outside this
-grid use the original solver, retaining its domain checks. Low-Mach lift,
-finite-wing corrections, blending, drag, and command selection are unchanged.
-Regenerate the table whenever the reference shock/expansion equations change.
+Edit `ROOT_CHORD_M`, `BODY_DIAMETER_M`, and the grid arrays at the top of the
+script to specify the reference geometry and coverage. The shared model in
+`Flight/canards.py` derives a triangular canard with a 74-degree leading edge.
+Changing root chord scales that shape without changing its aspect ratio; area,
+body correction, count, radial arm, and axial position remain runtime inputs.
+Arbitrary sweep/taper changes require extending the aerodynamic model first.
+
+`canardmodel.h5` contains:
+
+- Root `mach`, `angle_rad`, `cn`: shock/expansion normal coefficient for gamma 1.4,
+  before finite-wing correction. Mach 2.8–10 at 0.01 spacing, local incidence
+  0–25 degrees at 0.05-degree spacing. Signed incidence is restored at runtime.
+- `roll/{mach,alpha_rad,deflection_rad,coefficient}`: forward roll response over
+  Mach 0–10 at 0.025 spacing, absolute vehicle AoA 0–15 degrees at 0.1-degree
+  spacing, and command deflection 0–10 degrees at 0.05-degree spacing. Attributes
+  record the reference dimensions, aspect ratio, and leading-edge angle.
+
+Flight caches the datasets per process. For unsaturated commands, it interpolates
+four neighboring Mach/AoA curves and inverts the resulting coefficient curve.
+Maximum authority and saturation are still calculated with the live model, so
+inactive and saturated commands need no roll table. Unsupported aspect ratio,
+sweep, or grid coverage falls back to the live response calculation. The existing
+shock solver remains the fallback outside its own table. Body forces, achieved
+roll torque, and stability derivatives continue using the shared aerodynamic model.
+
+Generation first builds fresh shock data, injects its interpolator into the shared
+model, then generates finite, monotonic roll curves. It writes a temporary file
+and replaces the output only after validation succeeds. Regenerate explicitly
+when equations, supported shape, or coverage changes; simulations never regenerate
+or resize tables automatically. The forward dataset is about 97 MB in memory and
+is loaded only when an unsaturated command needs it.

@@ -65,10 +65,10 @@ class IntegratingThermal:
         self.commits.append(self.temperature)
 
 
-def flight(monkeypatch, *, cutoff=float('inf'), rail=0., thermal=None, aero=None):
+def flight(monkeypatch, *, cutoff=float('inf'), rail=0., thermal=None, aero=None, inclination=90.):
     monkeypatch.setattr(import_module('Flight.Flight'), 'gravity', lambda mass, height: mass)
     return FlightSim({'simulation': {'dt': 1., 't_end': 1., 'fluid_solve_post_shutdown': False},
-                      'launch': {'altitude': 0., 'rail_height': rail}},
+                      'launch': {'altitude': 0., 'rail_height': rail, 'rail_inclination_deg': inclination}},
                      FakeEnvironment(), aero or ZeroAlpha(), TimedPropulsion(cutoff),
                      ConstantVehicle(), thermal)
 
@@ -259,3 +259,40 @@ def test_adaptive_flight_converges_without_additional_fluid_solves(monkeypatch):
     assert abs(tight.result.final_velocity - np.e) < abs(loose.result.final_velocity - np.e)
     assert tight.result.final_altitude == pytest.approx(np.e - 1, abs=2e-9)
     assert len(loose.prop_system.calls) == len(tight.prop_system.calls) == 2
+
+
+@pytest.mark.parametrize('inclination', [85., 90., 95.])
+def test_tilted_rail_release_matches_analytic_motion(monkeypatch, inclination):
+    angle = np.deg2rad(inclination)
+    length, speed = 2., 10.
+    sim = flight(monkeypatch, rail=length, inclination=inclination)
+    accepted = []
+    module = import_module('Flight.Flight')
+    advance = module.advance_flight
+    def capture(*args, **kwargs):
+        states = advance(*args, **kwargs)
+        accepted.extend(states)
+        return states
+    monkeypatch.setattr(module, 'advance_flight', capture)
+    sim.run(v0=speed, compute_loads=False)
+    acceleration = 10. - np.sin(angle)  # T/m = 10, gravity = 1, no aero forces.
+    time = (np.sqrt(speed**2 + 2 * acceleration * length) - speed) / acceleration
+    released = next(kin for kin, _, event in accepted if event == 'rail_release')
+    assert sim.result.rail_exit_time == pytest.approx(time, abs=1e-7)
+    assert released.x == pytest.approx(length * np.cos(angle), abs=1e-7)
+    assert released.h == pytest.approx(length * np.sin(angle), abs=1e-7)
+    assert released.vx == pytest.approx((speed + acceleration * time) * np.cos(angle), abs=1e-7)
+    assert released.vz == pytest.approx((speed + acceleration * time) * np.sin(angle), abs=1e-7)
+    for kin, on_rail, _ in accepted:
+        if on_rail:
+            assert kin.theta == pytest.approx(angle)
+            assert kin.q == 0.
+    remaining = 1. - time
+    assert sim.result.final_x == pytest.approx(
+        released.x + released.vx * remaining + .5 * 10. * np.cos(angle) * remaining**2, abs=1e-6)
+
+
+@pytest.mark.parametrize('inclination', [0., 180., -5., float('nan'), float('inf')])
+def test_invalid_rail_inclination(monkeypatch, inclination):
+    with pytest.raises(ValueError, match='rail_inclination_deg'):
+        flight(monkeypatch, inclination=inclination)

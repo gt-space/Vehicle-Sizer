@@ -39,6 +39,11 @@ class FlightSim:
         thermal: Optional[Any] = None,
     ) -> None:
         self.cfg = cfg
+        self.rail_angle = math.radians(float(cfg.get('launch', {}).get('rail_inclination_deg', 90.0)))
+        if not math.isfinite(self.rail_angle) or not 0 < self.rail_angle < math.pi:
+            raise ValueError('launch.rail_inclination_deg must be finite and between 0 and 180 degrees')
+        self.rail_sin = math.sin(self.rail_angle)
+        self.rail_cos = 0.0 if self.rail_angle == math.pi / 2 else math.cos(self.rail_angle)
         self.env = env
         self.aero = aero
         self.prop_system = prop_system
@@ -280,7 +285,7 @@ class FlightSim:
         if not aero.ballistic_coast and not math.isfinite(cp):
             raise ValueError("Nonphysical or nonfinite flight force state")
 
-        # Positive tilt rotates thrust counterclockwise from the body axis.
+        # Positive tilt rotates counterclockwise from the body axis
         thrust_axial = thrust * math.cos(self.thrust_tilt)
         thrust_normal = thrust * math.sin(self.thrust_tilt)
         body_axial = thrust_axial - axial_aero
@@ -293,7 +298,7 @@ class FlightSim:
 
         axial_specific_force = body_axial / mass # needed for fluid head pressure
 
-        # Thrust line passes through the existing engine/airframe interface.
+
         thrust_moment = (-(self.vehicle.engine_start_station - cg) * thrust_normal
                          if thrust_normal else 0.0)
         aero_moment = 0.0 if aero.ballistic_coast else -aero.N * (cp - cg)
@@ -358,15 +363,13 @@ class FlightSim:
             ),
         )
 
-    @staticmethod
-    def constrain_to_rail(kin: KinematicsState) -> KinematicsState:
-        return replace(
-            kin,
-            x=0.0,
-            vx=0.0,
-            theta=np.pi / 2,
-            q=0.0,
-        )
+    def constrain_to_rail(self, kin: KinematicsState) -> KinematicsState:
+        origin = float(self.cfg['launch']['altitude'])
+        distance = kin.x * self.rail_cos + (kin.h - origin) * self.rail_sin
+        speed = kin.vx * self.rail_cos + kin.vz * self.rail_sin
+        return replace(kin, x=distance * self.rail_cos, h=origin + distance * self.rail_sin,
+                       vx=speed * self.rail_cos, vz=speed * self.rail_sin,
+                       theta=self.rail_angle, q=0.0)
 
 
     @staticmethod
@@ -431,7 +434,8 @@ class FlightSim:
         stage = replace(kin, vz=max(0., kin.vz))
         _, _, force, _ = self.evaluate_state(stage, propulsion, mass, on_rail, side)
         if on_rail:
-            return [0., kin.vz, 0., force['az'], 0., 0.]
+            acceleration = force['ax'] * self.rail_cos + force['az'] * self.rail_sin
+            return [kin.vx, kin.vz, acceleration * self.rail_cos, acceleration * self.rail_sin, 0., 0.]
         return [kin.vx, kin.vz, force['ax'], force['az'], kin.q, force['pitch_acceleration']]
 
     def prepare_samples(self, fluids):
@@ -466,18 +470,18 @@ class FlightSim:
         for name in ('event_max_iterations', 'trial_max_retries'):
             if isinstance(settings[name], bool) or not isinstance(settings[name], int) or settings[name] < 1:
                 raise ValueError(f'Flight {name} must be a positive integer')
-        kin = KinematicsState(0., 0., h0, 0., v0, math.pi / 2, 0.)
+        kin = KinematicsState(0., 0., h0, v0 * self.rail_cos, v0 * self.rail_sin, self.rail_angle, 0.)
         if self.roll_analysis is not None:
             self.roll_analysis.reset()
         rail = self.on_rail(h0)
         fluid = self.update_fluid(None, self._atmosphere(kin), commit=True,
-                                 axial_specific_force=gravity(1., h0))
+                                 axial_specific_force=gravity(1., h0) * self.rail_sin)
         self.vehicle.update_mass_distribution(fluid.node)
         mass = self.mass_properties()
         history = []
         result = self.result = SimResult(max_altitude=h0, initial_mass=mass['total_mass'],
             final_mass=mass['total_mass'], dry_mass=float(np.sum(getattr(self.vehicle, 'dry_mass', self.vehicle.mass))),
-            final_altitude=h0, final_velocity=v0, final_vz=v0, final_speed=abs(v0),
+            final_altitude=h0, final_velocity=kin.vz, final_vx=kin.vx, final_vz=kin.vz, final_speed=abs(v0),
             final_pitch_angle=kin.theta, burn_complete=fluid.propulsion.mode == 'shutdown',
             shutdown_reason=fluid.propulsion.shutdown_reason,
             history=history if record_history else None, constraint_records=dict(fluid.constraint_records))
@@ -493,9 +497,11 @@ class FlightSim:
         thermal = None
         if progress:
             progress(kin)
-        rail_height = float(self.cfg['launch']['altitude']) + float(self.cfg['launch']['rail_height'])
+        rail_height = self.rail_tip_altitude
         while kin.t < t_end:
-            if kin.vz < 0 or (kin.vz == 0 and evaluation[2]['az'] <= 0):
+            launch_acceleration = (evaluation[2]['ax'] * self.rail_cos + evaluation[2]['az'] * self.rail_sin
+                                   if rail else evaluation[2]['az'])
+            if kin.vz < 0 or (kin.vz == 0 and launch_acceleration <= 0):
                 result.termination = 'no_ascent'
                 break
             frozen = not post_shutdown and fluid.propulsion.mode == 'shutdown'
@@ -666,7 +672,7 @@ class FlightSim:
             if previous is None or not self.on_rail(previous.h):
                 result.rail_exit_time = kin.t
                 return
-            rail_end = float(self.cfg["launch"]["altitude"]) + float(self.cfg["launch"]["rail_height"])
+            rail_end = self.rail_tip_altitude
             fraction = (rail_end - previous.h) / (kin.h - previous.h)
             sample_time = previous.t + fraction * (kin.t - previous.t)
             twr = previous_twr + fraction * (twr - previous_twr)
@@ -720,10 +726,13 @@ class FlightSim:
         self.roll_analysis.sample(kin.t, atmosphere, self._flight_kinematics(kin)[2], mass,
                                  aero.canard, on_rail=on_rail, pitch_hz=frequency)
 
+    @property
+    def rail_tip_altitude(self):
+        launch = self.cfg['launch']
+        return float(launch['altitude']) + float(launch['rail_height']) * self.rail_sin
+
     def on_rail(self, altitude: float) -> bool:
-        launch = self.cfg["launch"]
-        rail_end = float(launch["altitude"]) + float(launch["rail_height"])
-        return altitude < rail_end
+        return altitude < self.rail_tip_altitude
 
     @staticmethod
     def engine_on(propulsion: PropulsionOut) -> bool:

@@ -102,6 +102,10 @@ def main() -> None:
     write_events(history, events_path)
     from reporting.flight_plots import plot_flight
     plots = plot_flight(history, rows, plot_path, summary.get("flight.burnout_time_s"), roll=result.roll)
+    from reporting.plot_peak_loads import plot_peak_loads
+    peak_path = plot_path.with_name(plot_path.stem + '_peak_loads.png')
+    plot_peak_loads(result, peak_path)
+    plots.update(peak_loads=peak_path, peak_loads_svg=peak_path.with_suffix('.svg'))
     print(f"Run complete: {time.perf_counter() - setup_started:.1f} s total.", flush=True)
 
     print(f"Max altitude reached: {result.max_altitude:.1f} m")

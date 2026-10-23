@@ -1,7 +1,4 @@
-"""Structural coloring for the supported network component residual equations.
-
-No physics changes. Construct a new pattern for every session/mode layout.
-Keep dense native linear algebra; reduce expensive Python residual calls.
+"""Jacobian coloring for the supported network component residual equations
 """
 import numpy as np
 from ..FluidNode import BoundaryComponent, VolumeComponent, CombustorComponent, JunctionComponent

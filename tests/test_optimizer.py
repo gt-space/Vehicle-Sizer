@@ -11,7 +11,7 @@ from Fluids.design import prepare_design_inputs
 from Fluids.PropSystem import PropSystem
 from Vehicle.Vehicle import Vehicle
 from Configs.loader import load_config
-from diagnostics.constraints import ConstraintRecord, finalize
+from diagnostics.constraints import ConstraintRecord, configured_limits, finalize
 from diagnostics.errors import EvaluationFailure
 from simulation_types import SimResult
 
@@ -135,6 +135,18 @@ def test_logging_best_budget_and_unresolved_failure(settings, tmp_path):
     assert json.loads(rows[1])['score_class'] == 'unresolved'
 
 
+@pytest.mark.parametrize('distance, penalty', [(0., 0.), (32000., 0.), (42000., .15), (-42000., .15)])
+def test_downrange_penalty_feasible_only(settings, distance, penalty):
+    settings['soft_penalties'] = {'downrange': dict(target_m=32000., scale_m=10000., weight=.15)}
+    result = accepted()
+    result.final_x = distance
+    score, _, penalties = opt.candidate_score(result, settings)
+    assert penalties['downrange'] == pytest.approx(penalty)
+    assert score == pytest.approx((1 + penalty) / (2 + penalty))
+    result.constraint_records['goal_apogee'] = ConstraintRecord(-100., 'Flight.Flight', 'mission', 'm')
+    assert opt.candidate_score(result, settings)[2] == {}
+
+
 def test_incumbent_uses_soft_objective_not_mass(settings, tmp_path):
     cfg = load_config(settings['base_config'])
     cfg['tanks']['press_tank']['volume'] = .02
@@ -159,6 +171,12 @@ def test_pressure_fed_policy_validates_owned_limits():
                for tank in original['tanks'].values())
     model = opt.DragModel()
     cfg, prepared = opt.prepare(settings, model)
+    assert 'max_aoa_deg' not in configured_limits(cfg)
+    enabled = deepcopy(settings)
+    enabled['hard_constraints'].append('max_aoa_deg')
+    enabled['evaluation_overrides']['constraints.max_aoa_deg'] = 45.
+    enabled_cfg, _ = opt.prepare(enabled, model)
+    assert configured_limits(enabled_cfg)['max_aoa_deg'] == 45.
     for path, value in settings['evaluation_overrides'].items():
         assert opt.get_path(cfg, path) == value
     assert load_config(settings['base_config']) == original
@@ -166,6 +184,19 @@ def test_pressure_fed_policy_validates_owned_limits():
     bad['hard_constraints'].append('tank.missing.Pmin')
     with pytest.raises(ValueError, match='requires a limit'):
         opt.prepare(bad, model)
+
+
+def test_optional_whole_flight_aoa_constraint():
+    def result():
+        return SimResult(initial_mass=500., apogee=150000., burn_complete=True,
+                         burn_duration=40., max_aoa_deg=50.)
+    limits = {'goal_apogee': 130000., 'max_burn_duration': 75.}
+    unrestricted = finalize(result(), configured_limits({'constraints': limits}))
+    assert unrestricted.accepted
+    assert 'max_aoa_deg' not in unrestricted.constraint_records
+    restricted = finalize(result(), configured_limits({'constraints': dict(limits, max_aoa_deg=45.)}))
+    assert not restricted.accepted
+    assert restricted.constraint_records['max_aoa_deg'].margin == -5.
 
 
 @pytest.mark.parametrize('kind', ['table', 'solver', 'residual', 'unexpected', 'configuration', 'io'])

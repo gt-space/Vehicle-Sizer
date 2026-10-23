@@ -314,3 +314,66 @@ def test_history_uses_combined_cp_and_total_forces():
     assert row['derived.total_cp_m'] == pytest.approx(4200 / 1100)
     assert row['derived.static_stability_margin_calibers'] == pytest.approx((4200/1100 - 1.) / .3)
     assert row['derived.proper_acceleration_g'] == pytest.approx(np.hypot(80., 1102.) / 10 / 9.80665)
+
+
+def test_roll_table_commands_match_live_authority_and_response():
+    """Check off-grid interpolation by the torque it actually produces."""
+    canards = system()
+    rng = np.random.default_rng(21)
+    for mach, alpha in zip(rng.uniform(.05, 10., 300), rng.uniform(-.26, .26, 300)):
+        limit = min(np.deg2rad(10.), max(np.deg2rad(22. if mach <= 2.8 else 15.) - abs(alpha), 0.))
+        maximum = float(canards.aero.roll_coefficient(canards.geometry, mach, limit, alpha))
+        for fraction in [.05, .5, .95]:
+            command, authority, saturated = canards.command_deflection(mach, alpha, fraction*maximum, 1., True)
+            achieved = float(canards.aero.roll_coefficient(canards.geometry, mach, command, alpha))
+            assert abs(achieved-fraction*maximum) <= 1e-3*maximum + 1e-10
+            assert 0 <= command <= limit
+            assert authority == maximum
+            assert not saturated
+
+
+def test_roll_table_geometry_scaling_and_coverage():
+    aero = CanardAerodynamics({})
+    reference = aero.surface_geometry(.25, .15)
+    angles, curve = aero.roll_curve(reference, 3.12, .071, .1)
+    for root, radius in [(.1, .1), (.5, .3)]:
+        geometry = aero.surface_geometry(root, radius)
+        np.testing.assert_array_equal(aero.roll_curve(geometry, 3.12, -.071, .1)[1], curve)
+        np.testing.assert_allclose(aero.roll_coefficient(geometry, 3.12, angles, .071),
+                                   aero.roll_coefficient(reference, 3.12, angles, .071))
+    for mach, alpha, limit in [(-.1, 0., .1), (10.1, 0., .1), (3., .27, .1), (3., 0., .2)]:
+        assert aero.roll_curve(reference, mach, alpha, limit) is None
+    assert aero.roll_curve(replace(reference, aspect_ratio=2.), 3., 0., .1) is None
+
+
+def test_command_fallback_outside_deflection_grid(monkeypatch):
+    canards = system(max_deflection_deg=20.)
+    command = canards.command_deflection(.8, .01, .1, 1., True)
+    monkeypatch.setattr(canards.aero, 'roll_curve', lambda *args: None)
+    assert canards.command_deflection(.8, .01, .1, 1., True) == command
+
+
+def test_command_limits_do_not_load_roll_table(monkeypatch):
+    canards = system()
+    mach, alpha, scale = 3.13, .1, 100.
+    limit = min(np.deg2rad(10.), np.deg2rad(15.)-alpha)
+    maximum = scale*float(canards.aero.roll_coefficient(canards.geometry, mach, limit, alpha))
+    def unused(*args):
+        raise AssertionError('No response curve is needed for a limited command')
+    monkeypatch.setattr(canards.aero, 'roll_curve', unused)
+    assert canards.command_deflection(mach, alpha, 0., scale, True) == (0., maximum, False)
+    assert canards.command_deflection(mach, alpha, 1., scale, False) == (0., maximum, False)
+    assert canards.command_deflection(mach, alpha, 1., 0., True) == (0., 0., True)
+    assert canards.command_deflection(mach, alpha, maximum, scale, True) == (limit, maximum, False)
+    assert canards.command_deflection(mach, alpha, np.nextafter(maximum, np.inf), scale, True) == (limit, maximum, True)
+
+
+def test_generation_can_supply_fresh_shock_data(monkeypatch):
+    from Flight import canards
+    from scipy.interpolate import RegularGridInterpolator
+    def stale_table():
+        raise AssertionError('Injected generation data must not read the on-disk table')
+    monkeypatch.setattr(canards, '_shock_expansion_table', stale_table)
+    lookup = RegularGridInterpolator(([3., 4.], [0., .1]), np.array([[0., .3], [0., .4]]))
+    aero = CanardAerodynamics({}, shock_lookup=lookup)
+    assert aero.tabulated_shock_expansion_cn(3.5, -.1) == pytest.approx(-.35)

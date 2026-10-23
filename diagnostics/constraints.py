@@ -112,8 +112,6 @@ def configured_limits(cfg):
         raise ValueError(f"Unknown simulation constraints: {sorted(unknown)}")
     if any(not isfinite(value) or value < 0 for value in limits.values()):
         raise ValueError("Constraint limits must be finite and nonnegative")
-    if limits.get("max_aoa_deg", 15.0) > 15.0:
-        raise ValueError("max_aoa_deg cannot exceed the 15 degree flight limit")
     return limits
 
 

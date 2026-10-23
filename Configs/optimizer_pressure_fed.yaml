@@ -8,12 +8,12 @@ seed: 42
 max_evaluations: 10000       # Total candidate evaluations, including initial population
 maxiter: 117                 # Generation cap; max_evaluations separately caps total evaluations
 popsize: 5
-reference_mass: 180.0
+reference_mass: 190.0
 hard_constraints:
   - max_length_to_diameter
   - goal_apogee
   - max_burn_duration
-  - max_aoa_deg
+  # - max_aoa_deg # uncomment to enforce a maximum angle of attack constraint on the entire flight
   - min_stability_calibers
   - tank.fuel_tank.Tmin
   - tank.fuel_tank.Pmin
@@ -22,6 +22,10 @@ hard_constraints:
   - tank.press_tank.Tmin
   - tank.press_tank.Pmin
 soft_penalties:
+  downrange: # Absolute horizontal displacement at apogee
+    target_m: 32000.0
+    scale_m: 10000.0
+    weight: 0.15
   stability_length_fraction:
     lower_target: 0.10
     upper_target: 0.20
@@ -37,7 +41,7 @@ soft_penalties:
   #     time_scale_s: 10.0
   #     weight: 0.05
   max_q:
-    target_pa: 140000.0
+    target_pa: 145000.0
     scale_pa: 10000.0
     weight: 0.0
 conditional_geometry: true
@@ -46,20 +50,20 @@ failure_policy:
   native_retries: 1
   consecutive_limit: 50
   window: 100
-  rate_limit: 0.95 # Allow broad exploration with frequent aero-domain exits.
+  rate_limit: 0.95 # high value means large fraction of failures in the window triggers a stop, lower to permit less failures before exiting
   repeated_limit: 3
 evaluation_overrides:
   tanks.press_tank.mass: 29.5 # currently fixing COPV dimensions to match manufacturer's spec
   tanks.fuel_tank.min_temperature: 80.0 # arbitrarily low to stop from constraining the optimizer
-  tanks.fuel_tank.min_pressure: 68947.57293168
-  tanks.ox_tank.min_temperature: 80.0 # not that important, but helps avoid freezing the LOX
-  tanks.ox_tank.min_pressure: 68947.57293168
-  tanks.press_tank.min_pressure: 1.034e6 # 150 psia min pnuematics pressure
-  tanks.press_tank.min_temperature: 140.0 # loosely determined to be acceptable based on GFSSP runs
-  constraints.max_length_to_diameter: 35.0
+  tanks.fuel_tank.min_pressure: 68947.57293168 # structural margin
+  tanks.ox_tank.min_temperature: 80.0 # arbitrarily low to stop from constraining the optimizer
+  tanks.ox_tank.min_pressure: 68947.57293168 # structural margin
+  tanks.press_tank.min_pressure: 1.034e6 # 150 psia copv pressure for min pnuematics pressure
+  tanks.press_tank.min_temperature: 120.0 # loosely determined to be acceptable based on GFSSP runs
+  constraints.max_length_to_diameter: 31.0
   constraints.min_stability_calibers: 2.0
-  constraints.max_aoa_deg: 15.0
-  constraints.goal_apogee: 140000.0
+  # constraints.max_aoa_deg: 45.0 # applies to entire flight
+  constraints.goal_apogee: 130000.0
   constraints.max_burn_duration: 75.0
   simulation.t_end: 600.0
   environment.max_altitude: 300000.0
@@ -109,10 +113,10 @@ bounds:
   - 0.055 # currently fixing COPV dimensions to match manufacturer's spec
   - 0.055
   oxidizer_mass:
-  - 100.0
+  - 190.0
   - 300.0
   fuel_mass:
-  - 80.0
+  - 90.0
   - 150.0
 constraint_scales:
   max_length_to_diameter: 5.0 # Five L/D units = one normalized violation

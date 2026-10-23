@@ -54,7 +54,7 @@ python -m reporting.plot_peak_loads \
 
 Choose a new or empty output directory. `load_profiles.csv` contains the maximum
 absolute axial force, shear force, and bending moment at each station over powered
-flight, the time of each maximum, and signed profiles at the peak-bending instant.
+flight, and the time of each maximum.
 `load_history.csv` contains signed loads for every recorded sample with loads,
 including coast, with columns `sample_index`, `time_s`, `engine_on`, `station_m`,
 `axial_N`, `shear_N`, and `bending_N_m`. Stations are measured from the nose tip.
@@ -63,6 +63,9 @@ The sample index distinguishes event-side snapshots with identical timestamps.
 `summary.json` accompany these exports. Use `--dt` to override the time step.
 
 Run a flight from the project root with `python main.py Configs/Vespula.yaml`.
+This also writes `<plot_stem>_peak_loads.png` and `.svg`, showing maximum absolute
+axial force, shear force, and bending moment at each station during powered flight.
+The standalone load exporter names these files `peak_loads.png` and `.svg`.
 Output locations remain controlled by the configuration's `simulation.output`
 and `simulation.plot` entries.
 

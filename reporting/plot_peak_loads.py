@@ -27,7 +27,7 @@ QUANTITIES = (('axial', 'Axial force', 'kN'),
 
 
 def summarize_loads(samples):
-    """Distinguish station-wise magnitude envelopes from simultaneous profiles."""
+    """Summarize station-wise maximum magnitudes over powered flight."""
     if not samples:
         raise ValueError('No powered-flight load samples available')
     station = np.asarray(samples[0]['loads']['station'])
@@ -49,44 +49,42 @@ def summarize_loads(samples):
     return station, time, matrices, peaks, envelopes, envelope_times
 
 
+def plot_peak_loads(result, path):
+    """Write the powered-flight peak-load envelope as PNG and SVG."""
+    samples = [s for s in history_samples(result) if 'loads' in s and s['engine_on']]
+    station, _, _, _, envelopes, _ = summarize_loads(samples)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sections = [s for key, s in result.design_summary['section'].items() if key != 'engine']
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True, layout='constrained')
+    for ax, (key, title, unit) in zip(axes, QUANTITIES):
+        ax.plot(station, envelopes[key] / 1000, color='#2563eb', linewidth=1.7,
+                label='Maximum magnitude at each station over burn')
+        ax.set_ylabel(f'{title} ({unit})')
+        ax.axhline(0, color='#64748b', linewidth=.6)
+        ax.grid(alpha=.2)
+        ax.legend(fontsize=9, loc='best')
+        for section in sections:
+            ax.axvline(section['station'], color='#94a3b8', linestyle=':', linewidth=.7)
+        ax.set_xlim(0, result.design_summary['length'])
+    for section in sections:
+        axes[0].text(section['station'] + section['length'] / 2, 1.02, section['label'], rotation=45,
+                     transform=axes[0].get_xaxis_transform(), ha='left', va='bottom', fontsize=8)
+    axes[-1].set_xlabel('Axial station from nose tip (m) → aft')
+    for extension in ('png', 'svg'):
+        fig.savefig(path.with_suffix(f'.{extension}'), dpi=180, bbox_inches='tight')
+    plt.close(fig)
+
+
 def plot_loads(result, output):
     output.mkdir(parents=True, exist_ok=True)
     full_samples = [s for s in history_samples(result) if 'loads' in s]
     samples = [s for s in full_samples if s['engine_on']]
     station, time, matrices, peaks, envelopes, envelope_times = summarize_loads(samples)
-    # Bending supplies an explicit criterion for a single coherent load case;
-    # force and moment cannot be compared numerically across unlike units.
-    selected = peaks['bending']['sample_index']
-    sections = [s for key, s in result.design_summary['section'].items() if key != 'engine']
-    for mode in ('burn_envelope', 'peak_bending_snapshot'):
-        fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True, layout='constrained')
-        for ax, (key, title, unit) in zip(axes, QUANTITIES):
-            if mode == 'burn_envelope':
-                values = envelopes[key]
-                label = 'Maximum magnitude at each station over burn'
-            else:
-                values = matrices[key][selected]
-                label = f"At peak bending: t = {time[selected]:.3f} s"
-            ax.plot(station, values / 1000, color='#2563eb', linewidth=1.7, label=label)
-            ax.set_ylabel(f'{title} ({unit})')
-            ax.axhline(0, color='#64748b', linewidth=.6)
-            ax.grid(alpha=.2)
-            ax.legend(fontsize=9, loc='best')
-            for section in sections:
-                ax.axvline(section['station'], color='#94a3b8', linestyle=':', linewidth=.7)
-            ax.set_xlim(0, result.design_summary['length'])
-        for section in sections:
-            axes[0].text(section['station'] + section['length'] / 2, 1.02, section['label'], rotation=45,
-                         transform=axes[0].get_xaxis_transform(), ha='left', va='bottom', fontsize=8)
-        axes[-1].set_xlabel('Axial station from nose tip (m) → aft')
-        for extension in ('png', 'svg'):
-            fig.savefig(output / f'{mode}.{extension}', dpi=180, bbox_inches='tight')
-        plt.close(fig)
+    plot_peak_loads(result, output / 'peak_loads.png')
     columns = {'station_m': station}
     for key, _, _ in QUANTITIES:
         columns[f'{key}_max_abs_SI'] = envelopes[key]
         columns[f'{key}_envelope_time_s'] = envelope_times[key]
-        columns[f'{key}_at_peak_bending_SI'] = matrices[key][selected]
     with (output / 'load_profiles.csv').open('w', newline='') as stream:
         writer = csv.writer(stream)
         writer.writerow(columns)
@@ -107,9 +105,6 @@ def plot_loads(result, output):
                    termination=result.termination, sample_count=len(samples), peaks=peaks,
                    full_history_sample_count=len(full_samples),
                    full_history_csv='load_history.csv',
-                   snapshot_criterion='Maximum absolute bending moment anywhere along the vehicle during burn',
-                   snapshot_time_s=float(time[selected]),
-                   snapshot_dynamic_pressure_Pa=float(samples[selected]['atmosphere'].q),
                    axial_sign='Positive compression; negative tension',
                    envelope_definition='Maximum absolute value at each station over recorded powered samples',
                    sampling='Initial state, accepted endpoints, and powered side of cutoff; no time downsampling')

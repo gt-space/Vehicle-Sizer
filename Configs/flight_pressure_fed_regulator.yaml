@@ -1,9 +1,8 @@
 # Pressure-fed vehicle with regulated pressurization
-# SI units unless a field or comment specifies otherwise.
 
 # Simulation and output
 simulation:
-  dt: 0.5
+  dt: 1.0
   fluid_solve_post_shutdown: false
   output: outputs/flight_pressure_fed_regulator.csv
   plot: outputs/flight_pressure_fed_regulator.png
@@ -12,7 +11,8 @@ simulation:
 # Launch conditions
 launch:
   altitude: 1191.0
-  rail_height: 15.0
+  rail_height: 15.0 # Length along the rail [m]
+  rail_inclination_deg: 90.0 # From +horizontal: 85 toward +x, 95 toward -x
   velocity: 0.0
 
 # Atmosphere and wind
@@ -37,7 +37,7 @@ vehicle:
         titanium_tip: 2.0
         #counterweight: 5.0
 
-    - name: avionics_bay
+    - name: avi_bay
       type: avi_bay
       masses:
         cube: 5.0
@@ -54,7 +54,7 @@ vehicle:
         fitting: 1.0
 
     - name: IT1
-      length: 0.3302
+      length: 0.2794
       type: inter_tank
       masses:
         stringers: 0.88
@@ -70,7 +70,7 @@ vehicle:
         pass_through_hardware: 2.0
 
     - name: IT2
-      length: 0.2794
+      length: 0.3302
       type: inter_tank
       masses:
         stringers: 0.74
@@ -105,7 +105,7 @@ vehicle:
 # Nosecone construction
 nosecone:
   wall_thickness: 0.00635
-  fineness_ratio: 5.622303724533916
+  fineness_ratio: 4.017795874208679
   material: carbon_fiber
   profile: von_karman
   tip_radius: 0.01
@@ -121,22 +121,22 @@ inter_tank:
 
 # Fins and boattail
 fin_can:
-  boattail_aft_diameter: 0.2387008240802011
-  boattail_length: 0.5751559808898917
+  boattail_aft_diameter: 0.30245815656937297
+  boattail_length: 0.5447618116126297
   boattail_wall_thickness: 0.00318
   fin_count: 4
-  fin_thickness: 0.008613855013331825
+  fin_thickness: 0.006442189157854226
   material: carbon_fiber
-  root_chord: 0.5030496659340901
-  span: 0.37174683042325185
-  sweep_fraction: 0.821707283447428
-  tip_chord: 0.19315079310328132
+  root_chord: 0.4860503844609171
+  span: 0.3659975226604423
+  sweep_fraction: 0.5277686523088218
+  tip_chord: 0.15949066557377473
 
 # Engine geometry and performance
 engine:
   cf_efficiency: 0.95
   cstar_efficiency: 0.9
-  exit_pressure: 56732.13275827947
+  exit_pressure: 64243.224190643596
   fuel: RP-1
   length: 0.45
   mass: 25.0 # Injector (7 kg) + chamber/nozzle (18 kg);
@@ -144,8 +144,8 @@ engine:
 
 # Pressure-fed propulsion and regulators
 prop_system:
-  MR_target: 2.0828775332060707
-  Pc_target: 1468631.8081285474
+  MR_target: 2.196450028482525
+  Pc_target: 1447899.03156528 # 210 psi; derived propellant-tank target: 300.4 psi
   fuel_inj_stiffness: 0.24
   fuel_tank_inj_dp: 275790.291727
   initial_conditions:
@@ -168,16 +168,16 @@ prop_system:
   regulator:
     FUEL_REGULATOR:
       eol_temperature: 150.0 # K; pressurant EOL temperature used for feed sizing
-      capacity_factor: 5.0
+      capacity_factor: 9.0
       collapse_factor: 1.2
       tank_id: fuel_tank
     OX_REGULATOR:
       eol_temperature: 150.0 # K; pressurant EOL temperature used for feed sizing
-      capacity_factor: 5.0
+      capacity_factor: 9.0
       collapse_factor: 1.4
       tank_id: ox_tank
   template: Configs/templates/pressure_fed_regulator.yaml
-  thrust_target: 14710.375938940502
+  thrust_target: 18140.275186878323
 
 # Propellant and pressurant tanks
 tanks:
@@ -185,10 +185,11 @@ tanks:
     thermal:
       model: None
     ellipse_ratio: 1.75
+    #wall_thickness: 0.0025 # Example of how to override thickness calc
     material: aluminum_6061
     passthrough_diameter: 0.0635
     passthrough_wall_thickness: 0.002286
-    propellant_mass: 91.94751316814954
+    propellant_mass: 100.33695855757695
     type: propellant
     ullage_factor: 1.1
   ox_tank:
@@ -198,13 +199,13 @@ tanks:
     material: aluminum_6061
     passthrough_diameter: 0.0381
     passthrough_wall_thickness: 0.002286
-    propellant_mass: 193.66350805755022
+    propellant_mass: 223.27961793743572
     type: propellant
     ullage_factor: 1.1
   press_tank:
     thermal:
       model: None
-    design_pressure: 22801074.35281953
+    design_pressure: 28922126.037929267
     ellipse_ratio: 1.75
     outer_diameter: 0.2794
     type: pressurant
@@ -226,7 +227,7 @@ aero:
 
 # Roll forcing
 roll:
-  fin_cant: 0.0087 # radians, 0.5 degrees
+  fin_cant: 0.00174533 # radians, 0.1 degrees
 
 # Canard placement and control
 canards:

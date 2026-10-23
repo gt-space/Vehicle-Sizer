@@ -1,0 +1,11 @@
+{
+  "kind": "trial_domain_failure",
+  "fatal": false,
+  "phase": "runtime",
+  "exception": "TrialDomainError",
+  "message": "Flight trial AoA exceeds aero domain (15 deg)",
+  "fingerprint": "a023a163a0f9f57e",
+  "details": {},
+  "attempts": [],
+  "warnings": []
+}
