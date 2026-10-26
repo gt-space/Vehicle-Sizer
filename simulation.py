@@ -82,7 +82,7 @@ def _simulate(cfg, *, pure_properties, combustion_properties, aero_model,
     if pure_properties is None:
         pure_properties, combustion_properties = property_sources(cfg)
     context["phase"] = "sizing"
-    template, states, wall_pressures = prepare_design_inputs(cfg)
+    template, states, wall_pressures = prepare_design_inputs(cfg, fluid_properties=pure_properties, combustion_properties=combustion_properties)
     vehicle = Vehicle(cfg, pure_properties, initial_states=states, wall_pressures=wall_pressures)
     propulsion = PropSystem(cfg, vehicle.tanks, fluid_properties=pure_properties,
                             combustion_properties=combustion_properties,

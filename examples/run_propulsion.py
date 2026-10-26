@@ -33,7 +33,7 @@ def main():
     if any(cfg['property_models'][name]['source'] != 'table' for name in ('pure_fluid', 'combustion')):
         parser.error('This example expects table-backed pure-fluid and combustion properties')
     pure, combustion = property_sources(cfg)
-    template, states, wall_pressures = prepare_design_inputs(cfg)
+    template, states, wall_pressures = prepare_design_inputs(cfg, fluid_properties=pure, combustion_properties=combustion)
     vehicle = Vehicle(cfg, pure, initial_states=states, wall_pressures=wall_pressures)
     with PropSystem(cfg, vehicle.tanks, pure, combustion,
                     template=template, initial_states=states) as propulsion:

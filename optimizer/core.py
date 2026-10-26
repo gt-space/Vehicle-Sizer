@@ -21,7 +21,7 @@ from Configs.loader import load_config
 from diagnostics.constraints import ConstraintRecord, configured_limits
 from Vehicle.utils.geometry import pressure_wall_thickness, tank_capacity
 from diagnostics.errors import EvaluationFailure, GeometryError
-from Fluids.helpers.templates import bind_template
+from Fluids.helpers.templates import bind_template, read_template
 from Fluids.design import prepare_design_inputs
 from Vehicle.sections.PressTank import PressTank
 from simulation import project_path, simulate
@@ -41,7 +41,10 @@ DIMENSIONLESS = {"fineness", "sweep_fraction"}
 
 def pump_roles(cfg):
     """Find optimizer pump variables from the same wiring used by PropSystem."""
-    template = bind_template(cfg)
+    template = read_template(cfg)
+    if not any(branch["component"] == "pump" for branch in template["branches"].values()):
+        return {}  # Pressure-fed CdA inputs are resolved later during design preparation.
+    template = bind_template(dict(cfg, prop_system=dict(cfg["prop_system"], template=template)))
     roles = {}
     for branch in template['branches'].values():
         if branch['component'] != 'pump':
@@ -341,15 +344,18 @@ class Evaluator:
                 outlet = prop["Pc_target"] * (1 + prop[f"{leg}_inj_stiffness"]) + prop[f"{leg}_inj_pumpout_dp"]
                 assign(f"{role}_pump_head", maximum=outlet - 1.)
         # Match PropTank's pressure-sized wall and usable ellipsoidal-head volume.
-        _, states, wall_pressures = prepare_design_inputs(cfg)
+        _, states, wall_pressures = prepare_design_inputs(cfg, fluid_properties=self.pure, combustion_properties=self.combustion)
         for role in ("oxidizer", "fuel"):
             tank_id = self.settings["tank_ids"][role]
             tank, state = cfg["tanks"][tank_id], states[tank_id]
             pressure = wall_pressures[tank_id]
+            allowance = float(cfg["advanced"].get("tank_wall_thickness_allowance", 0.))
+            if not isfinite(allowance) or allowance < 0:
+                raise ValueError("Tank wall thickness allowance must be finite and nonnegative")
             wall = tank.get("wall_thickness")
             if wall is None:
                 wall = pressure_wall_thickness(pressure, diameter, cfg["advanced"]["tank_pressure_fos"],
-                                               cfg["advanced"]["weld_allowable"])
+                                               cfg["advanced"]["weld_allowable"]) + allowance
             radius, tube = diameter / 2 - wall, tank["passthrough_diameter"] / 2
             if radius <= tube + clearance:
                 raise GeometryError({f"{tank_id}.passthrough": radius - tube - clearance})
@@ -485,7 +491,8 @@ def prepare(settings, model):
         if key in limits:
             continue
         parts = key.split('.')
-        field = {'Tmin': 'min_temperature', 'Pmin': 'min_pressure'}.get(parts[-1])
+        field = {'Tmin': 'min_temperature', 'Pmin': 'min_pressure',
+                 'wall_min': 'min_wall_thickness'}.get(parts[-1])
         if len(parts) != 3 or parts[0] != 'tank' or field is None or field not in cfg.get('tanks', {}).get(parts[1], {}):
             raise ValueError(f'Hard constraint {key!r} requires a limit in evaluation_overrides or the base config')
     tracking = settings.get('soft_penalties', {}).get('tank_pressure_tracking', {})

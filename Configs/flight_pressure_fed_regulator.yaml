@@ -1,8 +1,8 @@
-# Pressure-fed vehicle with regulated pressurization
+# Pressure-fed vehicle: optimizer candidate 8001, verified at dt = 0.5 s
 
 # Simulation and output
 simulation:
-  dt: 1.0
+  dt: 0.5
   fluid_solve_post_shutdown: false
   output: outputs/flight_pressure_fed_regulator.csv
   plot: outputs/flight_pressure_fed_regulator.png
@@ -35,7 +35,7 @@ vehicle:
         parachute: 4.46
         parachute_hardware: 10.0
         titanium_tip: 2.0
-        #counterweight: 5.0
+        counterweight: 10.0
 
     - name: avi_bay
       type: avi_bay
@@ -105,7 +105,7 @@ vehicle:
 # Nosecone construction
 nosecone:
   wall_thickness: 0.00635
-  fineness_ratio: 4.017795874208679
+  fineness_ratio: 4.439989284316837
   material: carbon_fiber
   profile: von_karman
   tip_radius: 0.01
@@ -121,22 +121,22 @@ inter_tank:
 
 # Fins and boattail
 fin_can:
-  boattail_aft_diameter: 0.30245815656937297
-  boattail_length: 0.5447618116126297
+  boattail_aft_diameter: 0.2636990454497293
+  boattail_length: 0.5371301665652561
   boattail_wall_thickness: 0.00318
   fin_count: 4
-  fin_thickness: 0.006442189157854226
+  fin_thickness: 0.0072010410326792725
   material: carbon_fiber
-  root_chord: 0.4860503844609171
-  span: 0.3659975226604423
-  sweep_fraction: 0.5277686523088218
-  tip_chord: 0.15949066557377473
+  root_chord: 0.5051260395224363
+  span: 0.3074560429776676
+  sweep_fraction: 0.8166386709699465
+  tip_chord: 0.20088425696987589
 
 # Engine geometry and performance
 engine:
   cf_efficiency: 0.95
   cstar_efficiency: 0.9
-  exit_pressure: 64243.224190643596
+  exit_pressure: 71445.19549895912
   fuel: RP-1
   length: 0.45
   mass: 25.0 # Injector (7 kg) + chamber/nozzle (18 kg);
@@ -144,10 +144,11 @@ engine:
 
 # Pressure-fed propulsion and regulators
 prop_system:
-  MR_target: 2.196450028482525
-  Pc_target: 1447899.03156528 # 210 psi; derived propellant-tank target: 300.4 psi
+  MR_target: 2.2293604939835476
+  Pc_target: 1453997.1722508986 # 210.88 psia; derived propellant-tank target: 301.50 psia
   fuel_inj_stiffness: 0.24
-  fuel_tank_inj_dp: 275790.291727
+  fuel_tank_inj_dp: 275790.291727 # Pa; specify either this or fuel_system_cda
+  # fuel_system_cda: 0.0001776871392414737 # m²; comment out fuel_tank_inj_dp to use
   initial_conditions:
     fuel_tank:
       T: 298.15
@@ -164,20 +165,21 @@ prop_system:
       fluid: Nitrogen
   nozzle_cd: 1.0
   ox_inj_stiffness: 0.24
-  ox_tank_inj_dp: 275790.291727
+  ox_tank_inj_dp: 275790.291727 # Pa; specify either this or ox_system_cda
+  # ox_system_cda: 0.00032706944491738433 # m²; comment out ox_tank_inj_dp to use
   regulator:
     FUEL_REGULATOR:
       eol_temperature: 150.0 # K; pressurant EOL temperature used for feed sizing
-      capacity_factor: 9.0
+      capacity_factor: 15.0
       collapse_factor: 1.2
       tank_id: fuel_tank
     OX_REGULATOR:
       eol_temperature: 150.0 # K; pressurant EOL temperature used for feed sizing
-      capacity_factor: 9.0
+      capacity_factor: 15.0
       collapse_factor: 1.4
       tank_id: ox_tank
   template: Configs/templates/pressure_fed_regulator.yaml
-  thrust_target: 18140.275186878323
+  thrust_target: 24672.675589246042
 
 # Propellant and pressurant tanks
 tanks:
@@ -189,7 +191,7 @@ tanks:
     material: aluminum_6061
     passthrough_diameter: 0.0635
     passthrough_wall_thickness: 0.002286
-    propellant_mass: 100.33695855757695
+    propellant_mass: 95.00327573525435
     type: propellant
     ullage_factor: 1.1
   ox_tank:
@@ -199,13 +201,13 @@ tanks:
     material: aluminum_6061
     passthrough_diameter: 0.0381
     passthrough_wall_thickness: 0.002286
-    propellant_mass: 223.27961793743572
+    propellant_mass: 218.3244974718024
     type: propellant
     ullage_factor: 1.1
   press_tank:
     thermal:
       model: None
-    design_pressure: 28922126.037929267
+    design_pressure: 25604737.705636732
     ellipse_ratio: 1.75
     outer_diameter: 0.2794
     type: pressurant
@@ -290,6 +292,7 @@ advanced:
     convergence_tolerance: 0.001
     max_iterations: 20
     temperature_tolerance: 0.01
+  tank_wall_thickness_allowance: 0.000254 # 10 thou added to automatically pressure-sized metal walls
   t_wall_min: 0.001
   tank_pressure_fos: 1.5
   weld_allowable: 234400000.0

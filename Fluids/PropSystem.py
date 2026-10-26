@@ -6,7 +6,7 @@ from diagnostics.constraints import ConstraintRecord
 from copy import deepcopy
 from Fluids.helpers.battery import size_battery
 from Fluids.helpers.pump_curve import scaled_pump_curve
-from Fluids.design import pump_definition, size_pump, size_gas_generator
+from Fluids.design import pump_definition, size_pump, size_gas_generator, size_engine
 from Thermals.heat_sources import thermal_model
 
 from .FluidNetwork import FluidNetwork
@@ -32,18 +32,6 @@ class PropSystem:
         self.combustion_properties = combustion_properties
         geometries = {key: tank.get_fluid_geometry() for key, tank in tanks.items()}
         self._initialize_tank_states(tanks, geometries)
-        for name in ("Pc_target", "MR_target"):
-            value = float(self.cfg[name])
-            if not isfinite(value) or value <= 0:
-                raise ValueError(f"{name} must be finite and positive")
-            setattr(self, name, value)
-        self.thrust_target = self.cfg.get("thrust_target")
-        if self.thrust_target is not None:
-            self.thrust_target = float(self.thrust_target)
-            if not isfinite(self.thrust_target) or self.thrust_target <= 0:
-                raise ValueError("thrust_target must be finite and positive")
-        elif "throat_area" not in self.engine_cfg:
-            raise ValueError("Specify engine.throat_area or prop_system.thrust_target")
         self._size_engine()
         circuits, nodes, branches = self._build_network_definitions(geometries)
         self.pump_sizing, self.gg_sizing, self.sizing_constraints = {}, {}, {}
@@ -200,71 +188,7 @@ class PropSystem:
             )
 
     def _size_engine(self) -> None:
-        """Calculate C*, Cf, throat area, and the design mixture mass flows."""
-
-        self.cstar_efficiency = float(self.engine_cfg["cstar_efficiency"])
-        self.cf_efficiency = float(self.engine_cfg["cf_efficiency"])
-        if self.cstar_efficiency <= 0.0 or self.cf_efficiency <= 0.0:
-            raise ValueError("Engine efficiencies must be positive")
-
-        exit_pressure = self.engine_cfg.get("exit_pressure")
-        if exit_pressure is not None and not 0.0 < float(exit_pressure) < self.Pc_target:
-            raise ValueError("engine.exit_pressure must be between zero and Pc_target")
-
-        if "expansion_ratio" in self.engine_cfg:
-            self.expansion_ratio = float(self.engine_cfg["expansion_ratio"])
-        else:
-            if exit_pressure is None:
-                raise ValueError("Specify engine.expansion_ratio or engine.exit_pressure")
-            self.expansion_ratio = self.combustion_properties.expansion_ratio(
-                self.Pc_target, self.MR_target, float(exit_pressure)
-            )
-        if not isfinite(self.expansion_ratio) or self.expansion_ratio < 1:
-            raise ValueError("engine.expansion_ratio must be finite and >= 1")
-
-        # With explicit epsilon there need not be a design exit-pressure input.
-        # Sea level is then only the ambient reference for the design Cf/thrust.
-        self.design_ambient_pressure = float(exit_pressure) if exit_pressure is not None else 101325.
-
-        design = self.combustion_properties.evaluate(
-            chamber_pressure=self.Pc_target,
-            mixture_ratio=self.MR_target,
-            ambient_pressure=self.design_ambient_pressure,
-            expansion_ratio=self.expansion_ratio,
-            cstar_efficiency=self.cstar_efficiency,
-            cf_efficiency=self.cf_efficiency,
-        )
-
-        self.cstar = design.cstar
-        self.Cf_design = design.Cf
-        if self.cstar <= 0.0 or self.Cf_design <= 0.0:
-            raise ValueError("Design cstar and thrust coefficient must be positive")
-
-        self.combustion_gas = {
-            "R": design.R,
-            "gamma": design.gamma,
-            "T": design.T,
-        }
-
-        self.throat_area = (float(self.engine_cfg["throat_area"]) if "throat_area" in self.engine_cfg
-                            else self.thrust_target / (self.Pc_target * self.Cf_design))
-        if not isfinite(self.throat_area) or self.throat_area <= 0:
-            raise ValueError("engine.throat_area must be finite and positive")
-        self.exit_area = self.throat_area * self.expansion_ratio
-        self.design_thrust = self.Pc_target * self.throat_area * self.Cf_design
-        self.mdot_total = self.Pc_target * self.throat_area / self.cstar
-        self.mdot_ox = self.mdot_total * self.MR_target / (1.0 + self.MR_target)
-        self.mdot_fuel = self.mdot_total / (1.0 + self.MR_target)
-        flow_keys = ("design_mdot_oxidizer", "design_mdot_fuel")
-        if any(key in self.cfg for key in flow_keys):
-            if not all(key in self.cfg for key in flow_keys):
-                raise ValueError("Specify both design_mdot_oxidizer and design_mdot_fuel")
-            flows = [float(self.cfg[key]) for key in flow_keys]
-            if any(not isfinite(value) or value <= 0 for value in flows):
-                raise ValueError("Design mass flows must be finite and positive")
-            self.mdot_ox, self.mdot_fuel = flows
-            self.mdot_total = sum(flows)
-        self.nozzle_cd = float(self.cfg["nozzle_cd"])
+        self.__dict__.update(size_engine(self.design_config, self.combustion_properties))
 
     def _size_branches(
         self,

@@ -14,5 +14,8 @@ tests/*
 !tests/test_sensitivity_plots.py
 !tests/test_sensitivity_runner.py
 !tests/test_canards.py
+!tests/test_feed_sizing.py
 
 .venv/
+
+!tests/test_tank_wall_allowance.py

@@ -103,8 +103,11 @@ class PropTank(Section):
         fos = float(self.cfg["advanced"]["tank_pressure_fos"])
         required = geo.pressure_wall_thickness(self.max_pressure, self.OMLD, fos, allowable)
         self.required_wall_thickness = required
+        allowance = float(self.cfg["advanced"].get("tank_wall_thickness_allowance", 0.))
+        if not np.isfinite(allowance) or allowance < 0:
+            raise ValueError("Tank wall thickness allowance must be finite and nonnegative")
         if supplied is None:
-            return required
+            return required + allowance
         supplied = float(supplied)
         if supplied <= 0.0:
             raise ValueError("Tank wall thickness must be positive")

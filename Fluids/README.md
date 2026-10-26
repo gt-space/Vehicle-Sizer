@@ -133,3 +133,45 @@ The regulator flight configs keep sizing inputs only. Their corresponding
 optimizer configs supply mission/design constraints and tank `min_temperature` /
 `min_pressure` limits through `evaluation_overrides`. Standalone flights retain
 physical model validity checks without applying optimizer acceptance limits.
+
+Pressure-fed feed sizing
+------------------------
+
+For each direct tank-to-injector-inlet restriction, specify exactly one non-null
+input in the vehicle config (pressure drop in Pa or effective CdA in m²):
+
+```yaml
+prop_system:
+  ox_tank_inj_dp: 275790.291727
+  # ox_system_cda: 0.00032706944491738433
+  fuel_tank_inj_dp: 275790.291727
+  # fuel_system_cda: 0.0001776871392414737
+```
+
+Comment out the corresponding ΔP line to use CdA. The injector restriction is
+separate. ΔP inputs retain automatic restriction sizing. CdA inputs derive the
+required tank pressure from design flow and pressure-dependent liquid density
+before sizing tank walls, inventories, and regulator feeds. They also set the
+runtime feed CdA directly. Both modes retain explicit initial tank pressure
+overrides; those affect initial density and wall-sizing pressure as before.
+
+CdA mode uses the template's `OX_TANK_INJ` / `FUEL_TANK_INJ` liquid loss branches
+and their tank-pressure rise relationships. Do not also specify CdA on those
+template branches. Unsupported wiring or out-of-domain pressure requirements
+raise sizing errors. Custom callers of `prepare_design_inputs` must pass
+`fluid_properties` and `combustion_properties` when using CdA inputs; main,
+optimizer, and the propulsion example already do so. Source configs are not mutated.
+
+Tank wall allowance and optimizer minimum
+-----------------------------------------
+
+`advanced.tank_wall_thickness_allowance` adds a thickness in metres to automatically
+pressure-sized propellant and metal pressurant walls. It defaults to zero and must
+be finite and nonnegative. Explicit wall overrides are final nominal thicknesses;
+empirical COPV walls are unchanged. The final wall controls tank geometry and mass.
+
+Optimizer `evaluation_overrides` can set `tanks.<id>.min_wall_thickness` and declare
+`tank.<id>.wall_min` in `hard_constraints`. This checks the pressure-calculated
+`required_wall_thickness` **before** the allowance, without clamping it. The current
+pressure-fed settings use a 0.000254 m (10 thou) allowance and 0.00254 m (100 thou)
+minimum calculated walls for LOX and fuel. These minimums are optimizer-only.

@@ -10,6 +10,8 @@ maxiter: 117                 # Generation cap; max_evaluations separately caps t
 popsize: 5
 reference_mass: 190.0
 hard_constraints:
+  - tank.ox_tank.wall_min
+  - tank.fuel_tank.wall_min
   - max_length_to_diameter
   - goal_apogee
   - max_burn_duration
@@ -53,6 +55,8 @@ failure_policy:
   rate_limit: 0.95 # high value means large fraction of failures in the window triggers a stop, lower to permit less failures before exiting
   repeated_limit: 3
 evaluation_overrides:
+  tanks.ox_tank.min_wall_thickness: 0.00254 # 100 thou, before manufacturing allowance
+  tanks.fuel_tank.min_wall_thickness: 0.00254 # 100 thou, before manufacturing allowance
   tanks.press_tank.mass: 29.5 # currently fixing COPV dimensions to match manufacturer's spec
   tanks.fuel_tank.min_temperature: 80.0 # arbitrarily low to stop from constraining the optimizer
   tanks.fuel_tank.min_pressure: 68947.57293168 # structural margin
@@ -119,6 +123,8 @@ bounds:
   - 90.0
   - 150.0
 constraint_scales:
+  tank.ox_tank.wall_min: 0.001
+  tank.fuel_tank.wall_min: 0.001
   max_length_to_diameter: 5.0 # Five L/D units = one normalized violation
   max_aoa_deg: 1.0
   goal_apogee: 10000.0

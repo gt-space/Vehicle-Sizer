@@ -77,7 +77,10 @@ class PressTank(Section):
                 float(definition["design_pressure"]), diameter,
                 float(definition.get("pressure_fos", advanced.get("tank_pressure_fos"))),
                 float(definition.get("weld_allowable", advanced.get("weld_allowable"))))
-            wall = required
+            allowance = float(advanced.get("tank_wall_thickness_allowance", 0.))
+            if not np.isfinite(allowance) or allowance < 0:
+                raise ValueError("Tank wall thickness allowance must be finite and nonnegative")
+            wall = required + allowance
         else:
             raise ValueError(f"Unknown pressurant construction {construction!r}; use copv or metal")
         supplied = definition.get("wall_thickness")

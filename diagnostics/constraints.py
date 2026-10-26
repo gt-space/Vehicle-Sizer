@@ -43,14 +43,27 @@ UNITS = {"max_q": "Pa", "max_burn_duration": "s", "goal_apogee": "m",
 
 def vehicle_limit_records(cfg, vehicle):
     """Assess static vehicle limits without changing simulation execution."""
+    records = {}
+    for tank_id, tank in vehicle.tanks.items():
+        minimum = cfg['tanks'][tank_id].get('min_wall_thickness')
+        if minimum is None:
+            continue
+        minimum = float(minimum)
+        if not isfinite(minimum) or minimum <= 0:
+            raise ValueError('Minimum tank wall thickness must be finite and positive')
+        required = tank.required_wall_thickness
+        if required is None:
+            raise ValueError(f'Tank {tank_id!r} has no pressure-calculated wall for a minimum constraint')
+        records[f'tank.{tank_id}.wall_min'] = ConstraintRecord(
+            required - minimum, 'Vehicle.Vehicle', 'sizing', 'm')
     limit = cfg.get('constraints', {}).get('max_length_to_diameter')
-    if limit is None:
-        return {}
-    length, diameter = float(vehicle.length), float(cfg['vehicle']['OMLD'])
-    if not all(isfinite(v) and v > 0 for v in (length, diameter)):
-        raise ValueError('L/D requires finite positive vehicle length and body diameter')
-    return {'max_length_to_diameter': ConstraintRecord(float(limit) - length / diameter,
-            'Vehicle.Vehicle', 'sizing', '1')}
+    if limit is not None:
+        length, diameter = float(vehicle.length), float(cfg['vehicle']['OMLD'])
+        if not all(isfinite(v) and v > 0 for v in (length, diameter)):
+            raise ValueError('L/D requires finite positive vehicle length and body diameter')
+        records['max_length_to_diameter'] = ConstraintRecord(float(limit) - length / diameter,
+                'Vehicle.Vehicle', 'sizing', '1')
+    return records
 
 
 class PropulsionAssessment:
